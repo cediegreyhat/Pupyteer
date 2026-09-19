@@ -9,7 +9,10 @@ __pycache__/
 # Pupyteer generated
 logs/
 payloads/artifacts/
-graphify-out/cache/
+# Code-graph tool output (graph.html, AST cache). Regenerable with
+# `graphify update .`, and it lands inside the package when the tool is run
+# there, so nothing in it is source.
+graphify-out/
 
 # IDE
 .idea/
