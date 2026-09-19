@@ -242,6 +242,14 @@ def audit_dependencies(
 
 
 def main():
+    # Status lines use check/cross glyphs; the default Windows console codepage
+    # cannot encode them and raises, which would fail the check it just passed.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
     parser = argparse.ArgumentParser(description="Pupyteer Dependency Auditor")
     parser.add_argument(
         "--requirements", "-r",

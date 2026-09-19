@@ -21,6 +21,11 @@ import sys
 from pathlib import Path
 from typing import List, Tuple
 
+# Invoked as `python scripts/verify_secure_defaults.py`, only scripts/ lands on
+# sys.path, so the pupyteer import in check_config_defaults() always failed and
+# --strict reported that as a finding on an otherwise clean tree.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 # Patterns that indicate hardcoded secrets
 SECRET_PATTERNS: List[Tuple[re.Pattern, str]] = [
     # Password assignments (but not in test/doc contexts)
@@ -189,6 +194,14 @@ def verify_ssl_defaults() -> List[str]:
 
 
 def main():
+    # Status lines use check/cross glyphs; the default Windows console codepage
+    # cannot encode them and raises, which would fail the check it just passed.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
     parser = argparse.ArgumentParser(description="Verify Pupyteer secure defaults")
     parser.add_argument(
         "--strict", "-s",
