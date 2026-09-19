@@ -274,6 +274,14 @@ class ModuleRegistry:
                             )
                 except Exception as exc:
                     logger.warning("Failed to load module file %s: %s", f, exc)
+                    # Record it so the operator can see a file silently contributed
+                    # nothing to the registry.
+                    self._health[f"file:{f.stem}"] = ModuleHealth(
+                        name=f"file:{f.stem}",
+                        state=ModuleState.FAILED,
+                        registered_at=datetime.now(timezone.utc).isoformat(),
+                        last_error=str(exc),
+                    )
         logger.info("Discovered %d modules", count)
         return count
 

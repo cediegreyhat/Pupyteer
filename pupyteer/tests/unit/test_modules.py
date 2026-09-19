@@ -609,5 +609,50 @@ class TestModuleHealthDataclass:
         assert h.last_error == "ImportError: foo"
 
 
+class TestDiscoveryFailures:
+    """A module file that cannot import must still be visible to the operator."""
+
+    def _registry_over(self, config, audit, paths):
+        reg = ModuleRegistry(config, audit)
+        reg._paths = paths
+        return reg
+
+    def test_unloadable_file_recorded_as_failed(self, config, audit, tmp_path):
+        (tmp_path / "broken.py").write_text(
+            "raise RuntimeError('boom during import')\n", encoding="utf-8"
+        )
+        reg = self._registry_over(config, audit, [tmp_path])
+        assert reg.discover() == 0
+        health = [h for h in reg.list_health() if h["state"] == "failed"]
+        assert [h["name"] for h in health] == ["file:broken"]
+        assert "boom during import" in health[0]["last_error"]
+
+    def test_valid_and_broken_files_mixed(self, config, audit, tmp_path):
+        (tmp_path / "good.py").write_text(
+            "from pupyteer.server.modules.registry import PupyModule, ModuleCategory\n"
+            "class Good(PupyModule):\n"
+            "    name = 'good'\n"
+            "    version = '1.0.0'\n"
+            "    description = 'ok'\n"
+            "    author = 't'\n"
+            "    category = ModuleCategory.CORE\n"
+            "    async def execute(self, session, args):\n"
+            "        return {'status': 'ok'}\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "bad.py").write_text("raise ValueError('nope')\n", encoding="utf-8")
+        reg = self._registry_over(config, audit, [tmp_path])
+        assert reg.discover() == 1
+        assert reg.get("good") is not None
+        failed = [h for h in reg.list_health() if h["state"] == "failed"]
+        assert [h["name"] for h in failed] == ["file:bad"]
+
+    def test_underscore_files_are_skipped_quietly(self, config, audit, tmp_path):
+        (tmp_path / "_helper.py").write_text("raise ValueError('nope')\n", encoding="utf-8")
+        reg = self._registry_over(config, audit, [tmp_path])
+        reg.discover()
+        assert reg.list_health() == []
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

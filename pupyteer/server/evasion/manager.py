@@ -150,6 +150,10 @@ class EvasionTestManager:
         """Live read of test_mode from config."""
         return self._config.get("evasion.test_mode", False)
 
+    @property
+    def litterbox_configured(self) -> bool:
+        return self._litterbox is not None
+
     # ------------------------------------------------------------------ #
     #  Lifecycle                                                          #
     # ------------------------------------------------------------------ #
