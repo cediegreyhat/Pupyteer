@@ -103,6 +103,11 @@ class PayloadConfig:
     sleep: int = 60
     jitter: int = 20
     persistence: bool = False
+    # Screen capture costs the agent a platform-specific grab path and a large
+    # reply, so it is compiled in only when asked for — same reasoning as
+    # persistence. An agent built without it answers `screenshot` with
+    # "unknown action" rather than pretending.
+    screenshot: bool = False
     extra: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -112,6 +117,16 @@ class PayloadConfig:
         d["payload_type"] = self.payload_type.value
         d["delivery"] = self.delivery.value
         return d
+
+    def stub_modules(self) -> Dict[str, bool]:
+        """Module flags for the stub, spelled out so both build paths agree."""
+        return {
+            "recon": True,
+            "exec": True,
+            "fs": True,
+            "privesc": True,
+            "screenshot": self.screenshot,
+        }
 
 
 @dataclass
@@ -431,6 +446,7 @@ class PayloadBuilder:
                             sleep=payload_config.sleep,
                             jitter=payload_config.jitter,
                             persistence=payload_config.persistence,
+                            modules=payload_config.stub_modules(),
                             platform=payload_config.platform.value,
                             arch=payload_config.arch.value,
                         )
@@ -468,6 +484,7 @@ class PayloadBuilder:
                             sleep=payload_config.sleep,
                             jitter=payload_config.jitter,
                             persistence=payload_config.persistence,
+                            modules=payload_config.stub_modules(),
                             platform=payload_config.platform.value,
                             arch=payload_config.arch.value,
                         )

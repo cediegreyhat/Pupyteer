@@ -275,6 +275,95 @@ class TestFileTransfer:
             await engine.stop()
 
 
+def _has_desktop() -> bool:
+    """Whether this host can actually produce a screen image.
+
+    A headless runner has no display to capture, which is not the agent's
+    failure — but the check is kept narrow so a broken Windows path cannot hide
+    behind it.
+    """
+    if sys.platform.startswith("win") or sys.platform == "darwin":
+        return True
+    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+
+
+_SHOT_MODULES = {"recon": True, "exec": True, "fs": True, "privesc": True,
+                 "screenshot": True}
+
+
+class TestScreenshot:
+    """A phantom config key is worse than an absent one: the operator asks for a
+    capture, the build accepts the flag, and the agent answers `unknown action`
+    mid-engagement. These pin the toggle to code that exists."""
+
+    def test_toggle_compiles_the_module_in_and_out(self):
+        gen = AgentStubGenerator()
+        on = gen.generate(StubConfig(name="s1", transport="tcp", host="127.0.0.1",
+                                     modules=_SHOT_MODULES))
+        off = gen.generate(StubConfig(name="s2", transport="tcp", host="127.0.0.1"))
+
+        assert "def mod_screenshot" in on, "--screenshot produced no capture code"
+        assert 'action == "screenshot"' in on, "capture is compiled but not reachable"
+        assert "def mod_screenshot" not in off, (
+            "capture leaked into a default build; the toggle is not gating"
+        )
+
+    @pytest.mark.asyncio
+    async def test_operator_captures_a_screen(self, tmp_path, listener_port):
+        from pupyteer.tui.commands.sessions import sessions_screenshot
+
+        if not _has_desktop():
+            pytest.skip("headless runner: no display to capture")
+
+        agent = _generate_agent(tmp_path, "shotagent", port=listener_port,
+                               sleep=1, jitter=0, modules=_SHOT_MODULES)
+        engine = PupyteerEngine(_write_server_config(tmp_path, listener_port))
+        proc = _start_agent(agent, tmp_path)
+        try:
+            await engine.start()
+            session_id = await _await_session(engine)
+            assert session_id, "generated agent never registered a session"
+
+            tui = _FakeTUI(engine)
+            out = tmp_path / "operator" / "screen.png"
+            result = await sessions_screenshot(tui, [session_id, str(out)])
+            assert result["status"] == "ok", result
+
+            raw = out.read_bytes()
+            assert raw[:8] == b"\x89PNG\r\n\x1a\n", (
+                f"saved file is not a PNG: {raw[:16]!r}"
+            )
+            # Nothing left on the target: the capture must not linger in temp.
+            residue = list(tmp_path.glob(".pupyteer-shot-*"))
+            assert not residue, f"screenshot left files behind: {residue}"
+        finally:
+            _stop_agent(proc)
+            await engine.stop()
+
+    @pytest.mark.asyncio
+    async def test_agent_built_without_it_says_so(
+        self, tmp_path, listener_port, agent_source
+    ):
+        """The default build has no capture — and must report that, not succeed."""
+        from pupyteer.tui.commands.sessions import sessions_screenshot
+
+        engine = PupyteerEngine(_write_server_config(tmp_path, listener_port))
+        proc = _start_agent(agent_source, tmp_path)
+        try:
+            await engine.start()
+            session_id = await _await_session(engine)
+            assert session_id
+            tui = _FakeTUI(engine)
+            result = await sessions_screenshot(
+                tui, [session_id, str(tmp_path / "never.png")]
+            )
+            assert result["status"] == "error", result
+            assert not (tmp_path / "never.png").exists()
+        finally:
+            _stop_agent(proc)
+            await engine.stop()
+
+
 class TestOperatorShell:
     """What the operator sees: `sessions interact` must print command output."""
 

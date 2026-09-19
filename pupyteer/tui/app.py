@@ -694,7 +694,7 @@ class PupyteerTUI:
         from pupyteer.tui.commands.sessions import (
             sessions_list, sessions_info, sessions_interact, sessions_kill,
             sessions_rename, sessions_tag, sessions_search, sessions_results,
-            sessions_download, sessions_upload,
+            sessions_download, sessions_upload, sessions_screenshot,
         )
         if not args:
             args = ["list"]
@@ -707,6 +707,7 @@ class PupyteerTUI:
             "results": sessions_results,
             "download": sessions_download,
             "upload": sessions_upload,
+            "screenshot": sessions_screenshot,
             "kill": sessions_kill,
             "rename": sessions_rename,
             "tag": sessions_tag,
@@ -717,7 +718,8 @@ class PupyteerTUI:
             self.render_warning(
                 "Usage: sessions [list|info <id>|interact <id>|results <id>"
                 "|download <id> <remote> [local]|upload <id> <local> <remote>"
-                "|kill <id>|rename <id> <name>|tag <id> <tag>|search <query>]"
+                "|screenshot <id> [local]|kill <id>|rename <id> <name>"
+                "|tag <id> <tag>|search <query>]"
             )
             return
         try:
