@@ -178,7 +178,7 @@ git-ignored.
 .venv/bin/python -m pytest pupyteer/tests/integration/ -v
 ```
 
-**Current test count: 732 tests passing** (`pytest pupyteer/tests`)
+**Current test count: 733 tests passing** (`pytest pupyteer/tests`)
 
 ---
 

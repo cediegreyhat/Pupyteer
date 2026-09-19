@@ -648,7 +648,9 @@ class PupyteerTUI:
             headers = ["ID", "Name", "Ver", "Platform", "Arch", "Status", "Size", "Operator"]
             rows = [
                 [
-                    p["payload_id"][:12], p["name"][:20], p["version"],
+                    # Identifiers are never truncated: the table is where the
+                    # operator reads the id they then pass to `remove`/`info`.
+                    p["payload_id"], p["name"][:20], p["version"],
                     p["platform"], p["arch"], p["status"],
                     f"{p['size_bytes'] // 1024}KB" if p["size_bytes"] else "-",
                     (p.get("operator") or "-")[:12],
@@ -667,7 +669,7 @@ class PupyteerTUI:
             headers = ["Version", "ID", "Status", "Built", "SHA-256"]
             rows = [
                 [
-                    h.get("version", "-"), str(h.get("payload_id", ""))[:12],
+                    h.get("version", "-"), str(h.get("payload_id", "")),
                     h.get("status", "-"), str(h.get("created_at", ""))[:19],
                     str(h.get("hash_sha256", ""))[:16],
                 ]

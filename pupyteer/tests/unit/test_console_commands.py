@@ -205,6 +205,26 @@ class TestSubcommandDispatch:
         assert "1.0.0" in capsys.readouterr().out
 
     @pytest.mark.asyncio
+    async def test_listed_payload_ids_are_reusable(self, live_tui, engine, capsys):
+        """The id on screen is the exact string `remove`/`info` expect.
+
+        Truncating it to a 12-char column made every copy-pasted id fail with
+        "Payload not found", and payload ids are longer than 12 characters.
+        """
+        full_id = "pl-d856ddbc03f8"
+        engine.payloads.list_all.return_value = [_payload_meta(payload_id=full_id)]
+        engine.payloads.get_version_history.return_value = [
+            {"version": "1.0.0", "payload_id": full_id, "status": "verified",
+             "created_at": "2026-01-01T00:00:00", "hash_sha256": "b" * 64},
+        ]
+
+        await live_tui.cmd_payloads(["list"])
+        assert full_id in capsys.readouterr().out
+
+        await live_tui.cmd_payloads(["versions", "agent"])
+        assert full_id in capsys.readouterr().out
+
+    @pytest.mark.asyncio
     async def test_payloads_error_result_surfaces_message(self, live_tui, engine, capsys):
         engine.payloads.verify.return_value = (False, "hash mismatch")
         await live_tui.cmd_payloads(["verify", "payload-0001"])
