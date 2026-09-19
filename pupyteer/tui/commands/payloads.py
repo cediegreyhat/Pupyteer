@@ -56,6 +56,7 @@ async def payload_build(tui: Any, args: List[str]) -> Dict[str, Any]:
     Args format: --name NAME --platform PLATFORM --arch ARCH --type TYPE
                  --transport TRANSPORT --host HOST --port PORT
                  [--profile PROFILE] [--expiration DAYS] [--sign] [--version VERSION]
+                 [--sleep SECONDS] [--jitter PERCENT] [--persistence]
     """
     # Parse arguments
     name = ""
@@ -69,6 +70,9 @@ async def payload_build(tui: Any, args: List[str]) -> Dict[str, Any]:
     expiration_days = 0
     sign = False
     version = ""
+    sleep = 60
+    jitter = 20
+    persistence = False
 
     i = 0
     while i < len(args):
@@ -110,6 +114,20 @@ async def payload_build(tui: Any, args: List[str]) -> Dict[str, Any]:
             except ValueError:
                 return {"status": "error", "error": f"Invalid expiration: {args[i + 1]}"}
             i += 2
+        elif args[i] == "--sleep" and i + 1 < len(args):
+            try:
+                sleep = int(args[i + 1])
+            except ValueError:
+                return {"status": "error", "error": f"Invalid sleep: {args[i + 1]}"}
+            i += 2
+        elif args[i] == "--jitter" and i + 1 < len(args):
+            try:
+                jitter = int(args[i + 1])
+            except ValueError:
+                return {"status": "error", "error": f"Invalid jitter: {args[i + 1]}"}
+            i += 2
+        elif args[i] == "--persistence":
+            persistence = True; i += 1
         elif args[i] == "--sign":
             sign = True; i += 1
         elif args[i] == "--version" and i + 1 < len(args):
@@ -129,6 +147,9 @@ async def payload_build(tui: Any, args: List[str]) -> Dict[str, Any]:
         host=host,
         port=port,
         profile=profile,
+        sleep=sleep,
+        jitter=jitter,
+        persistence=persistence,
     )
 
     engine = tui._engine

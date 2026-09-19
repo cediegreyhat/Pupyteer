@@ -122,6 +122,42 @@ class TestLifecycle:
         assert meta.status in (PayloadStatus.BUILT.value, PayloadStatus.VERIFIED.value, PayloadStatus.FAILED.value)
 
 
+class TestBuildSettingsReachTheStub:
+    """What the operator asks for must be compiled into the artifact."""
+
+    @pytest.mark.asyncio
+    async def test_beacon_timing_is_baked_in(self, config, audit):
+        pm = PayloadManager(config, audit)
+        cfg = PayloadConfig(
+            name="timed", payload_type=PayloadType.SCRIPT,
+            sleep=37, jitter=5, profile="TCP-Raw",
+        )
+        meta = await pm.build(cfg)
+        code = Path(meta.artifact_path).read_text(encoding="utf-8")
+        assert "base_sleep = 37" in code, "payload ignored the requested sleep"
+        assert "jitter_pct = 5" in code, "payload ignored the requested jitter"
+
+    @pytest.mark.asyncio
+    async def test_persistence_is_absent_unless_requested(self, config, audit):
+        pm = PayloadManager(config, audit)
+        default = await pm.build(PayloadConfig(
+            name="quiet", payload_type=PayloadType.SCRIPT, profile="TCP-Raw"))
+        assert "install_persistence" not in Path(default.artifact_path).read_text(encoding="utf-8")
+
+        opted = await pm.build(PayloadConfig(
+            name="sticky", payload_type=PayloadType.SCRIPT, profile="TCP-Raw",
+            persistence=True))
+        assert "def install_persistence" in Path(opted.artifact_path).read_text(encoding="utf-8")
+
+    @pytest.mark.asyncio
+    async def test_nonsense_beacon_values_are_rejected(self, config, audit):
+        builder = PayloadBuilder(config, audit)
+        assert any("sleep" in e.lower() for e in builder.validate_config(
+            PayloadConfig(name="x", sleep=0)))
+        assert any("jitter" in e.lower() for e in builder.validate_config(
+            PayloadConfig(name="x", jitter=140)))
+
+
 # ─── Versioning Tests ────────────────────────────────────────────
 
 

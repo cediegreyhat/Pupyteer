@@ -60,6 +60,8 @@ class TransportManager:
         self._audit = audit
         self._transports: Dict[str, Transport] = {}
         self._listener: Optional[Any] = None  # AgentListener instance
+        self._http_listener: Optional[Any] = None
+        self._listeners: list = []  # extra listeners (HTTP) shut down with the TCP one
 
     async def initialize(self) -> None:
         """Initialize transport listeners based on profile or config."""
@@ -107,9 +109,11 @@ class TransportManager:
         })
 
     async def start_listener(self, session_manager: Any) -> None:
-        """Start the real TCP agent listener.
+        """Start the real agent listeners.
 
-        Called by the engine after all subsystems are initialized.
+        Called by the engine after all subsystems are initialized. TCP is always
+        up on server.port; the HTTP listener is opt-in through server.http_port,
+        because port 80/8080 commonly belongs to something else on the box.
         """
         if self._listener is not None:
             return  # already started
@@ -124,6 +128,24 @@ class TransportManager:
         await self._listener.start()
         logger.info("Agent listener started on %s:%d", host, port)
 
+        http_port = self._config.get("server.http_port", 0)
+        if http_port:
+            from pupyteer.server.transports.http_listener import HTTPListener
+            self._http_listener = HTTPListener(
+                config={
+                    "host": host,
+                    "port": int(http_port),
+                    "uri": self._config.get("server.http_uri", "/index.html"),
+                    "certfile": self._config.get("server.https_cert", "") or None,
+                    "keyfile": self._config.get("server.https_key", "") or None,
+                },
+                session_manager=session_manager,
+                audit_logger=self._audit,
+            )
+            await self._http_listener.start()
+            self._listeners.append(self._http_listener)
+            logger.info("HTTP agent listener started on %s:%d", host, http_port)
+
     async def shutdown(self) -> None:
         """Stop all transport listeners."""
         # Stop the real TCP listener first
@@ -134,6 +156,14 @@ class TransportManager:
             except Exception as e:
                 logger.warning("Error stopping agent listener: %s", e)
             self._listener = None
+
+        for extra in self._listeners:
+            try:
+                await extra.stop()
+            except Exception as e:
+                logger.warning("Error stopping secondary listener: %s", e)
+        self._listeners.clear()
+        self._http_listener = None
 
         for name, transport in self._transports.items():
             try:
@@ -152,6 +182,8 @@ class TransportManager:
         """
         if self._listener is not None:
             self._listener._session_manager = session_manager
+        for extra in self._listeners:
+            extra._session_manager = session_manager
             logger.debug("Session manager wired into AgentListener")
 
     def create(self, transport_type: str, name: str, config: Dict[str, Any]) -> Optional[Transport]:

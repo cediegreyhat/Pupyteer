@@ -17,6 +17,8 @@ graphify-out/
 # IDE
 .idea/
 .vscode/
+# Local coding-agent settings for this checkout, not project configuration.
+.qoder/
 
 # Venv
 .venv/

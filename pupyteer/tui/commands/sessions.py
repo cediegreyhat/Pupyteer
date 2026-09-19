@@ -99,15 +99,106 @@ async def sessions_interact(tui: Any, args: List[str]) -> Dict[str, Any]:
                 continue
 
             cmd_id = await tui._engine.sessions.interact(session_id, cmd_line)
-            if cmd_id:
-                tui.render_success(f"Command queued (id: {cmd_id})")
-            else:
+            if not cmd_id:
                 tui.render_error("Failed to queue command.")
+                continue
+            output = await _await_command_result(
+                tui._engine, session_id, cmd_id, timeout=interaction_timeout(tui)
+            )
+            if output is None:
+                tui.render_warning(
+                    f"Command queued (id: {cmd_id}) — no reply yet. The agent "
+                    f"picks commands up on its next check-in; "
+                    f"'sessions results {session_id}' shows it later."
+                )
+            else:
+                _print_result(output)
         except (EOFError, KeyboardInterrupt):
             break
 
     print("  Interaction ended.")
     return {"status": "ok", "session_id": session_id}
+
+
+def interaction_timeout(tui: Any) -> float:
+    """How long to wait for a beacon that has not checked in yet."""
+    try:
+        configured = float(tui._engine.config.get("session.interact_timeout", 120))
+    except Exception:
+        configured = 120.0
+    return configured if configured > 0 else 120.0
+
+
+async def _await_command_result(
+    engine: Any, session_id: str, command_id: str, timeout: float
+) -> Optional[str]:
+    """Poll the session queue until the agent reports this command back.
+
+    Returns None if the deadline passes first — the agent may simply be
+    between beacons, which is not an error.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        for entry in await engine.sessions.get_pending_commands(session_id):
+            if entry.get("command_id") != command_id:
+                continue
+            if entry.get("status") == "completed":
+                return entry.get("result") or ""
+        await asyncio.sleep(0.25)
+    return None
+
+
+def _print_result(output: str) -> None:
+    print()
+    for line in (output or "").splitlines() or [""]:
+        print(f"    {line}")
+    print()
+
+
+async def sessions_results(tui: Any, args: List[str]) -> Dict[str, Any]:
+    """Show command output the agent has already reported for a session.
+
+    Usage: sessions results <id> [--last N]
+    """
+    if not args:
+        tui.render_error("Usage: sessions results <id> [--last N]")
+        return {"status": "error", "error": "Usage: sessions results <id>"}
+
+    session_id = args[0]
+    last = 10
+    if "--last" in args:
+        try:
+            last = int(args[args.index("--last") + 1])
+        except (ValueError, IndexError):
+            tui.render_error("Invalid --last value")
+            return {"status": "error", "error": "Invalid --last"}
+
+    session = await tui._engine.sessions.get(session_id)
+    if not session:
+        tui.render_error(f"Session not found: {session_id}")
+        return {"status": "error", "error": f"Session not found: {session_id}"}
+
+    queue = await tui._engine.sessions.get_pending_commands(session_id)
+    entries = queue[-last:] if last > 0 else queue
+    if not entries:
+        tui.render_warning(f"No commands recorded for session {session_id}.")
+        return {"status": "ok", "session_id": session_id, "results": []}
+
+    print(f"\n  Session {session_id} — {len(entries)} command(s):\n")
+    for entry in entries:
+        status = entry.get("status", "?")
+        print(f"    [{entry.get('command_id', '?')}] ({status}) {entry.get('command', '')}")
+        if status == "completed":
+            for line in (entry.get("result") or "").splitlines():
+                print(f"        {line}")
+            if not (entry.get("result") or "").strip():
+                print("        (no output)")
+    print()
+    return {
+        "status": "ok",
+        "session_id": session_id,
+        "results": [dict(e) for e in entries],
+    }
 
 
 async def sessions_kill(tui: Any, args: List[str]) -> Dict[str, Any]:

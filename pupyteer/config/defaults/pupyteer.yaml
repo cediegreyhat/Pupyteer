@@ -5,6 +5,15 @@ server:
   host: "0.0.0.0"
   port: 8443
   backlog: 10
+  # HTTP(S) callbacks carry the same session protocol as TCP, one message per
+  # POST. Left disabled because 8080 is usually taken; set a port to serve
+  # payloads built with --transport http/https.
+  http_port: 0
+  http_uri: "/index.html"
+  # Optional: terminate TLS here. Prefer a reverse proxy with a real
+  # certificate — agents verify HTTPS server certificates.
+  https_cert: ""
+  https_key: ""
 
 logging:
   level: "INFO"

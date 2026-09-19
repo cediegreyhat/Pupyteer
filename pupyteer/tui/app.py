@@ -243,7 +243,7 @@ class PupyteerTUI:
         r.register("reload", self.cmd_reload, "Reload module registry")
         # Session/job commands
         r.register("sessions", self.cmd_sessions, "Manage sessions",
-                   "sessions [list|info <id>|interact <id>|kill <id>|rename <id> <name>|tag <id> <tag>|search <query>]")
+                   "sessions [list|info <id>|interact <id>|results <id>|kill <id>|rename <id> <name>|tag <id> <tag>|search <query>]")
         r.register("jobs", self.cmd_jobs, "Manage background jobs", "jobs [list|kill <id>|info <id>]")
         r.register("tasks", self.cmd_tasks, "Manage tasks", "tasks [list|info <id>|cancel <id>]")
         r.register("payloads", self.cmd_payloads, "Payload lifecycle",
@@ -262,7 +262,7 @@ class PupyteerTUI:
 
     #: Second-token choices for commands that take a subcommand.
     _SUBCOMMANDS = {
-        "sessions": ["list", "info", "interact", "kill", "rename", "tag", "search"],
+        "sessions": ["list", "info", "interact", "results", "kill", "rename", "tag", "search"],
         "jobs": ["list", "kill", "info"],
         "tasks": ["list", "info", "cancel"],
         "profiles": ["list", "show", "validate", "load", "unload", "new"],
@@ -692,7 +692,7 @@ class PupyteerTUI:
         """Manage sessions — MSF-style."""
         from pupyteer.tui.commands.sessions import (
             sessions_list, sessions_info, sessions_interact, sessions_kill,
-            sessions_rename, sessions_tag, sessions_search,
+            sessions_rename, sessions_tag, sessions_search, sessions_results,
         )
         if not args:
             args = ["list"]
@@ -702,6 +702,7 @@ class PupyteerTUI:
             "list": sessions_list,
             "info": sessions_info,
             "interact": sessions_interact,
+            "results": sessions_results,
             "kill": sessions_kill,
             "rename": sessions_rename,
             "tag": sessions_tag,
@@ -710,7 +711,7 @@ class PupyteerTUI:
         handler = handlers.get(action)
         if handler is None:
             self.render_warning(
-                "Usage: sessions [list|info <id>|interact <id>|kill <id>"
+                "Usage: sessions [list|info <id>|interact <id>|results <id>|kill <id>"
                 "|rename <id> <name>|tag <id> <tag>|search <query>]"
             )
             return

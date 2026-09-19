@@ -17,6 +17,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "host": "0.0.0.0",
         "port": 8443,
         "backlog": 10,
+        # HTTP callbacks share the session protocol with TCP; 0 disables them.
+        # Off by default because port 8080 is routinely occupied on a team box.
+        "http_port": 0,
+        "http_uri": "/index.html",
     },
     "logging": {
         "level": "INFO",
