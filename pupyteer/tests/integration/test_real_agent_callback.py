@@ -397,6 +397,17 @@ class TestCommandVocabulary:
         result = agent._run_command(f'{agent._sy.executable} -c "print(6*7)"')
         assert "42" in result, f"argumented command did not run: {result!r}"
 
+    def test_runaway_output_is_clipped(self, tmp_path):
+        """An unbounded reply would outgrow the listener and take the session with it."""
+        agent = _load_agent_module(_generate_agent(
+            tmp_path, "clip", port=1, sleep=1, jitter=0, max_output=2000,
+        ))
+        result = agent._run_command(
+            f'{agent._sy.executable} -c "print(\'x\' * 500000)"'
+        )
+        assert len(result) < 5000, f"output was not clipped: {len(result)} chars"
+        assert "truncated" in result
+
 
 class TestTransportFraming:
     """The agent must frame exactly the way AgentListener reads."""

