@@ -17,6 +17,7 @@ from pupyteer.payloads.manager import (
     PayloadArch,
     PayloadType,
     PayloadStatus,
+    PayloadDelivery,
     PayloadBuilder,
     PayloadStore,
     PayloadManager,
@@ -60,7 +61,7 @@ class TestSpecFields:
     @pytest.mark.asyncio
     async def test_fields_populated_after_build(self, config, audit):
         builder = PayloadBuilder(config, audit)
-        cfg = PayloadConfig(name="spec-test")
+        cfg = PayloadConfig(name="spec-test", payload_type=PayloadType.SCRIPT)
         pid = builder.generate_payload_id()
         meta = await builder.build(cfg, pid, version="2.1.0")
         assert meta.payload_id == pid
@@ -104,7 +105,7 @@ class TestLifecycle:
     @pytest.mark.asyncio
     async def test_build_transitions_through_statuses(self, config, audit):
         pm = PayloadManager(config, audit)
-        cfg = PayloadConfig(name="lifecycle-test", platform=PayloadPlatform.LINUX, arch=PayloadArch.X64)
+        cfg = PayloadConfig(name="lifecycle-test", payload_type=PayloadType.SCRIPT, platform=PayloadPlatform.LINUX, arch=PayloadArch.X64)
         meta = await pm.build(cfg)
         # After successful build, status should be BUILT or VERIFIED
         assert meta.status in (PayloadStatus.BUILT.value, PayloadStatus.VERIFIED.value)
@@ -173,6 +174,78 @@ class TestBuildSettingsReachTheStub:
         assert 'action == "screenshot"' in code, (
             "capture code is present but no action reaches it"
         )
+
+
+class TestCompilationIsReal:
+    """An artifact that only has an executable's extension is not one.
+
+    These pin the fail-closed behaviour: the build must report failure rather
+    than hand back a file the operator finds unrunnable on the target.
+    """
+
+    @pytest.mark.asyncio
+    async def test_executable_build_fails_without_the_compiler(
+        self, config, audit, monkeypatch
+    ):
+        import shutil as _shutil
+        monkeypatch.setattr(_shutil, "which", lambda name: None)
+
+        pm = PayloadManager(config, audit)
+        meta = await pm.build(PayloadConfig(
+            name="noexe", platform=PayloadPlatform.WINDOWS,
+            compiler="pyinstaller"))
+
+        assert meta.status == PayloadStatus.FAILED.value, (
+            "a build with no compiler must not report a usable payload"
+        )
+        assert meta.artifact_path == ""
+        assert meta.hash_sha256 == ""
+        joined = " ".join(meta.build_log)
+        assert "--type script" in joined, "the failure must say what to do instead"
+
+    @pytest.mark.asyncio
+    async def test_compiler_cannot_cross_compile(self, config, audit, monkeypatch):
+        """PyInstaller freezes for the host it runs on; asking for another
+        platform has to be an error, not a host binary named for the target."""
+        import shutil as _shutil
+        import sys as _sys
+        if _sys.platform.startswith("win"):
+            foreign = PayloadPlatform.LINUX
+        else:
+            foreign = PayloadPlatform.WINDOWS
+
+        monkeypatch.setattr(_shutil, "which", lambda name: "/usr/bin/pyinstaller")
+        pm = PayloadManager(config, audit)
+        meta = await pm.build(PayloadConfig(
+            name="foreign", platform=foreign, compiler="pyinstaller"))
+
+        assert meta.status == PayloadStatus.FAILED.value
+        joined = " ".join(meta.build_log)
+        assert foreign.value in joined
+        assert "host" in joined.lower(), "must name the build host as the constraint"
+        assert "--type script" in joined
+
+    @pytest.mark.asyncio
+    async def test_compiler_script_is_honoured_for_an_executable_request(
+        self, config, audit
+    ):
+        """--compiler script is the documented way to get the standalone agent."""
+        pm = PayloadManager(config, audit)
+        meta = await pm.build(PayloadConfig(
+            name="portable", platform=PayloadPlatform.WINDOWS,
+            payload_type=PayloadType.EXECUTABLE, compiler="script"))
+        assert meta.status == PayloadStatus.VERIFIED.value
+        assert meta.artifact_path.endswith(".py")
+
+    @pytest.mark.asyncio
+    async def test_unknown_compiler_and_stage_delivery_are_rejected(self, config, audit):
+        builder = PayloadBuilder(config, audit)
+        assert any("compiler" in e.lower() for e in builder.validate_config(
+            PayloadConfig(name="x", compiler="gcc")))
+        assert any("stage" in e.lower() for e in builder.validate_config(
+            PayloadConfig(name="x", delivery=PayloadDelivery.STAGE)))
+        assert any("mingw" in e.lower() for e in builder.validate_config(
+            PayloadConfig(name="x", platform=PayloadPlatform.LINUX, compiler="mingw")))
 
 
 # ─── Versioning Tests ────────────────────────────────────────────
@@ -335,7 +408,7 @@ class TestVerification:
     @pytest.mark.asyncio
     async def test_verify_valid_payload(self, config, audit):
         pm = PayloadManager(config, audit)
-        cfg = PayloadConfig(name="verify-test")
+        cfg = PayloadConfig(name="verify-test", payload_type=PayloadType.SCRIPT)
         meta = await pm.build(cfg)
         ok, msg = pm.verify(meta.payload_id)
         assert ok is True
@@ -351,7 +424,7 @@ class TestVerification:
     @pytest.mark.asyncio
     async def test_verify_corrupted_artifact(self, config, audit):
         pm = PayloadManager(config, audit)
-        cfg = PayloadConfig(name="corrupt-test")
+        cfg = PayloadConfig(name="corrupt-test", payload_type=PayloadType.SCRIPT)
         meta = await pm.build(cfg)
         # Corrupt the artifact
         Path(meta.artifact_path).write_bytes(b"CORRUPTED")
@@ -367,8 +440,8 @@ class TestStats:
     @pytest.mark.asyncio
     async def test_stats_breakdown(self, config, audit):
         pm = PayloadManager(config, audit)
-        await pm.build(PayloadConfig(name="stats1", platform=PayloadPlatform.WINDOWS))
-        await pm.build(PayloadConfig(name="stats2", platform=PayloadPlatform.LINUX))
+        await pm.build(PayloadConfig(name="stats1", platform=PayloadPlatform.WINDOWS, payload_type=PayloadType.SCRIPT))
+        await pm.build(PayloadConfig(name="stats2", platform=PayloadPlatform.LINUX, payload_type=PayloadType.SCRIPT))
         stats = pm.get_stats()
         assert stats["total"] >= 2
         assert "windows" in stats["by_platform"]
