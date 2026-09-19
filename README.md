@@ -23,35 +23,51 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
-### Run the TUI
+### Run the console
 
 ```bash
-pupyteer-tui
+pupyteer                 # interactive TUI (starts the server and console together)
+pupyteer --headless      # server only, no console
+pupyteer -c ./pupyteer.yaml
+pupyteer --debug
 ```
 
-### Run the Server
-
-```bash
-pupyteer-server --config config/default.yaml
-```
+`pupyteer` is the single installed entry point (`pupyteer.main:main`).
 
 ### Generate a Payload
 
+Either from the console:
+
+```
+pupyteer > payloads build --name test-payload --platform linux --arch x64 \
+             --type executable --transport https --host 192.168.100.100 --port 443 \
+             --profile HTTPS-Standard
+```
+
+Or programmatically:
+
 ```python
-from pupyteer.payloads.manager import PayloadBuilder, PayloadConfig, PayloadType
+import asyncio
+from pupyteer.server.core.engine import PupyteerEngine
+from pupyteer.payloads.manager import PayloadConfig, PayloadType
 
-config = PayloadConfig(
-    name="test-payload",
-    payload_type=PayloadType.SCRIPT,
-    transport="https",
-    host="192.168.100.100",
-    port=443,
-    profile="HTTPS-Standard"
-)
+async def main():
+    engine = PupyteerEngine()
+    await engine.start()
+    config = PayloadConfig(
+        name="test-payload",
+        payload_type=PayloadType.SCRIPT,
+        transport="https",
+        host="192.168.100.100",
+        port=443,
+        profile="HTTPS-Standard",
+    )
+    metadata = await engine.payloads.build(config)
+    print(f"Artifact: {metadata.artifact_path} ({metadata.size_bytes} bytes)")
+    print(f"SHA256: {metadata.hash_sha256}")
+    await engine.stop()
 
-metadata = await builder.build(config)
-print(f"Artifact: {metadata.artifact_path} ({metadata.size_bytes} bytes)")
-print(f"SHA256: {metadata.hash_sha256}")
+asyncio.run(main())
 ```
 
 ---
@@ -75,8 +91,8 @@ PUPYTEER
   ├── Agent (Stub)
   │   ├── Core agent loop
   │   ├── Transport clients
-  │   ├── Recon/Execution/FS modules
-  │   └── Persistence & migration
+  │   ├── Server-dispatched modules (see server/modules)
+  │   └── Sleep masking
   │
   └── TUI
       ├── Startup banner & status bar
@@ -109,47 +125,43 @@ PUPYTEER
 ```
 pupyteer/
 ├── server/
-│   ├── core/          # engine, config, auth, audit, errors, queue, c2
+│   ├── core/          # engine, config, auth, audit, logging, errors, queue, c2, rbac, validation
 │   ├── sessions/      # session lifecycle, tagging, interaction
 │   ├── tasks/         # task manager
-│   ├── transports/    # Transport ABC + concrete implementations
-│   ├── profiles/      # malleable C2 profile parser/validator/manager
-│   ├── modules/       # registry, builtin modules (recon, evasion, file ops)
-│   ├── evasion/       # obfuscator, litterbox client, test runner
-│   └── payloads/      # payload builder, artifact management
+│   ├── transports/    # Transport ABC + concrete implementations + listener
+│   ├── profiles/      # malleable C2 profile parser/validator/manager + CS converter
+│   ├── modules/       # registry, executor, builtin modules (recon, evasion)
+│   └── evasion/       # obfuscator, litterbox client, test runner, models
 │
 ├── agent/
-│   ├── core/          # agent loop, auth, stub generator
-│   └── modules/        # recon, execution, fs, persistence
+│   └── core/          # agent loop, auth, stub generator, sleep masking
 │
-├── payloads/
-│   ├── builders/      # platform-specific builders
-│   └── artifacts/     # generated payload artifacts
+├── payloads/          # payload builder, signer, store, artifact lifecycle
 │
 ├── tui/
-│   ├── app.py         # main TUI application
+│   ├── app.py         # console application, command registry, completer
 │   ├── themes.py      # dark/light theme definitions
-│   ├── screens/       # TUI screens
-│   ├── widgets/       # custom widgets
-│   └── commands/      # command handlers (sessions, payloads, evasion)
+│   ├── screens/       # (reserved)
+│   ├── widgets/       # (reserved)
+│   └── commands/      # sessions, jobs, payloads, evasion, pipeline, msf_core
 │
 ├── config/
-│   ├── defaults/      # default configuration files
+│   ├── defaults/      # pupyteer.yaml template
 │   └── profiles/      # C2 profile definitions
 │
 ├── tests/
 │   ├── unit/          # unit tests
-│   ├── integration/    # integration tests
+│   ├── integration/   # integration tests
 │   └── regression/    # regression tests
 │
-└── docs/
-    ├── OPERATOR_MANUAL.md
-    ├── DEVELOPER_DOCUMENTATION.md
-    ├── MODULE_DEVELOPMENT_GUIDE.md
-    ├── PROFILE_DOCUMENTATION.md
-    ├── SECURITY_DOCUMENTATION.md
-    └── INSTALLATION_GUIDE.md
+├── tools/             # agent simulator, callback tester
+│
+└── docs/              # operator manual, developer docs, profile & module guides,
+                       # security notes, installation guide
 ```
+
+Generated artifacts land in `./payloads/artifacts` and logs in `./logs` — both
+git-ignored.
 
 ---
 
@@ -166,7 +178,7 @@ pupyteer/
 .venv/bin/python -m pytest pupyteer/tests/integration/ -v
 ```
 
-**Current test count: 681+ tests passing**
+**Current test count: 732 tests passing** (`pytest pupyteer/tests`)
 
 ---
 
@@ -192,7 +204,8 @@ This framework is intended **exclusively for authorized security testing and adv
 
 ## 📜 License
 
-MIT License — See [LICENSE](LICENSE) for details.
+BSD 3-Clause — See [LICENSE](LICENSE) for details. Pupyteer is derived from
+Pupy (Copyright © 2015 Nicolas VERDIER) and retains that notice.
 
 ---
 

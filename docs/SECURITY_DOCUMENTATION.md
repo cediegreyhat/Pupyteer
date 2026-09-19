@@ -415,12 +415,27 @@ Pupyteer supports controlled detection-resilience testing for authorized assessm
 
 #### Lab Mode
 
-Enable laboratory/testing mode for safe evaluation:
+Evasion testing is gated off by default. `EvasionTestRunner` raises before
+executing any test unless the flag below is set, so an unset configuration
+fails closed rather than running:
 
 ```yaml
-security:
-  lab_mode: true  # Restricts testing to approved configurations
+evasion:
+  test_mode: false   # set true to enable lab testing explicitly
 ```
+
+The gate is enforced in code (`server/evasion/runner.py`,
+`_require_lab_mode`), not by operator discipline.
+
+#### Disabled Capability Sets
+
+The anti-forensics module file (`server/modules/builtin/antiforensics.py`) is
+not loaded: it references a `ModuleCategory` member that is deliberately not
+defined, and `show modules` reports the file as failed. Those modules clear
+event logs, delete prefetch entries and modify file timestamps — they destroy
+evidence on a host, which is a different class of capability from the rest of
+the framework and has no test coverage. Enabling them requires an explicit
+decision covering both the capability and its lab-only safeguards.
 
 #### Test Configurations
 

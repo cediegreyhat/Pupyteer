@@ -654,5 +654,38 @@ class TestDiscoveryFailures:
         assert reg.list_health() == []
 
 
+# ─── Anti-Forensics Gate Tests ───────────────────────────────────────
+
+# Spec 17 "Controlled": these five modules destroy evidence on a host (event
+# logs, prefetch entries, file timestamps) and have no test coverage. They are
+# unreachable only because ModuleCategory has no ANTI_FORENSICS member, which
+# makes builtin/antiforensics.py fail to import. Adding that one enum value
+# would activate all five with no other change, so the decision is pinned here
+# as a reviewed invariant rather than an accident an import fix would undo.
+ANTI_FORENSICS_MODULES = [
+    "log_clear",
+    "timestamp_match",
+    "artifact_wipe",
+    "prefetch_delete",
+    "recycle_clear",
+]
+
+
+class TestAntiForensicsDisabled:
+    def test_category_member_is_absent(self):
+        assert not hasattr(ModuleCategory, "ANTI_FORENSICS")
+
+    def test_modules_are_not_registered(self, registry):
+        registry.discover()
+        names = {m["name"] for m in registry.list_all()}
+        assert names.isdisjoint(ANTI_FORENSICS_MODULES)
+
+    def test_source_file_is_reported_as_failed(self, registry):
+        """Unreachable must not mean invisible — the console warns on this."""
+        registry.discover()
+        failed = {h["name"] for h in registry.list_health() if h["state"] == "failed"}
+        assert "file:antiforensics" in failed
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
