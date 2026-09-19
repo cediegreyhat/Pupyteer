@@ -192,7 +192,9 @@ Pupyteer is designed as security-sensitive software:
 - **Input Validation** — All operator inputs validated before execution
 - **Audit Logging** — Every action logged with operator attribution
 - **Credential Redaction** — Secrets never stored in audit logs
-- **Dependency Auditing** — `scripts/audit_deps.py` for vulnerability scanning
+- **Verification Gates** — `scripts/verify_secure_defaults.py --strict` (secrets,
+  config defaults, file permissions, TLS settings) and `scripts/audit_deps.py`
+  (dependency vulnerabilities); both exit non-zero on findings
 
 ---
 

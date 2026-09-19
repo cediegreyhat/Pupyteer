@@ -16,7 +16,7 @@ setup(
     name='pupyteer',
     version='1.0.0',
     packages=find_packages(where='.', include=['pupyteer*']),
-    package_data={'pupyteer': ['conf/**', 'external/**', 'config/**']},
+    package_data={'pupyteer': ['config/**']},
     license_files=('LICENSE',),
     author='Pupyteer Team',
     author_email='',
