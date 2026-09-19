@@ -188,6 +188,34 @@ def _drain(proc) -> str:
         return "<unreadable>"
 
 
+class TestSessionKillStopsTheImplant:
+    """`sessions kill` must take the agent down, not just the server's record."""
+
+    @pytest.mark.asyncio
+    async def test_kill_terminates_the_running_agent(self, tmp_path, listener_port, agent_source):
+        engine = PupyteerEngine(_write_server_config(tmp_path, listener_port))
+        proc = _start_agent(agent_source, tmp_path)
+        try:
+            await engine.start()
+            session_id = await _await_session(engine)
+            assert session_id
+            assert proc.poll() is None, "agent should still be running"
+
+            assert await engine.sessions.kill(session_id, reason="test")
+            # The agent beacons once a second here, so the order is picked up
+            # within a couple of intervals.
+            deadline = time.time() + 30
+            while time.time() < deadline and proc.poll() is None:
+                await asyncio.sleep(0.25)
+
+            assert proc.returncode is not None, (
+                "sessions kill left the implant running on the target"
+            )
+        finally:
+            _stop_agent(proc)
+            await engine.stop()
+
+
 class TestFileTransfer:
     """Files have to move both ways for this to be worth running."""
 

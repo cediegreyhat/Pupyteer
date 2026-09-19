@@ -301,7 +301,14 @@ class TestSessionManager:
         await sessions.register(SessionInfo(session_id="kill-me", hostname="h"))
         ok = await sessions.kill("kill-me")
         assert ok is True
+        # The record survives only so the exit order can reach the agent on its
+        # next check-in; deleting it immediately would leave the implant running.
+        session = await sessions.get("kill-me")
+        assert session.state.value == "killed"
+        assert [c["command"] for c in await sessions.get_pending_commands("kill-me")] == ["exit"]
+        assert await sessions.remove("kill-me") is True
         assert sessions.count() == 0
+        assert await sessions.get_pending_commands("kill-me") == []
 
     @pytest.mark.asyncio
     async def test_kill_nonexistent(self, sessions):

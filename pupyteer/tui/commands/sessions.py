@@ -350,7 +350,10 @@ async def sessions_kill(tui: Any, args: List[str]) -> Dict[str, Any]:
     ok = await tui._engine.sessions.kill(session_id)
 
     if ok:
-        tui.render_success(f"Session {session_id} killed.")
+        tui.render_success(
+            f"Session {session_id} killed — exit ordered; the agent stops on its "
+            f"next check-in."
+        )
         return {"status": "ok", "session_id": session_id}
     else:
         tui.render_error(f"Session not found: {session_id}")

@@ -42,6 +42,7 @@ class SessionInfo:
     state: SessionState = SessionState.CONNECTED
     connected_at: float = 0.0
     last_checkin: float = 0.0
+    killed_at: float = 0.0
     profile: str = ""
     agent_version: str = ""
     tags: List[str] = field(default_factory=list)
@@ -83,6 +84,10 @@ class SessionManager:
         self._monitor_task: Optional[asyncio.Task] = None
         self._timeout_seconds: float = float(config.get("session.timeout_seconds", 300))
         self._heartbeat_interval: int = 30
+        # How long a killed session is kept so its exit order can be picked up.
+        self._kill_grace_seconds: float = float(
+            config.get("session.kill_grace_seconds", max(self._timeout_seconds, 120))
+        )
         self._command_queue: Dict[str, List[Dict[str, Any]]] = {}
 
         # Try to get session config from active profile
@@ -117,6 +122,9 @@ class SessionManager:
             sids = list(self._sessions)
         for sid in sids:
             await self.kill(sid, reason="engine_shutdown")
+            # The listener is going away, so no exit order can be delivered;
+            # there is nothing to keep the record for.
+            await self.remove(sid)
 
         logger.info("Session manager stopped")
 
@@ -155,27 +163,48 @@ class SessionManager:
     async def remove(self, session_id: str) -> bool:
         """Remove a session from tracking."""
         async with self._lock:
-            if session_id in self._sessions:
-                del self._sessions[session_id]
-                return True
-        return False
+            existed = session_id in self._sessions
+            self._sessions.pop(session_id, None)
+            # Queued commands and their output would otherwise accumulate per
+            # session for the life of the server.
+            self._command_queue.pop(session_id, None)
+        return existed
 
     async def kill(self, session_id: str, reason: str = "operator") -> bool:
-        """Terminate a session and notify the agent."""
+        """Order the agent to shut down, then forget the session once it may
+        have heard.
+
+        Deleting the record immediately left the implant running on target with
+        no session anyone could address — the opposite of what an operator
+        typing `sessions kill` expects. The exit order rides the normal command
+        queue and reaches the agent on its next check-in; the session is
+        dropped after the grace period either way.
+        """
+        import uuid
         async with self._lock:
             session = self._sessions.get(session_id)
             if not session:
                 return False
             session.state = SessionState.KILLED
+            session.killed_at = time.time()
             hostname = session.hostname
+            self._command_queue.setdefault(session_id, []).append({
+                "command_id": str(uuid.uuid4())[:12],
+                "command": "exit",
+                "queued_at": time.time(),
+                "status": "queued",
+                "result": None,
+            })
 
         self._audit.log_event(
             "session_killed",
             {"session_id": session_id, "reason": reason, "hostname": hostname},
             session=session_id,
         )
-        logger.info("Session killed: %s (reason: %s)", session_id, reason)
-        await self.remove(session_id)
+        logger.info(
+            "Session killed: %s (reason: %s) — exit ordered, purging after %ds",
+            session_id, reason, int(self._kill_grace_seconds),
+        )
         return True
 
     # ------------------------------------------------------------------ #
@@ -388,13 +417,19 @@ class SessionManager:
     # ------------------------------------------------------------------ #
 
     async def _monitor_loop(self) -> None:
-        """Periodically check for timed-out sessions."""
+        """Periodically expire timed-out and fully-killed sessions."""
         while True:
             try:
                 await asyncio.sleep(30)
                 now = time.time()
+                expired: List[str] = []
                 async with self._lock:
                     for sid, session in self._sessions.items():
+                        if session.state == SessionState.KILLED:
+                            # Kept only so the exit order can be delivered.
+                            if now - session.killed_at > self._kill_grace_seconds:
+                                expired.append(sid)
+                            continue
                         if session.state != SessionState.CONNECTED:
                             continue
                         if session.last_checkin and (now - session.last_checkin) > self._timeout_seconds:
@@ -405,6 +440,9 @@ class SessionManager:
                                 session=sid,
                             )
                             logger.warning("Session timed out: %s (%s)", sid, session.hostname)
+                for sid in expired:
+                    await self.remove(sid)
+                    logger.debug("Dropped killed session %s after grace period", sid)
             except asyncio.CancelledError:
                 break
             except Exception as exc:
