@@ -13,6 +13,10 @@ payloads/artifacts/
 # pin, and committing it would hand whoever has the repo the ability to
 # impersonate the team server to every fielded agent.
 data/tls/
+# The enrollment secret every fielded agent presents. Committing it makes the
+# check decorative for anyone who can read the repository, which is the same
+# audience that would have to be kept off the listener in the first place.
+data/keys/
 # Code-graph tool output (graph.html, AST cache). Regenerable with
 # `graphify update .`, and it lands inside the package when the tool is run
 # there, so nothing in it is source.

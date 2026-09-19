@@ -24,6 +24,13 @@ server:
   # reverse proxy in front of the HTTP listener works too).
   https_cert: ""
   https_key: ""
+  # Enrollment secret. The listener is a command channel: whoever registers a
+  # session can run commands against the operator's own fs_put/exec path. TLS
+  # proves the listener to the agent; this proves the agent to the listener.
+  # The secret is generated on first start and baked into every payload built
+  # afterwards, so it must be set before the first build of an engagement.
+  agent_auth: true
+  agent_auth_file: "./data/keys/enrollment.key"
 
 logging:
   level: "INFO"

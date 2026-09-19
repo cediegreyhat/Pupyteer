@@ -355,6 +355,15 @@ class PupyteerTUI:
         else:
             print(c("  [Channel]", theme.get("error")),
                   "plaintext callbacks — set server.tls before working a target")
+        # Encryption says nobody on the wire can read the sessions; it does not say
+        # who is allowed to start one. That is what the enrollment secret is for.
+        auth = server.get("agent_auth")
+        if auth is False:
+            print(c("  [Enrollment]", theme.get("error")),
+                  "unauthenticated — anything that reaches the port gets a session")
+        elif auth:
+            print(c("  [Enrollment]", theme.get("success")),
+                  "registrations checked against this server's secret")
         print(c(f"  [Operator]", theme.get("warning")), f"{server['operator']}")
         print(c(f"  [Profile]", theme.get("accent")), f"{status['state']['loaded_profile'] or 'none'}")
         print(c(f"  [Agents]", theme.get("info")), f"{status['state']['active_sessions']}")
@@ -544,7 +553,16 @@ class PupyteerTUI:
             self.render_warning("No active transports.")
             return
         for t in transports:
-            print(f"    {c(t['name'], self._theme.get('success'))} [{t['state']}]  sent={t['stats']['bytes_sent']}B  recv={t['stats']['bytes_received']}B")
+            stats = t["stats"]
+            # Whoever is knocking without the enrollment secret is the one fact in
+            # this table the operator has to notice, and it is absent until it happens.
+            rejected = stats.get("registrations_rejected", 0)
+            suffix = (
+                "  " + c(f"registrations rejected={rejected}",
+                         self._theme.get("error"))
+                if rejected else ""
+            )
+            print(f"    {c(t['name'], self._theme.get('success'))} [{t['state']}]  sent={stats['bytes_sent']}B  recv={stats['bytes_received']}B{suffix}")
 
     async def cmd_config(self, args: List[str]) -> None:
         if not args or args[0] == "list":

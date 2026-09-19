@@ -444,6 +444,11 @@ class PayloadBuilder:
             if tls_on:
                 build_log.append(
                     "Listener TLS: agent pins the listener certificate")
+            auth_secret = self._auth_secret_for_build()
+            build_log.append(
+                "Enrollment: agent presents this server's shared secret"
+                if auth_secret else
+                "Enrollment: server.agent_auth is off, any registration is accepted")
 
             artifact_path = build_dir / f"{payload_config.name}_{payload_config.platform.value}_{payload_config.arch.value}"
 
@@ -481,6 +486,7 @@ class PayloadBuilder:
                             arch=payload_config.arch.value,
                             tls=tls_on,
                             tls_cert_pem=tls_cert_pem,
+                            auth_secret=auth_secret,
                         )
                         pe_result = await pe_build.build(stub_cfg, artifact_path.with_suffix('.exe'))
                         if pe_result.status == "built":
@@ -514,6 +520,7 @@ class PayloadBuilder:
                         arch=payload_config.arch.value,
                         tls=tls_on,
                         tls_cert_pem=tls_cert_pem,
+                        auth_secret=auth_secret,
                     )
                     agent_code = stub_gen.generate(stub_cfg)
                     src_path = artifact_path.parent / f"{artifact_path.name}.py"
@@ -595,6 +602,19 @@ class PayloadBuilder:
         if material is None:
             return False, ""
         return True, material.cert_pem
+
+    def _auth_secret_for_build(self) -> str:
+        """The enrollment secret this server's listener will check registrations against.
+
+        Same argument as the TLS pin: resolving it here rather than passing it in
+        from the running server is what makes a payload built before startup and a
+        listener started after the build agree. Returns "" when agent
+        authentication is off, and the listener accepts any registration.
+        """
+        from pupyteer.server.core.enrollment import listener_secret
+
+        secret = listener_secret(self._config.get)
+        return secret or ""
 
     # PyInstaller and Nuitka both take a couple of minutes on a cold cache.
     _COMPILE_TIMEOUT_SECONDS = 900

@@ -30,6 +30,7 @@ import time
 import uuid
 from typing import Any, Dict, Optional
 
+from pupyteer.server.core.enrollment import secret_accepts
 from pupyteer.server.core.logging import AuditLogger
 from pupyteer.server.sessions.manager import SessionInfo
 
@@ -96,6 +97,10 @@ class AgentListener:
         # Supplied by TransportManager when server.tls is on. Absent means the
         # listener speaks plaintext JSON, which any tap on the wire can read.
         self._ssl_context = config.get("ssl_context")
+        # Supplied by TransportManager: the enrollment secret a register message
+        # has to carry. None disables the check, which is what server.agent_auth:
+        # false asks for.
+        self._auth_secret: Optional[str] = config.get("auth_secret")
         self._session_manager = session_manager
         self._audit = audit_logger
 
@@ -108,6 +113,9 @@ class AgentListener:
             "bytes_received": 0,
             "sessions_created": 0,
             "commands_dispatched": 0,
+            # Counted separately from connections: "lots of connections, no
+            # sessions" is what someone probing the listener looks like.
+            "registrations_rejected": 0,
         }
 
     # ------------------------------------------------------------------
@@ -290,6 +298,27 @@ class AgentListener:
         writer: asyncio.StreamWriter,
     ) -> Dict[str, Any]:
         """Create a new session and register it."""
+        if not secret_accepts(self._auth_secret, msg.get("auth")):
+            # Deliberately before anything is created: a session is a handler an
+            # operator can run commands through and push files to, so a stranger
+            # must not be able to conjure one by reaching the port.
+            self._stats["registrations_rejected"] += 1
+            logger.warning(
+                "Rejected registration from %s: enrollment secret %s",
+                remote,
+                "absent" if not msg.get("auth") else "wrong",
+            )
+            self._audit.log_event(
+                "registration_rejected",
+                {
+                    "remote_address": remote,
+                    "claimed_hostname": str(msg.get("hostname", ""))[:120],
+                    "reason": "bad_enrollment_secret",
+                },
+                result="error",
+            )
+            return {"type": "error", "message": "auth_failed"}
+
         session_id = str(uuid.uuid4())[:12]
 
         info = SessionInfo(

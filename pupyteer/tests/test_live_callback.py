@@ -58,8 +58,9 @@ class _EngineThread:
     from the test thread.
     """
 
-    def __init__(self, port: int):
+    def __init__(self, port: int, auth_secret_file: Optional[str] = None):
         self._port = port
+        self._auth_secret_file = auth_secret_file
         self.engine: Optional[PupyteerEngine] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[threading.Thread] = None
@@ -82,6 +83,9 @@ class _EngineThread:
             # Patch config before start
             self.engine.config.set("server.host", "127.0.0.1")
             self.engine.config.set("server.port", self._port)
+            if self._auth_secret_file is not None:
+                self.engine.config.set(
+                    "server.agent_auth_file", self._auth_secret_file)
             self._loop.run_until_complete(self.engine.start())
             self._ready.set()
             self._loop.run_forever()
@@ -113,12 +117,20 @@ class _EngineThread:
 # Fixtures
 # ---------------------------------------------------------------------------
 
+# Registrations are checked against an enrollment secret by default, so this
+# module supplies the one its clients present. The file lives in a temporary
+# directory: the configured default is relative to the working tree, and a test
+# run has no business generating a real team secret into a checkout.
+_TEST_SECRET = "live-callback-enrollment-secret"
+
 
 @pytest.fixture(scope="module")
-def engine_thread():
+def engine_thread(tmp_path_factory):
     """Start the engine once for all tests in this module."""
     port = _find_free_port()
-    thread = _EngineThread(port)
+    secret_file = tmp_path_factory.mktemp("live-callback") / "enrollment.key"
+    secret_file.write_text(_TEST_SECRET + "\n", encoding="utf-8")
+    thread = _EngineThread(port, auth_secret_file=str(secret_file))
     thread.start()
     _wait_for_port("127.0.0.1", port, timeout=5)
     yield thread, "127.0.0.1", port
@@ -149,12 +161,17 @@ def _recv_json(sock: socket.socket) -> Optional[Dict[str, Any]]:
 
 
 def _register_agent(
-    host: str, port: int, hostname: str = "test-agent"
+    host: str, port: int, hostname: str = "test-agent", auth: Optional[str] = None
 ) -> tuple:
-    """Register an agent and return (socket, session_id)."""
+    """Register an agent and return (socket, session_id).
+
+    ``auth`` overrides the enrollment secret this module's listener expects;
+    ``None`` means present the correct one.
+    """
     sock = _tcp_connect(host, port)
     _send_json(sock, {
         "type": "register",
+        "auth": _TEST_SECRET if auth is None else auth,
         "hostname": hostname,
         "os": "linux",
         "arch": "x86_64",
@@ -211,6 +228,77 @@ class TestLiveAgentRegistration:
         finally:
             sock1.close()
             sock2.close()
+
+
+class TestLiveEnrollment:
+    """Registration has to be the authenticated step.
+
+    A session is a handler: the operator can run commands through it and push
+    files to it. If reaching the port were enough to open one, anyone who found
+    the listener could fill the dashboard with machines that are not there.
+    """
+
+    def test_registration_without_the_secret_is_refused(self, engine_thread):
+        thread, host, port = engine_thread
+
+        before = thread.engine.transports.listener.stats["registrations_rejected"]
+
+        sock = _tcp_connect(host, port)
+        try:
+            _send_json(sock, {"type": "register", "hostname": "stranger"})
+            response = _recv_json(sock)
+            assert response is not None
+            assert response["type"] == "error"
+            assert response["message"] == "auth_failed"
+        finally:
+            sock.close()
+
+        after = thread.engine.transports.listener.stats["registrations_rejected"]
+        assert after == before + 1, "rejection was not counted"
+
+    def test_wrong_secret_is_refused(self, engine_thread):
+        """A near miss is a refusal, not a warning."""
+        thread, host, port = engine_thread
+        sock = _tcp_connect(host, port)
+        try:
+            _send_json(sock, {
+                "type": "register",
+                "auth": _TEST_SECRET[:-1] + ("0" if _TEST_SECRET[-1] != "0" else "1"),
+                "hostname": "almost",
+            })
+            response = _recv_json(sock)
+            assert response["type"] == "error"
+            assert response["message"] == "auth_failed"
+        finally:
+            sock.close()
+
+    def test_a_refused_registration_creates_no_session(self, engine_thread):
+        """The check has to run before anything is created, not after."""
+        thread, host, port = engine_thread
+
+        sessions_before = set(thread.engine.sessions.list_ids())
+        sock = _tcp_connect(host, port)
+        try:
+            _send_json(sock, {"type": "register", "hostname": "nope"})
+            _recv_json(sock)
+        finally:
+            sock.close()
+
+        assert set(thread.engine.sessions.list_ids()) == sessions_before, (
+            "rejection still opened a session"
+        )
+
+    def test_empty_secret_is_not_the_disabled_case(self, engine_thread):
+        """An agent built with no secret must not match a listener that expects one."""
+        thread, host, port = engine_thread
+        sock = _tcp_connect(host, port)
+        try:
+            _send_json(sock, {"type": "register", "auth": "", "hostname": "blank"})
+            response = _recv_json(sock)
+            assert response["type"] == "error"
+            assert response["message"] == "auth_failed"
+        finally:
+            sock.close()
 
 
 class TestLiveAgentCheckin:

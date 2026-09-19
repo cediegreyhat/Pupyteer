@@ -10,6 +10,7 @@ from pathlib import Path
 
 import yaml
 
+from pupyteer.server.core.enrollment import DEFAULT_SECRET_FILE
 from pupyteer.server.core.tls import DEFAULT_CERT_FILE, DEFAULT_KEY_FILE
 
 logger = logging.getLogger("pupyteer.config")
@@ -34,6 +35,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         # Names in the certificate besides server.host. Set them before the
         # certificate is first created; an existing one is never rewritten.
         "tls_hostnames": [],
+        # Registrations must carry this secret, so only payloads built by this
+        # server can become sessions. On by default: reaching the port should not
+        # be enough to hand someone a handler.
+        "agent_auth": True,
+        "agent_auth_file": DEFAULT_SECRET_FILE,
     },
     "logging": {
         "level": "INFO",

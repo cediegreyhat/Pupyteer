@@ -543,6 +543,94 @@ class TestDependencyAudit:
             assert result > 0
 
 
+# ─── Enrollment Secret Tests ─────────────────────────────────────────
+
+
+class TestEnrollmentSecret:
+    """The rule that decides which payloads may become sessions."""
+
+    class _Getter:
+        """A stand-in for ConfigManager.get over a fixed mapping."""
+
+        def __init__(self, values):
+            self._values = values
+
+        def __call__(self, key, default=None):
+            return self._values.get(key, default)
+
+    def test_a_secret_is_generated_once_and_reused(self, tmp_path):
+        from pupyteer.server.core.enrollment import ensure_team_secret
+
+        path = tmp_path / "keys" / "enrollment.key"
+        first = ensure_team_secret(str(path))
+        assert len(first) >= 32, "a guessable enrollment secret is not a boundary"
+        assert path.read_text(encoding="ascii").strip() == first
+        # Re-read, never regenerated: payloads already deployed carry the old one,
+        # and replacing it silently means none of them can check in.
+        assert ensure_team_secret(str(path)) == first
+
+    def test_an_empty_secret_file_is_reported_not_adopted(self, tmp_path):
+        from pupyteer.server.core.enrollment import ensure_team_secret
+
+        path = tmp_path / "enrollment.key"
+        path.write_text("  \n", encoding="ascii")
+        with pytest.raises(ValueError, match="restore the enrollment secret"):
+            ensure_team_secret(str(path))
+
+    def test_the_right_secret_admits_and_everything_else_refuses(self):
+        from pupyteer.server.core.enrollment import secret_accepts
+
+        assert secret_accepts("s3cret", "s3cret") is True
+        for presented in (None, "", "s3cre", "S3CRET", "s3cret!", 12345, ["s3cret"]):
+            assert secret_accepts("s3cret", presented) is False, repr(presented)
+
+    def test_only_a_disabled_check_admits_an_absent_secret(self):
+        """None means the operator turned auth off; '' means something went wrong."""
+        from pupyteer.server.core.enrollment import secret_accepts
+
+        assert secret_accepts(None, None) is True
+        assert secret_accepts(None, "anything") is True
+        assert secret_accepts("", "") is False
+
+    def test_registration_authentication_is_on_by_default(self, tmp_path):
+        from pupyteer.server.core.enrollment import listener_secret
+
+        secret_file = str(tmp_path / "enrollment.key")
+        on = self._Getter({"server.agent_auth": True,
+                           "server.agent_auth_file": secret_file})
+        assert listener_secret(on)
+
+        unused = str(tmp_path / "never-written.key")
+        off = self._Getter({"server.agent_auth": False,
+                            "server.agent_auth_file": unused})
+        assert listener_secret(off) is None
+        assert not Path(unused).exists(), (
+            "a disabled check must not generate a secret nobody will enforce")
+
+    def test_an_unrecognised_value_keeps_authentication_on(self, tmp_path):
+        """`agent_auth: maybe` is a typo, not a request for an open listener."""
+        from pupyteer.server.core.enrollment import listener_secret
+
+        for raw in ("", "maybe", "yes", "true", "on", None, 1):
+            getter = self._Getter({"server.agent_auth": raw,
+                                   "server.agent_auth_file": str(tmp_path / f"k{raw}.key")})
+            assert listener_secret(getter), f"agent_auth={raw!r} disabled authentication"
+
+    def test_the_documented_off_words_do_disable_it(self, tmp_path):
+        from pupyteer.server.core.enrollment import listener_secret
+
+        for raw in (False, "false", "0", "no", "off", "OFF"):
+            getter = self._Getter({"server.agent_auth": raw,
+                                   "server.agent_auth_file": str(tmp_path / "k.key")})
+            assert listener_secret(getter) is None, f"agent_auth={raw!r} still enforced"
+
+    def test_authentication_is_required_without_any_configuration(self):
+        """A config file that never mentions it must not open the listener."""
+        from pupyteer.server.core.config import DEFAULT_CONFIG
+
+        assert DEFAULT_CONFIG["server"]["agent_auth"] is True
+
+
 # ─── Secure Defaults Tests ───────────────────────────────────────────
 
 

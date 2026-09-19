@@ -15,6 +15,24 @@ def project_root():
     return PROJECT_ROOT
 
 
+@pytest.fixture(scope="session", autouse=True)
+def enrollment_secret_home(tmp_path_factory):
+    """Keep default-config listeners from writing a key into the checkout.
+
+    A listener started with the shipped config generates its enrollment secret on
+    first use. This repoints that default at a temp directory. It rewrites the
+    default rather than setting a `PUPYTEER_*` variable, because environment
+    overrides are applied last and would silently beat the explicit
+    `server.agent_auth_file` that the enrollment tests pin.
+    """
+    from pupyteer.server.core.config import DEFAULT_CONFIG
+    key_dir = tmp_path_factory.mktemp("keys")
+    original = DEFAULT_CONFIG["server"]["agent_auth_file"]
+    DEFAULT_CONFIG["server"]["agent_auth_file"] = str(key_dir / "enrollment.key")
+    yield
+    DEFAULT_CONFIG["server"]["agent_auth_file"] = original
+
+
 @pytest.fixture
 def pupyteer_package(project_root):
     """Import the main package to verify it loads cleanly."""

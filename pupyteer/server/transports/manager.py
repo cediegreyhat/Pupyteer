@@ -62,6 +62,9 @@ class TransportManager:
         self._listener: Optional[Any] = None  # AgentListener instance
         self._http_listener: Optional[Any] = None
         self._tls: Optional[Any] = None  # ListenerTLS once the listeners are up
+        # None until a listener is actually running; before that, no registration
+        # has been checked against anything.
+        self._auth_required: Optional[bool] = None
         self._listeners: list = []  # extra listeners (HTTP) shut down with the TCP one
 
     async def initialize(self) -> None:
@@ -129,12 +132,24 @@ class TransportManager:
         if tls is not None:
             logger.info("Listener TLS active, fingerprint SHA-256 %s", tls.fingerprint)
 
+        # ...and so does the enrollment secret a registration is checked against.
+        # Both listeners share one value: a payload built against one must not be
+        # turned away by the other.
+        from pupyteer.server.core.enrollment import listener_secret
+        auth_secret = listener_secret(self._config.get)
+        self._auth_required = auth_secret is not None
+        if auth_secret is None:
+            logger.warning(
+                "Agent authentication is disabled: anything that reaches %s:%d "
+                "can register a session", host, port)
+
         from pupyteer.server.transports.listener import AgentListener
         self._listener = AgentListener(
             config={
                 "host": host,
                 "port": port,
                 "ssl_context": tls.ssl_context if tls else None,
+                "auth_secret": auth_secret,
             },
             session_manager=session_manager,
             audit_logger=self._audit,
@@ -153,6 +168,7 @@ class TransportManager:
                     # server.tls wins over an externally supplied pair: it is the
                     # certificate payloads were built to pin.
                     "ssl_context": tls.ssl_context if tls else None,
+                    "auth_secret": auth_secret,
                     "certfile": self._config.get("server.https_cert", "") or None,
                     "keyfile": self._config.get("server.https_key", "") or None,
                 },
@@ -263,6 +279,17 @@ class TransportManager:
         if self._listener is None:
             return None
         return self._tls
+
+    @property
+    def listener_requires_auth(self) -> Optional[bool]:
+        """Whether registrations are checked against an enrollment secret.
+
+        None while no listener is running, so a status line cannot claim a check
+        that nothing is performing.
+        """
+        if self._listener is None:
+            return None
+        return self._auth_required
 
 
 class _PlaceholderSessionManager:

@@ -31,6 +31,9 @@ from pupyteer.payloads.manager import (
 def config(tmp_path):
     cfg = ConfigManager()
     cfg.set("paths.payload_artifacts", str(tmp_path))
+    # A build derives the enrollment secret from config, so point that file into
+    # tmp_path: a test run must not generate a real team secret into the checkout.
+    cfg.set("server.agent_auth_file", str(tmp_path / "enrollment.key"))
     return cfg
 
 
@@ -39,18 +42,23 @@ def audit(config):
     return AuditLogger(config)
 
 
+def _load_agent(agent_path: Path):
+    """Import a generated agent without running it (the __main__ guard holds)."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(agent_path.stem, str(agent_path))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _pinned_cert(agent_path: Path) -> str:
     """The certificate PEM compiled into a generated agent.
 
     Read from the imported module rather than the source text, so the escaping
     the template applies cannot hide a mismatch between build and listener.
     """
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location(agent_path.stem, str(agent_path))
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.TLS_CERT_PEM
+    return _load_agent(agent_path).TLS_CERT_PEM
 
 
 # ─── Spec Field Coverage ─────────────────────────────────────────
@@ -591,3 +599,63 @@ class TestListenerTlsIsBakedIn:
         code = Path(meta.artifact_path).read_text(encoding="utf-8")
         assert "TLS_ON = False" in code
         assert "BEGIN CERTIFICATE" not in code
+
+
+# ─── Enrollment Secret Tests ─────────────────────────────────────
+
+
+class TestEnrollmentSecretIsBakedIn:
+    """A payload is admitted to the listener only if it carries this server's
+    secret, so the builder and the transport manager have to read one value. If
+    they each invent their own, every payload is refused and nothing says so.
+    """
+
+    @pytest.fixture
+    def auth_config(self, config, tmp_path):
+        config.set("server.agent_auth_file", str(tmp_path / "team.key"))
+        return config
+
+    @pytest.mark.asyncio
+    async def test_build_compiles_in_the_secret_the_listener_checks(
+        self, auth_config, audit, tmp_path
+    ):
+        from pupyteer.server.core.enrollment import listener_secret
+
+        builder = PayloadBuilder(auth_config, audit)
+        meta = await builder.build(
+            PayloadConfig(name="auth-baked", payload_type=PayloadType.SCRIPT),
+            builder.generate_payload_id())
+
+        # The file is the listener's view, created by this build.
+        assert (tmp_path / "team.key").exists()
+        expected = listener_secret(auth_config.get)
+        assert _load_agent(Path(meta.artifact_path)).AUTH_SECRET == expected
+
+    @pytest.mark.asyncio
+    async def test_a_second_build_reuses_the_secret(self, auth_config, audit, tmp_path):
+        """A new secret strands every payload built before it, quietly."""
+        from pupyteer.server.core.enrollment import listener_secret
+
+        builder = PayloadBuilder(auth_config, audit)
+        first = tmp_path / "team.key"
+        await builder.build(
+            PayloadConfig(name="reuse-c", payload_type=PayloadType.SCRIPT),
+            builder.generate_payload_id())
+        stamp, secret = first.stat().st_mtime_ns, listener_secret(auth_config.get)
+
+        await builder.build(
+            PayloadConfig(name="reuse-d", payload_type=PayloadType.SCRIPT),
+            builder.generate_payload_id())
+        assert first.stat().st_mtime_ns == stamp
+        assert listener_secret(auth_config.get) == secret
+
+    @pytest.mark.asyncio
+    async def test_auth_off_builds_an_agent_with_nothing_to_present(
+        self, auth_config, audit
+    ):
+        auth_config.set("server.agent_auth", False)
+        builder = PayloadBuilder(auth_config, audit)
+        meta = await builder.build(
+            PayloadConfig(name="open-build", payload_type=PayloadType.SCRIPT),
+            builder.generate_payload_id())
+        assert _load_agent(Path(meta.artifact_path)).AUTH_SECRET == ""

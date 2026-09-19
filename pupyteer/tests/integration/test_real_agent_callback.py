@@ -29,6 +29,7 @@ sys.path.insert(
 from pupyteer.agent.core.stub import AgentStubGenerator, StubConfig
 from pupyteer.server.core.config import ConfigManager
 from pupyteer.server.core.engine import PupyteerEngine
+from pupyteer.server.core.enrollment import ensure_team_secret
 from pupyteer.server.core.tls import certificate_fingerprint
 
 
@@ -36,6 +37,19 @@ def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
+
+
+# Written into tmp_path by every server config below, so a test run never
+# generates a real enrollment secret into the working tree, and never depends on
+# one left there by a previous run.
+_TEST_SECRET = "0123456789abcdef" * 4
+_ENROLLMENT_FILE = "enrollment.key"
+
+
+def _put_secret(tmp_path: Path) -> str:
+    """Place the enrollment secret where these tests point server.agent_auth_file."""
+    (tmp_path / _ENROLLMENT_FILE).write_text(_TEST_SECRET + "\n", encoding="ascii")
+    return _TEST_SECRET
 
 
 def _wait_for(predicate, timeout: float, interval: float = 0.2):
@@ -50,8 +64,13 @@ def _wait_for(predicate, timeout: float, interval: float = 0.2):
 
 
 def _generate_agent(dir_path: Path, name: str, **overrides) -> Path:
-    """Render the real stub template to a file and return its path."""
-    settings = {"transport": "tcp", "host": "127.0.0.1"}
+    """Render the real stub template to a file and return its path.
+
+    Carries the enrollment secret by default, because that is what the server in
+    these tests checks: an agent built without one proves the *transport* under
+    test and not a bug in enrollment.
+    """
+    settings = {"transport": "tcp", "host": "127.0.0.1", "auth_secret": _TEST_SECRET}
     settings.update(overrides)
     code = AgentStubGenerator().generate(StubConfig(name=name, **settings))
     path = dir_path / f"{name}_agent.py"
@@ -156,9 +175,11 @@ class TestHTTPTransport:
             "server": {
                 "host": "127.0.0.1", "port": listener_port,
                 "http_port": http_port, "http_uri": "/index.html",
+                "agent_auth_file": str(tmp_path / _ENROLLMENT_FILE),
             },
             "operator": {"name": "lab-op"},
         }), encoding="utf-8")
+        _put_secret(tmp_path)
 
         engine = PupyteerEngine(str(config_path))
         agent = _generate_agent(
@@ -177,6 +198,147 @@ class TestHTTPTransport:
             await engine.stop()
 
 
+class TestEnrollment:
+    """Encryption and admission are different questions.
+
+    TLS can make the channel unreadable while the listener still hands a session
+    — a command channel with file transfer — to anything that connects. These run
+    real generated agents against a real listener, because the failure being
+    guarded against is a payload and a server that disagree.
+    """
+
+    def test_the_generated_agent_presents_its_secret(self, tmp_path):
+        """Not just a constant defined: the register message has to carry it."""
+        agent = _load_agent_module(_generate_agent(tmp_path, "presents", port=1))
+        assert agent.AUTH_SECRET == _TEST_SECRET
+
+        captured = {}
+
+        class _Recorder:
+            def request(self, msg):
+                captured.update(msg)
+                return {"type": "registered", "session_id": "s-1"}
+
+        assert agent._register(_Recorder()) == "s-1"
+        assert captured["auth"] == _TEST_SECRET
+
+    @pytest.mark.asyncio
+    async def test_an_agent_without_the_secret_is_refused_and_gives_up(
+        self, tmp_path, listener_port
+    ):
+        """Retrying a rejection forever looks like bad egress, not a wrong build."""
+        engine = PupyteerEngine(_write_server_config(tmp_path, listener_port))
+        await engine.start()
+        try:
+            agent = _generate_agent(tmp_path, "uninvited", port=listener_port,
+                                    sleep=1, jitter=0, auth_secret="")
+            # to_thread, because subprocess.run would block the loop the listener
+            # needs in order to answer the registration.
+            proc = await asyncio.to_thread(
+                subprocess.run, [sys.executable, str(agent)], cwd=str(tmp_path),
+                capture_output=True, timeout=60)
+            joined = (proc.stderr + proc.stdout).decode("utf-8", "replace").lower()
+            assert proc.returncode == 3, (
+                f"a rejected agent kept beaconing (rc={proc.returncode}): {joined[-2000:]}"
+            )
+            assert "enrollment secret" in joined, joined[-2000:]
+            assert not engine.sessions.list_ids(), "a refused registration opened a session"
+        finally:
+            await engine.stop()
+
+    @pytest.mark.asyncio
+    async def test_a_wrong_secret_is_refused(self, tmp_path, listener_port):
+        engine = PupyteerEngine(_write_server_config(tmp_path, listener_port))
+        await engine.start()
+        try:
+            agent = _generate_agent(tmp_path, "wrongsecret", port=listener_port,
+                                    sleep=1, jitter=0, auth_secret=_TEST_SECRET + "x")
+            proc = await asyncio.to_thread(
+                subprocess.run, [sys.executable, str(agent)], cwd=str(tmp_path),
+                capture_output=True, timeout=60)
+            assert proc.returncode == 3
+            assert not engine.sessions.list_ids()
+        finally:
+            await engine.stop()
+
+    @pytest.mark.asyncio
+    async def test_turning_agent_auth_off_admits_an_unauthenticated_agent(
+        self, tmp_path, listener_port
+    ):
+        """The escape hatch has to work, or an operator cannot recover a listener
+
+        that lost its secret file — and the warning that says so has to be the
+        true one.
+        """
+        config_path = _write_server_config(tmp_path, listener_port, agent_auth=False)
+        engine = PupyteerEngine(config_path)
+        agent = _generate_agent(tmp_path, "open-door", port=listener_port,
+                                sleep=1, jitter=0, auth_secret="")
+        proc = _start_agent(agent, tmp_path)
+        try:
+            await engine.start()
+            session_id = await _await_session(engine)
+            assert session_id, "agent_auth off still refused: %s" % _drain(proc)
+            assert engine.get_status()["config"]["agent_auth"] is False
+        finally:
+            _stop_agent(proc)
+            await engine.stop()
+
+    @pytest.mark.asyncio
+    async def test_the_http_listener_applies_the_same_rule(self, tmp_path, listener_port):
+        """Two listeners, one admission rule.
+
+        The HTTP listener is a separate class with its own config dict, so the
+        secret has to reach it too — otherwise a target that cannot reach the TCP
+        port finds the door that was supposed to be closed.
+        """
+        http_port = _free_port()
+        config_path = tmp_path / "http-auth.yaml"
+        config_path.write_text(yaml.safe_dump({
+            "server": {
+                "host": "127.0.0.1", "port": listener_port,
+                "http_port": http_port, "http_uri": "/index.html",
+                "agent_auth_file": str(tmp_path / _ENROLLMENT_FILE),
+            },
+            "operator": {"name": "lab-op"},
+        }), encoding="utf-8")
+        _put_secret(tmp_path)
+
+        engine = PupyteerEngine(str(config_path))
+        agent = _generate_agent(tmp_path, "http-uninvited", transport="http",
+                                port=http_port, http_uri="/index.html",
+                                sleep=1, jitter=0, auth_secret="")
+        proc = _start_agent(agent, tmp_path)
+        try:
+            await engine.start()
+            # The agent stops on auth_failed and nowhere else, so its exit is the
+            # proof the HTTP listener really saw the request and turned it down —
+            # a missing session alone is also what a broken transport produces.
+            deadline = time.time() + 30
+            while time.time() < deadline and proc.poll() is None:
+                await asyncio.sleep(0.25)
+            assert proc.returncode == 3, (
+                f"http agent was not refused (rc={proc.returncode}): {_drain(proc)}")
+            assert not engine.sessions.list_ids()
+        finally:
+            _stop_agent(proc)
+            await engine.stop()
+
+    @pytest.mark.asyncio
+    async def test_the_running_listener_reports_whether_it_checks(
+        self, tmp_path, listener_port
+    ):
+        """A status line claiming a check that nothing performs is worse than none."""
+        engine = PupyteerEngine(_write_server_config(tmp_path, listener_port))
+        assert engine.get_status()["config"]["agent_auth"] is None, (
+            "an unstarted listener must not report an admission rule")
+        await engine.start()
+        try:
+            assert engine.get_status()["config"]["agent_auth"] is True
+        finally:
+            await engine.stop()
+
+
 def _write_tls_server_config(tmp_path, port: int) -> str:
     """A server config that speaks TLS, with its material kept inside tmp_path.
 
@@ -190,9 +352,11 @@ def _write_tls_server_config(tmp_path, port: int) -> str:
             "tls_cert": str(tmp_path / "listener.crt"),
             "tls_key": str(tmp_path / "listener.key"),
             "tls_hostnames": ["127.0.0.1"],
+            "agent_auth_file": str(tmp_path / _ENROLLMENT_FILE),
         },
         "operator": {"name": "lab-op"},
     }), encoding="utf-8")
+    _put_secret(tmp_path)
     return str(config_path)
 
 
@@ -300,9 +464,11 @@ class TestTLS:
                 "http_port": http_port, "http_uri": "/index.html", "tls": True,
                 "tls_cert": str(tmp_path / "hlistener.crt"),
                 "tls_key": str(tmp_path / "hlistener.key"),
+                "agent_auth_file": str(tmp_path / _ENROLLMENT_FILE),
             },
             "operator": {"name": "lab-op"},
         }), encoding="utf-8")
+        _put_secret(tmp_path)
 
         engine = PupyteerEngine(str(config_path))
         await engine.start()
@@ -607,12 +773,18 @@ class TestOperatorShell:
             await engine.stop()
 
 
-def _write_server_config(tmp_path, port: int) -> str:
+def _write_server_config(tmp_path, port: int, **server_overrides) -> str:
     config_path = tmp_path / "pupyteer.yaml"
+    server = {
+        "host": "127.0.0.1", "port": port,
+        "agent_auth_file": str(tmp_path / _ENROLLMENT_FILE),
+    }
+    server.update(server_overrides)
     config_path.write_text(yaml.safe_dump({
-        "server": {"host": "127.0.0.1", "port": port},
+        "server": server,
         "operator": {"name": "lab-op"},
     }), encoding="utf-8")
+    _put_secret(tmp_path)
     return str(config_path)
 
 

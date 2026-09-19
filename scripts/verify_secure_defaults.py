@@ -236,6 +236,64 @@ def verify_ssl_defaults() -> List[str]:
     return findings
 
 
+def verify_registration_auth() -> List[str]:
+    """Verify that reaching the listener is not enough to be handed a session.
+
+    TLS keeps the channel private; the enrollment secret is the only thing that
+    decides *who may open a session at all*. Get this wrong and whoever finds the
+    port gets a dashboard full of handlers they can queue commands into.
+    """
+    findings = []
+
+    try:
+        from pupyteer.server.core.config import DEFAULT_CONFIG
+        from pupyteer.server.core.enrollment import secret_accepts
+    except ImportError as exc:
+        return [f"Could not import the enrollment module to verify it: {exc}"]
+
+    server = DEFAULT_CONFIG.get("server", {})
+    if server.get("agent_auth") is not True:
+        findings.append(
+            "server.agent_auth should default to True: anyone who can reach the "
+            "listener would otherwise get a session without presenting anything")
+    if not server.get("agent_auth_file"):
+        findings.append(
+            "server.agent_auth_file has no default, so a build could not find the "
+            "secret to compile into a payload")
+
+    # The rule itself, in both directions: the right secret works, and nothing
+    # close to it does. An "expected" of None is the only thing that admits an
+    # absent secret, and that is the operator's explicit server.agent_auth: false.
+    if secret_accepts("gate-secret", "gate-secret") is not True:
+        findings.append("a correct enrollment secret is being rejected")
+    for presented in (None, "", "gate-secre", "GATE-SECRET", 12345, ["gate-secret"]):
+        if secret_accepts("gate-secret", presented) is not False:
+            findings.append(f"an enrollment secret of {presented!r} is being accepted")
+    if secret_accepts("", "") is not False:
+        findings.append(
+            "an empty expected secret admits anyone, which is a misconfiguration "
+            "and not the same statement as auth being off")
+
+    try:
+        from pupyteer.agent.core.stub import AgentStubGenerator, StubConfig
+    except ImportError as exc:
+        findings.append(f"Could not import the agent stub to verify enrollment: {exc}")
+        return findings
+
+    agent = AgentStubGenerator().generate(
+        StubConfig(name="gate-auth", auth_secret="gate-secret"))
+    if '"auth": AUTH_SECRET' not in agent:
+        findings.append(
+            "the generated agent does not present its enrollment secret when registering")
+    if 'AUTH_SECRET = "gate-secret"' not in agent:
+        findings.append("StubConfig.auth_secret does not reach the generated agent")
+    # A refusal the agent retries forever looks like a target with bad egress.
+    if "auth_failed" not in agent:
+        findings.append("the generated agent does not react to a rejected enrollment")
+
+    return findings
+
+
 def main():
     # Status lines use check/cross glyphs; the default Windows console codepage
     # cannot encode them and raises, which would fail the check it just passed.
@@ -267,7 +325,7 @@ def main():
     all_findings = {}
     
     # Check 1: Hardcoded secrets
-    print("\n[1/4] Scanning for hardcoded secrets...")
+    print("\n[1/5] Scanning for hardcoded secrets...")
     secret_findings = scan_for_secrets(project_root)
     if secret_findings:
         all_findings["hardcoded_secrets"] = []
@@ -282,7 +340,7 @@ def main():
         print("  No hardcoded secrets found. ✓")
     
     # Check 2: Config defaults
-    print("\n[2/4] Verifying config defaults...")
+    print("\n[2/5] Verifying config defaults...")
     config_findings = check_config_defaults()
     if config_findings:
         all_findings["config_defaults"] = config_findings
@@ -292,7 +350,7 @@ def main():
         print("  Config defaults are secure. ✓")
     
     # Check 3: File permissions
-    print("\n[3/4] Checking file permissions...")
+    print("\n[3/5] Checking file permissions...")
     perm_findings = check_file_permissions(project_root)
     if perm_findings:
         all_findings["file_permissions"] = perm_findings
@@ -302,7 +360,7 @@ def main():
         print("  File permissions are appropriate. ✓")
     
     # Check 4: SSL/TLS defaults
-    print("\n[4/4] Verifying SSL/TLS defaults...")
+    print("\n[4/5] Verifying SSL/TLS defaults...")
     ssl_findings = verify_ssl_defaults()
     if ssl_findings:
         all_findings["ssl_defaults"] = ssl_findings
@@ -310,6 +368,16 @@ def main():
             print(f"  WARNING: {f}")
     else:
         print("  SSL/TLS defaults are secure. ✓")
+    
+    # Check 5: Agent enrollment
+    print("\n[5/5] Verifying agent registration is authenticated...")
+    enroll_findings = verify_registration_auth()
+    if enroll_findings:
+        all_findings["registration_auth"] = enroll_findings
+        for f in enroll_findings:
+            print(f"  WARNING: {f}")
+    else:
+        print("  Only payloads carrying this server's secret can register. ✓")
     
     # Summary
     print(f"\n{'=' * 70}")

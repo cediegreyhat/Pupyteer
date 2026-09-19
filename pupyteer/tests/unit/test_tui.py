@@ -386,6 +386,29 @@ class TestPupyteerTUIRender:
         assert "plaintext" not in out
         assert "TLS" in out and "abababababababab" in out
 
+    def test_banner_warns_when_anyone_may_register(self, tui, capsys):
+        """Encryption and admission are separate facts; the banner shows both."""
+        tui._engine.get_status.return_value["config"]["agent_auth"] = False
+        tui.render_banner()
+        out = capsys.readouterr().out
+        assert "Enrollment" in out
+        assert "unauthenticated" in out
+
+    def test_banner_says_the_listener_checks_registrations(self, tui, capsys):
+        tui._engine.get_status.return_value["config"]["agent_auth"] = True
+        tui.render_banner()
+        out = capsys.readouterr().out
+        assert "Enrollment" in out
+        assert "unauthenticated" not in out
+
+    def test_banner_stays_quiet_about_enrollment_before_the_listener_starts(
+        self, tui, capsys
+    ):
+        """None means nothing is enforcing anything yet; claiming otherwise lies."""
+        tui._engine.get_status.return_value["config"]["agent_auth"] = None
+        tui.render_banner()
+        assert "Enrollment" not in capsys.readouterr().out
+
     def test_render_dashboard(self, tui, capsys):
         tui.render_dashboard()
         captured = capsys.readouterr()

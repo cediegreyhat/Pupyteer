@@ -72,6 +72,7 @@ server:
   http_port: 8080   # HTTP callbacks; 0 disables them
   http_uri: "/index.html"
   tls: true         # serve both listeners over TLS; payloads pin the certificate
+  agent_auth: true  # require payloads to present this server's enrollment secret
 ```
 
 `tls: true` generates a self-signed pair at `server.tls_cert` / `server.tls_key`
@@ -80,6 +81,14 @@ built afterwards, so the agent trusts one certificate and nothing else. It is of
 by default because it changes what payloads can connect — turn it on before the
 server starts and before you build, and reuse the same key pair, since replacing
 it strands payloads already in the field.
+
+`agent_auth` (on by default) is the other half: TLS proves the listener to the
+agent, the enrollment secret proves the agent to the listener. On first use the
+server generates a secret at `server.agent_auth_file` and every payload built
+afterwards bakes it into its `register` message; a registration without it is
+refused before a session is created, so finding the open port is no longer enough
+to get a handler. Turn it off with `agent_auth: false` only on an interface you
+already trust; the banner and a startup warning say when it is off.
 
 `--transport https` works with `tls: true`, or with `server.https_cert` /
 `server.https_key` for a certificate you obtained yourself, or against a reverse
@@ -248,7 +257,7 @@ git-ignored.
 .venv/bin/python -m pytest pupyteer/tests/integration/ -v
 ```
 
-**Current test count: 774 tests passing** (`pytest pupyteer/tests`)
+**Current test count: 798 tests passing** (`pytest pupyteer/tests`)
 
 ---
 
@@ -271,6 +280,13 @@ section describes what the running code does, not what its modules could do.
   certificate for a bare team-server IP. `--transport https` reaches the same
   listener over `https://`. A certificate already in use is never replaced under
   those paths — regenerating it would strand every payload in the field.
+- **Authenticated agent enrollment** — with `server.agent_auth` on (the default)
+  the server keeps a generated secret at `server.agent_auth_file`; a `register`
+  that does not present it is refused *before* any session exists, counted in the
+  listener stats and written to the audit log as `registration_rejected`. Payloads
+  built by this server compile that secret into their `register` message, and an
+  agent whose enrollment is refused exits instead of beaconing against a server
+  that will never admit it. Both listeners apply the same check.
 - **Verification gates** — `scripts/verify_secure_defaults.py --strict` and
   `scripts/audit_deps.py` both exit non-zero on findings
 
@@ -281,11 +297,13 @@ section describes what the running code does, not what its modules could do.
   over HTTP is encoding, not encryption. Turn on `server.tls` *before* building
   payloads and before starting the server (the listener reads it when it binds),
   and assume anything on the path can read your commands and results otherwise.
-- **Agent registration is unauthenticated.** Pinning proves the *listener* to the
-  agent; nothing proves the agent to the listener. Anyone who can reach the port
-  can register a session and have commands run against the operator's own
-  `fs_put`/`exec` path. Bind the listener to an address you control access to;
-  the protocol will not do it for you.
+- **Enrollment is one shared secret, not per-agent credentials.** Every payload
+  this server builds carries the same string, so it identifies the team server,
+  not the host: whoever recovers a dropped binary can enroll sessions as if they
+  were you, and so can whoever reads `data/keys/enrollment.key`. Rotating it
+  strands everything already in the field — there is no re-keying channel, because
+  an agent that cannot register cannot receive a new secret. `server.agent_auth:
+  false` removes the check entirely.
 - **There is no operator login in the running tool.** `server/core/auth.py` and
   `agent/core/auth.py` implement roles, JWT and a challenge-response signer, and
   `security.operators` in the default config carries an `admin` entry — but
