@@ -1,30 +1,39 @@
 #!/usr/bin/env python3
-# -*- coding: UTF8 -*-
+# -*- coding: UTF-8 -*-
 
 from setuptools import setup, find_packages
 import os
 import sys
 
-requirements = [x.strip() for x in open("requirements.txt", "r").readlines()]
-#requirements = [f"{line.split('#egg=')[-1]} @ {line}" if "#egg=" in line else line for line in requirements]
+requirements = [x.strip() for x in open("requirements.txt", "r").readlines() if x.strip() and not x.strip().startswith("#")]
 
 setup(
-    name='pupy',
-    version='3.0.0',
-    packages=find_packages(where='.', include=['pupy*']), 
-    package_data={'pupy': ['conf/**', 'external/**', 'packages/**', 'library_patches_py3/**', 'library_patches_py2/**']},
-    license_files = ('LICENSE'),
-    author='n1nj4sec',
-    author_email='contact@n1nj4.eu',
-    description='Pupy C2 is an opensource, cross-platform (Windows, Linux, OSX, Android) remote administration and post-exploitation tool in python',
-    #long_description='Pupy C2 Framework',
-    #long_description_content_type='text/x-rst',
-    url='https://github.com/n1nj4sec/pupy',
-    keywords=["python", "pentest", "cybersecurity", "redteam", "C2", "command and control", "post-exploitation"],
+    name='pupyteer',
+    version='1.0.0',
+    packages=find_packages(where='.', include=['pupyteer*']),
+    package_data={'pupyteer': ['conf/**', 'external/**', 'config/**']},
+    license_files=('LICENSE',),
+    author='Pupyteer Team',
+    author_email='',
+    description='Pupyteer — Evasion-first C2 Framework for Red Team Operations',
+    url='https://github.com/cediephyte/pupyteer',
+    keywords=["python", "pentest", "cybersecurity", "redteam", "C2", "command and control", "post-exploitation", "evasion"],
     entry_points={
         'console_scripts': [
-            'pupysh = pupy.cli.pupysh:main'
+            'pupyteer = pupyteer.main:main'
         ]
     },
-    install_requires=requirements
+    install_requires=requirements,
+    python_requires='>=3.9',
+    classifiers=[
+        "Development Status :: 4 - Beta",
+        "Intended Audience :: Security Researchers",
+        "License :: OSI Approved :: BSD License",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.9",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Topic :: Security",
+    ],
 )

@@ -48,3 +48,22 @@ build
 pupy.egg-info
 .pupy_history
 pupyvenv
+
+# Pupyteer-specific temp/generated
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.pupyteer_history
+.venv/
+*.egg-info/
+
+# Generated artifacts
+logs/
+payloads/artifacts/
+graphify-out/cache/
+
+# IDE
+.idea/
+.vscode/
+*.swp

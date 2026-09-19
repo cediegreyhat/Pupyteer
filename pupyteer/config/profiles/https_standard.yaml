@@ -1,0 +1,27 @@
+profile:
+  name: "HTTPS-Standard"
+  version: "1.0"
+
+transport:
+  protocol: "tcp"
+  host: "0.0.0.0"
+  port: 8443
+
+session:
+  heartbeat_interval: 30
+  timeout: 300
+  jitter: 0.2
+
+encoding:
+  mode: "raw"
+
+logging:
+  level: "INFO"
+
+timeouts:
+  connect: 30
+  response: 60
+
+security:
+  require_auth: true
+  token_ttl: 3600

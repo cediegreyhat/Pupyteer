@@ -1,0 +1,45 @@
+# Pupyteer Default Configuration
+# Copy to ~/.config/pupyteer/config.yaml or ./pupyteer.yaml
+
+server:
+  host: "0.0.0.0"
+  port: 8443
+  backlog: 10
+
+logging:
+  level: "INFO"
+  format: "json"
+  file: null  # or path to log file
+
+operator:
+  name: "redteam-operator"
+  theme: "dark"
+
+profile:
+  default: "HTTPS-Standard"
+
+session:
+  timeout_seconds: 300
+
+tasks:
+  max_concurrent: 5
+
+security:
+  require_auth: true
+  token_ttl: 3600
+  max_failed_logins: 5
+  # Development operators (replace with proper credential management)
+  operators:
+    admin: "changeme"
+
+paths:
+  payload_artifacts: "./payloads/artifacts"
+  profiles: "./config/profiles"
+  logs: "./logs"
+
+evasion:
+  test_mode: false  # MUST be explicitly enabled for lab use
+  history_path: "./logs/evasion_history.json"
+  litterbox_url: ""  # e.g., http://localhost:8080
+  litterbox_token: ""  # set via PUPYTEER_EVASION__LITTERBOX_TOKEN
+  litterbox_timeout: 120
