@@ -40,9 +40,22 @@ Either from the console:
 
 ```
 pupyteer > payloads build --name test-payload --platform linux --arch x64 \
-             --type executable --transport tcp --host 192.168.100.100 --port 8443 \
+             --type script --transport tcp --host 192.168.100.100 --port 8443 \
              --profile HTTPS-Standard --sleep 30 --jitter 25
 ```
+
+`--type script` is the portable path: it emits a standalone `.py` agent that runs
+on the target with nothing but a Python interpreter.
+
+`--type executable` runs PyInstaller or Nuitka as a real subprocess. Both freeze
+an binary for the machine that builds it, so:
+
+- the tool has to be installed on the team server (`pip install pyinstaller`), and
+- `--platform` has to match the team server's own OS — you cannot produce a Linux
+  ELF from a Windows host, or the reverse.
+
+Either way the build fails and says so rather than handing back a file with an
+executable's name and none of its contents.
 
 `--sleep` / `--jitter` set the beacon interval compiled into the payload.
 `--persistence` is **off by default**: the agent only installs a registry /
@@ -129,11 +142,11 @@ PUPYTEER
   │   ├── Session Manager      — agent lifecycle, tagging, interaction
   │   ├── Task Queue           — async priority task scheduling
   │   ├── Profile Manager      — malleable C2 profiles (YAML)
-  │   ├── Transport Manager    — HTTP/HTTPS/TCP/DNS/DoH/DoT/NamedPipe
+  │   ├── Transport Manager    — TCP + HTTP/HTTPS listeners (see Transports)
   │   ├── Module Registry      — pluggable modules with ABC interface
   │   ├── Payload Manager      — build, versioning, artifact lifecycle
   │   ├── Evasion Engine       — obfuscation + Litterbox analysis
-  │   ├── Auth Layer           — mTLS + JWT + challenge-response
+  │   ├── Auth Layer           — roles/JWT implemented, not yet wired
   │   ├── Audit Logger         — structured JSON with redaction
   │   └── RBAC                 — VIEWER/OPERATOR/ADMIN/SYSTEM
   │
@@ -163,7 +176,7 @@ PUPYTEER
 | **Sessions** | list/info/interact/rename/kill/tag/search, chunked file upload & download, screen capture, audit trail |
 | **Tasks** | Priority queue (CRITICAL → BACKGROUND), async execution, tracking |
 | **Evasion** | XOR/AES/RC4 obfuscation, PE manipulation, anti-sandbox/debug/VM, Litterbox integration |
-| **Security** | mTLS 1.2+, JWT, RBAC, input validation, credential redaction, session auth |
+| **Security** | audit trail with redaction, input validation, optional TLS on callbacks (see Security for what is not wired) |
 | **Audit** | JSON-structured logs, operator attribution, redaction, rotation, query API |
 | **TUI** | ASCII banner, themes, autocomplete, history, resize handling, dashboard |
 
@@ -227,23 +240,50 @@ git-ignored.
 .venv/bin/python -m pytest pupyteer/tests/integration/ -v
 ```
 
-**Current test count: 754 tests passing** (`pytest pupyteer/tests`)
+**Current test count: 758 tests passing** (`pytest pupyteer/tests`)
 
 ---
 
 ## 🔒 Security
 
-Pupyteer is designed as security-sensitive software:
+**Read this section before using Pupyteer against anything.** A C2 framework that
+overstates its own protections is worse than one with fewer features, so this
+section describes what the running code does, not what its modules could do.
 
-- **Authentication** — mTLS 1.2+, JWT with TTL, challenge-response registration
-- **Authorization** — RBAC with VIEWER/OPERATOR/ADMIN/SYSTEM roles
-- **Secure Defaults** — No hardcoded credentials, encrypted channels by default
-- **Input Validation** — All operator inputs validated before execution
-- **Audit Logging** — Every action logged with operator attribution
-- **Credential Redaction** — Secrets never stored in audit logs
-- **Verification Gates** — `scripts/verify_secure_defaults.py --strict` (secrets,
-  config defaults, file permissions, TLS settings) and `scripts/audit_deps.py`
-  (dependency vulnerabilities); both exit non-zero on findings
+### What works today
+
+- **Audit logging** — operator actions recorded with attribution
+- **Credential redaction** — secrets are kept out of audit logs
+- **Input validation** — operator inputs checked before execution
+- **Transport hardening available** — `--transport https` with
+  `server.https_cert`/`server.https_key`, or a reverse proxy holding a real
+  certificate, gives the callbacks TLS. Agents verify server certificates; there
+  is no verification bypass.
+- **Verification gates** — `scripts/verify_secure_defaults.py --strict` and
+  `scripts/audit_deps.py` both exit non-zero on findings
+
+### What does not work yet
+
+- **The session channel is plaintext by default.** Over the TCP listener, and the
+  HTTP listener without TLS, messages are newline-delimited JSON — base64 over
+  HTTP is encoding, not encryption. Assume every command you type and every
+  result that comes back is readable to anyone on the path unless you put TLS on
+  it yourself.
+- **Agent registration is unauthenticated.** Anyone who can reach the listener
+  port can register a session and have commands run against the operator's own
+  `fs_put`/`exec` path. Bind the listener to an address you control access to;
+  the protocol will not do it for you.
+- **There is no operator login in the running tool.** `server/core/auth.py` and
+  `agent/core/auth.py` implement roles, JWT and a challenge-response signer, and
+  `security.operators` in the default config carries an `admin` entry — but
+  nothing calls `authenticate()`, so no code path enforces any of it. The console
+  is local-only today, which is why this is not yet exposed; it is not a defence.
+  Do not treat the shipped credential as a real password.
+- **There is no payload-level cipher.** `StubConfig.obfuscation_key` keys the
+  string-table XOR used to obfuscate the script; it is not, and never was, an
+  encryption layer for the channel. Confidentiality comes from TLS only.
+
+Treat network-level access control on the team server as part of the deployment.
 
 ---
 

