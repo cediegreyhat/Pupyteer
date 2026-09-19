@@ -5,6 +5,9 @@ Provides MSF-style session interaction:
 - sessions interact <id> — Interactive session shell
 - sessions kill <id> — Kill session
 - sessions info <id> — Session details
+- sessions rename <id> <name> — Relabel a session for operators
+- sessions tag <id> <tag> — Tag a session
+- sessions search <query> — Search sessions
 - sessions route <id> <module> — Run module on session
 """
 from __future__ import annotations
@@ -152,6 +155,79 @@ async def sessions_info(tui: Any, args: List[str]) -> Dict[str, Any]:
     return {"status": "ok", "session": d}
 
 
+async def sessions_rename(tui: Any, args: List[str]) -> Dict[str, Any]:
+    """Rename a session's operator-visible hostname label.
+
+    Usage: sessions rename <id> <name>
+    """
+    if len(args) < 2:
+        tui.render_error("Usage: sessions rename <id> <name>")
+        return {"status": "error", "error": "Usage: sessions rename <id> <name>"}
+
+    session_id, new_name = args[0], " ".join(args[1:])
+    if await tui._engine.sessions.get(session_id) is None:
+        tui.render_error(f"Session not found: {session_id}")
+        return {"status": "error", "error": f"Session not found: {session_id}"}
+
+    if not await tui._engine.sessions.rename(session_id, new_name):
+        tui.render_error(f"Rename failed for session: {session_id}")
+        return {"status": "error", "error": "Rename failed"}
+
+    tui.render_success(f"Session {session_id} renamed to '{new_name}'")
+    return {"status": "ok", "session_id": session_id, "name": new_name}
+
+
+async def sessions_tag(tui: Any, args: List[str]) -> Dict[str, Any]:
+    """Add tags to a session.
+
+    Usage: sessions tag <id> <tag> [tag...]
+    """
+    if len(args) < 2:
+        tui.render_error("Usage: sessions tag <id> <tag> [tag...]")
+        return {"status": "error", "error": "Usage: sessions tag <id> <tag>"}
+
+    session_id = args[0]
+    tags = args[1:]
+    if await tui._engine.sessions.get(session_id) is None:
+        tui.render_error(f"Session not found: {session_id}")
+        return {"status": "error", "error": f"Session not found: {session_id}"}
+
+    if not await tui._engine.sessions.tag(session_id, tags):
+        tui.render_error(f"Tagging failed for session: {session_id}")
+        return {"status": "error", "error": "Tagging failed"}
+
+    session = await tui._engine.sessions.get(session_id)
+    shown = ", ".join(session.tags) if session else ", ".join(tags)
+    tui.render_success(f"Tags on {session_id}: {shown}")
+    return {"status": "ok", "session_id": session_id, "tags": tags}
+
+
+async def sessions_search(tui: Any, args: List[str]) -> Dict[str, Any]:
+    """Search sessions by hostname, user, OS or tag.
+
+    Usage: sessions search <query>
+    """
+    if not args:
+        tui.render_error("Usage: sessions search <query>")
+        return {"status": "error", "error": "Usage: sessions search <query>"}
+
+    query = " ".join(args)
+    matches = await tui._engine.sessions.search(query)
+
+    if not matches:
+        tui.render_warning(f"No sessions matching '{query}'.")
+        return {"status": "ok", "query": query, "count": 0, "sessions": []}
+
+    headers = ["ID", "Hostname", "OS", "User", "Status", "Tags"]
+    rows = [
+        [s.session_id[:12], s.hostname[:20], s.os[:10], s.username[:12], s.state.value, ", ".join(s.tags[:3])]
+        for s in matches
+    ]
+    tui.render_table(headers, rows)
+    print(f"\n  {len(matches)} session(s) matching '{query}'")
+    return {"status": "ok", "query": query, "count": len(matches), "sessions": [s.to_dict() for s in matches]}
+
+
 async def sessions_route(tui: Any, args: List[str]) -> Dict[str, Any]:
     """Run a module on a session.
 
@@ -171,13 +247,7 @@ async def sessions_route(tui: Any, args: List[str]) -> Dict[str, Any]:
         tui.render_error(f"Session not found: {session_id}")
         return {"status": "error", "error": f"Session not found: {session_id}"}
 
-    # Get module registry from engine
-    registry = getattr(tui._engine, '_modules_registry', None)
-    if registry is None:
-        from pupyteer.server.modules.registry import ModuleRegistry
-        registry = ModuleRegistry(tui._engine.config, tui._engine.audit)
-        registry.discover()
-        tui._engine._modules_registry = registry
+    registry = tui._engine.module_registry
 
     # Build args from session context
     args_dict = {
@@ -205,5 +275,8 @@ COMMANDS: Dict[str, Any] = {
     "sessions interact": sessions_interact,
     "sessions kill": sessions_kill,
     "sessions info": sessions_info,
+    "sessions rename": sessions_rename,
+    "sessions tag": sessions_tag,
+    "sessions search": sessions_search,
     "sessions route": sessions_route,
 }

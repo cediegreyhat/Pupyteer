@@ -9,7 +9,6 @@ import asyncio
 import sys
 from typing import Any, Dict, List, Optional
 
-from pupyteer.server.core.engine import PupyteerEngine
 from pupyteer.payloads.manager import (
     PayloadConfig,
     PayloadPlatform,
@@ -18,12 +17,9 @@ from pupyteer.payloads.manager import (
 )
 
 
-async def payload_status(args: List[str]) -> Dict[str, Any]:
+async def payload_status(tui: Any, args: List[str]) -> Dict[str, Any]:
     """Show payload management system status and statistics."""
-    engine = PupyteerEngine()
-    # Access payload manager via engine
-    if not hasattr(engine, 'payloads'):
-        return {"status": "error", "error": "Payload manager not initialized on engine"}
+    engine = tui._engine
 
     stats = engine.payloads.get_stats()
     return {
@@ -32,11 +28,9 @@ async def payload_status(args: List[str]) -> Dict[str, Any]:
     }
 
 
-async def payload_list(args: List[str]) -> Dict[str, Any]:
+async def payload_list(tui: Any, args: List[str]) -> Dict[str, Any]:
     """List all payloads with optional filtering."""
-    engine = PupyteerEngine()
-    if not hasattr(engine, 'payloads'):
-        return {"status": "error", "error": "Payload manager not initialized on engine"}
+    engine = tui._engine
 
     payloads = engine.payloads.list_all()
     result = []
@@ -56,7 +50,7 @@ async def payload_list(args: List[str]) -> Dict[str, Any]:
     return {"status": "ok", "payloads": result, "total": len(result)}
 
 
-async def payload_build(args: List[str]) -> Dict[str, Any]:
+async def payload_build(tui: Any, args: List[str]) -> Dict[str, Any]:
     """Build a new payload.
 
     Args format: --name NAME --platform PLATFORM --arch ARCH --type TYPE
@@ -121,7 +115,7 @@ async def payload_build(args: List[str]) -> Dict[str, Any]:
         elif args[i] == "--version" and i + 1 < len(args):
             version = args[i + 1]; i += 2
         else:
-            i += 1
+            return {"status": "error", "error": f"Unknown argument: {args[i]}"}
 
     if not name:
         return {"status": "error", "error": "Missing required --name argument"}
@@ -137,9 +131,7 @@ async def payload_build(args: List[str]) -> Dict[str, Any]:
         profile=profile,
     )
 
-    engine = PupyteerEngine()
-    if not hasattr(engine, 'payloads'):
-        return {"status": "error", "error": "Payload manager not initialized on engine"}
+    engine = tui._engine
 
     try:
         metadata = await engine.payloads.build(
@@ -169,7 +161,7 @@ async def payload_build(args: List[str]) -> Dict[str, Any]:
         return {"status": "error", "error": str(e)}
 
 
-async def payload_info(args: List[str]) -> Dict[str, Any]:
+async def payload_info(tui: Any, args: List[str]) -> Dict[str, Any]:
     """Get detailed info about a payload by ID.
 
     Args: payload_id
@@ -178,9 +170,7 @@ async def payload_info(args: List[str]) -> Dict[str, Any]:
         return {"status": "error", "error": "Missing payload_id argument"}
 
     payload_id = args[0]
-    engine = PupyteerEngine()
-    if not hasattr(engine, 'payloads'):
-        return {"status": "error", "error": "Payload manager not initialized on engine"}
+    engine = tui._engine
 
     meta = engine.payloads.get(payload_id)
     if not meta:
@@ -196,7 +186,7 @@ async def payload_info(args: List[str]) -> Dict[str, Any]:
     }
 
 
-async def payload_verify(args: List[str]) -> Dict[str, Any]:
+async def payload_verify(tui: Any, args: List[str]) -> Dict[str, Any]:
     """Verify a payload's integrity.
 
     Args: payload_id
@@ -205,9 +195,7 @@ async def payload_verify(args: List[str]) -> Dict[str, Any]:
         return {"status": "error", "error": "Missing payload_id argument"}
 
     payload_id = args[0]
-    engine = PupyteerEngine()
-    if not hasattr(engine, 'payloads'):
-        return {"status": "error", "error": "Payload manager not initialized on engine"}
+    engine = tui._engine
 
     ok, msg = engine.payloads.verify(payload_id)
     return {
@@ -218,7 +206,7 @@ async def payload_verify(args: List[str]) -> Dict[str, Any]:
     }
 
 
-async def payload_remove(args: List[str]) -> Dict[str, Any]:
+async def payload_remove(tui: Any, args: List[str]) -> Dict[str, Any]:
     """Remove a payload and its artifact.
 
     Args: payload_id
@@ -227,9 +215,7 @@ async def payload_remove(args: List[str]) -> Dict[str, Any]:
         return {"status": "error", "error": "Missing payload_id argument"}
 
     payload_id = args[0]
-    engine = PupyteerEngine()
-    if not hasattr(engine, 'payloads'):
-        return {"status": "error", "error": "Payload manager not initialized on engine"}
+    engine = tui._engine
 
     ok = engine.payloads.remove(payload_id)
     if not ok:
@@ -238,7 +224,7 @@ async def payload_remove(args: List[str]) -> Dict[str, Any]:
     return {"status": "ok", "message": f"Payload {payload_id} removed"}
 
 
-async def payload_cleanup(args: List[str]) -> Dict[str, Any]:
+async def payload_cleanup(tui: Any, args: List[str]) -> Dict[str, Any]:
     """Clean up old/expired payloads.
 
     Args: [--max-age DAYS] [--name NAME --keep N]
@@ -264,11 +250,9 @@ async def payload_cleanup(args: List[str]) -> Dict[str, Any]:
                 return {"status": "error", "error": f"Invalid keep: {args[i + 1]}"}
             i += 2
         else:
-            i += 1
+            return {"status": "error", "error": f"Unknown argument: {args[i]}"}
 
-    engine = PupyteerEngine()
-    if not hasattr(engine, 'payloads'):
-        return {"status": "error", "error": "Payload manager not initialized on engine"}
+    engine = tui._engine
 
     removed = 0
     if name:
@@ -285,7 +269,7 @@ async def payload_cleanup(args: List[str]) -> Dict[str, Any]:
     }
 
 
-async def payload_versions(args: List[str]) -> Dict[str, Any]:
+async def payload_versions(tui: Any, args: List[str]) -> Dict[str, Any]:
     """Show version history for a named payload.
 
     Args: name
@@ -294,9 +278,7 @@ async def payload_versions(args: List[str]) -> Dict[str, Any]:
         return {"status": "error", "error": "Missing name argument"}
 
     name = args[0]
-    engine = PupyteerEngine()
-    if not hasattr(engine, 'payloads'):
-        return {"status": "error", "error": "Payload manager not initialized on engine"}
+    engine = tui._engine
 
     history = engine.payloads.get_version_history(name)
     return {"status": "ok", "name": name, "versions": history}
