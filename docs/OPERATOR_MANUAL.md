@@ -12,11 +12,12 @@
 3. [The TUI](#the-tui)
 4. [Sessions Management](#sessions-management)
 5. [Tasks Management](#tasks-management)
-6. [Profiles](#profiles)
-7. [Transports](#transports)
-8. [Configuration](#configuration)
-9. [Logging & Auditing](#logging--auditing)
-10. [Troubleshooting](#troubleshooting)
+6. [Payload Management](#payload-management)
+7. [Profiles](#profiles)
+8. [Transports](#transports)
+9. [Configuration](#configuration)
+10. [Logging & Auditing](#logging--auditing)
+11. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -121,10 +122,15 @@ pupyteer >
 
 Pupyteer uses a `readline`-based command line with:
 
-- **Tab Completion** — Press TAB to cycle through registered commands.
+- **Tab Completion** — Press TAB to complete a command, its subcommand, then a
+  live object name (session IDs, module names, profile names, payload IDs).
 - **Command History** — Up/Down arrows navigate history (stored in `~/.pupyteer_history`).
 - **Structured Output** — Tables and colored output for readability.
 - **Error Handling** — Errors appear in red; successes in green; warnings in yellow.
+
+`readline` is optional. Where the platform has no `readline` (native Windows
+Python), the console still runs — commands and tables work, but history recall
+and TAB completion are unavailable. Install `pyreadline3` if you want them there.
 
 ### Global Commands
 
@@ -135,6 +141,22 @@ Pupyteer uses a `readline`-based command line with:
 | `status` | Show server status and dashboard |
 | `clear` | Clear the terminal screen |
 | `exit` / `quit` | Shut down Pupyteer |
+
+### Console Command Reference
+
+| Command | Subcommands |
+|---------|-------------|
+| `sessions` | `list`, `info <id>`, `interact <id>`, `kill <id>`, `rename <id> <name>`, `tag <id> <tag>`, `search <query>` |
+| `payloads` | `status`, `list`, `build`, `info <id>`, `verify <id>`, `remove <id>`, `cleanup`, `versions <name>` |
+| `profiles` | `list`, `show <name>`, `validate <name>`, `load <name>`, `unload`, `new <file>` |
+| `jobs` | `list`, `info <id>`, `kill <id>` |
+| `tasks` | `list`, `info <id>`, `cancel <id>` |
+| `evasion` | `status`, `run`, `list`, `stats`, `profiles`, `runner` |
+| `pipeline` | `run`, `build`, `test`, `auto`, `status`, `history`, `profiles`, `info` |
+| `modules` / `use` / `set` / `options` / `run` | Metasploit-style module workflow |
+| `config` | `get <key>`, `set <key> <value>` |
+| `search`, `info`, `back`, `reload`, `exploit` | Module discovery and execution |
+| `transports`, `logs`, `theme` | Operator QoL |
 
 ### Theming
 
@@ -205,6 +227,15 @@ pupyteer > sessions tag a1b2c3d4e5f6 production sql
 ```
 
 Tags help organize sessions across large operations.
+
+### Renaming Sessions
+
+```
+pupyteer > sessions rename a1b2c3d4e5f6 web-frontend-01
+```
+
+Relabels the session's hostname field for the operator. This changes only the
+console label, not the agent's reported identity.
 
 ### Killing Sessions
 
@@ -288,6 +319,67 @@ The task manager runs up to `tasks.max_concurrent` workers simultaneously (defau
 
 ---
 
+## Payload Management
+
+Payloads move through a fixed lifecycle:
+
+```
+Configuration → Validation → Build → Verification → Artifact Management → Controlled Deployment
+```
+
+Every artifact is tracked with metadata: payload ID, version, platform, architecture,
+build timestamp, configuration profile, build status, SHA-256, operator and expiry.
+
+### Building a Payload
+
+```
+pupyteer > payloads build --name web01 --platform windows --arch x64 \
+             --type executable --transport tcp --host 127.0.0.1 --port 8443 \
+             --profile HTTPS-Standard --expiration 30
+```
+
+| Flag | Meaning |
+|------|---------|
+| `--name` | Payload name (required) |
+| `--platform` / `--arch` | Target platform and architecture |
+| `--type` | Artifact type (`executable`, ...) |
+| `--transport` / `--host` / `--port` | Callback endpoint baked into the stub |
+| `--profile` | C2 profile the agent should speak |
+| `--expiration` | Validity window in days; expired payloads are marked and cleaned up |
+| `--version` | Explicit version, otherwise auto-incremented |
+| `--sign` | Sign the artifact if signing is configured |
+
+Unrecognised flags are rejected rather than ignored, so a mistyped option cannot
+silently produce a payload without the expiry or profile you intended.
+
+### Inspecting and Verifying
+
+```
+pupyteer > payloads list                     # table of all artifacts
+pupyteer > payloads info <payload_id>        # metadata + recorded build log
+pupyteer > payloads verify <payload_id>      # recompute and compare hashes
+pupyteer > payloads versions <name>          # version history for a name
+```
+
+`payloads info` reports the exact configuration used, which is what makes a build
+reproducible: same config in, same SHA-256 out.
+
+### Retention
+
+```
+pupyteer > payloads cleanup --max-age 30             # drop artifacts older than 30 days
+pupyteer > payloads cleanup --name web01 --keep 3    # keep the 3 newest versions
+pupyteer > payloads remove <payload_id>              # delete one artifact and its record
+```
+
+Cleanup also marks any payload past its `--expiration` window as expired.
+
+Artifacts are written under `paths.payload_artifacts` (default
+`./payloads/artifacts`), which is git-ignored — payload binaries should never be
+committed.
+
+---
+
 ## Profiles
 
 Profiles define how agents communicate with the server — protocol, timing, headers, jitter, and encoding.
@@ -328,6 +420,16 @@ pupyteer > profiles load HTTPS-Standard
 pupyteer > profiles validate HTTPS-Standard
 
   Profile HTTPS-Standard is valid.
+```
+
+`profiles load` validates before activating, so an invalid profile can never go
+live. Failures print one error per problem.
+
+### Unloading and Adding Profiles
+
+```
+pupyteer > profiles unload            # deactivate the current profile
+pupyteer > profiles new ./my_profile.yaml   # load a profile file into the registry
 ```
 
 ### Profile Structure
