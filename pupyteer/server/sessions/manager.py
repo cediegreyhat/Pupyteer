@@ -359,6 +359,10 @@ class SessionManager:
     def count(self) -> int:
         return len(self._sessions)
 
+    def list_ids(self) -> List[str]:
+        """Synchronous session-id snapshot, for tab completion."""
+        return list(self._sessions.keys())
+
     async def count_active(self) -> int:
         return sum(1 for s in self._sessions.values() if s.state == SessionState.CONNECTED)
 

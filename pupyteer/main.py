@@ -15,6 +15,19 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
+def configure_stdio() -> None:
+    """Force UTF-8 on stdout/stderr.
+
+    The banner and tables use box-drawing glyphs, which the default Windows
+    console codepage (cp1252) cannot encode and raises on.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def setup_logging(level: str = "INFO") -> None:
     """Configure root logging."""
     logging.basicConfig(
@@ -30,6 +43,7 @@ async def async_main(config_path: str | None = None, no_tui: bool = False) -> in
     from pupyteer.server.core.engine import PupyteerEngine
     from pupyteer.tui.app import PupyteerTUI
 
+    configure_stdio()
     config = ConfigManager(config_path)
     setup_logging(config.get("logging.level", "INFO"))
 

@@ -4,12 +4,17 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import readline
 import shlex
 import signal
 import sys
 import time
 from typing import Any, Callable, Dict, List, Optional
+
+try:
+    import readline
+except ImportError:
+    # Windows ships no readline; the console falls back to plain input().
+    readline = None  # type: ignore[assignment]
 
 from pupyteer.server.core.config import ConfigManager
 from pupyteer.server.core.engine import PupyteerEngine
@@ -74,20 +79,55 @@ class CommandRegistry:
 
 # ─── Tab Completer ────────────────────────────────────────────────────
 class TabCompleter:
-    """Readline tab-completion for registered commands."""
+    """Readline tab-completion for commands, subcommands and live names."""
 
-    def __init__(self, commands: List[str]):
+    def __init__(
+        self,
+        commands: List[str],
+        subcommands: Optional[Dict[str, List[str]]] = None,
+        dynamic: Optional[Callable[[str], List[str]]] = None,
+    ):
         self._commands = commands
+        self._subcommands = subcommands or {}
+        self._dynamic = dynamic
         self._matches: List[str] = []
+
+    def _candidates(self, words: List[str], typing_last: bool) -> List[str]:
+        """Choices for the token being completed.
+
+        `words` is the split line buffer; when the caret is not just past a
+        space, the final token is the partial input and is not a completed word.
+        """
+        prefix = words if typing_last else words[:-1]
+        if not prefix:
+            return self._commands
+        command = prefix[0]
+        if len(prefix) == 1:
+            return list(self._subcommands.get(command, []))
+        # Deeper positions -> dynamic names (sessions, modules, profiles, payloads).
+        if self._dynamic is None:
+            return []
+        # Providers read live engine state, which may not be ready.
+        try:
+            return self._dynamic(command) or []
+        except Exception:
+            logger.debug("Completion lookup failed for %s", command, exc_info=True)
+            return []
 
     def complete(self, text: str, state: int) -> Optional[str]:
         if state == 0:
-            line = readline.get_line_buffer()
-            if " " in line:
-                # Subcommand completion — just return empty for now
-                self._matches = []
+            # Without readline there is no line buffer, so the cursor position is
+            # unknown — assume the operator is completing the first word.
+            if readline is None:
+                self._matches = [m for m in self._commands if m.startswith(text)]
             else:
-                self._matches = [cmd for cmd in self._commands if cmd.startswith(text)]
+                line = readline.get_line_buffer()
+                typing_last = line.endswith((" ", "\t"))
+                words = line.split()
+                self._matches = [
+                    m for m in self._candidates(words, typing_last)
+                    if m.startswith(text)
+                ]
         try:
             return self._matches[state]
         except IndexError:
@@ -202,10 +242,14 @@ class PupyteerTUI:
         r.register("run", self.cmd_run, "Run the active module")
         r.register("reload", self.cmd_reload, "Reload module registry")
         # Session/job commands
-        r.register("sessions", self.cmd_sessions, "Manage sessions", "sessions [list|info <id>|interact <id>|kill <id>]")
+        r.register("sessions", self.cmd_sessions, "Manage sessions",
+                   "sessions [list|info <id>|interact <id>|kill <id>|rename <id> <name>|tag <id> <tag>|search <query>]")
         r.register("jobs", self.cmd_jobs, "Manage background jobs", "jobs [list|kill <id>|info <id>]")
         r.register("tasks", self.cmd_tasks, "Manage tasks", "tasks [list|info <id>|cancel <id>]")
-        r.register("profiles", self.cmd_profiles, "Manage C2 profiles", "profiles [list|show <name>|load <name>]")
+        r.register("payloads", self.cmd_payloads, "Payload lifecycle",
+                   "payloads [status|list|build|info|verify|remove|cleanup|versions]")
+        r.register("profiles", self.cmd_profiles, "Manage C2 profiles",
+                   "profiles [list|show <name>|validate <name>|load <name>|unload|new <file>]")
         r.register("transports", self.cmd_transports, "List active transports")
         r.register("config", self.cmd_config, "View configuration", "config [get <key>|set <key> <value>]")
         r.register("logs", self.cmd_logs, "View recent audit logs")
@@ -216,18 +260,50 @@ class PupyteerTUI:
         r.register("exit", self.cmd_exit, "Exit Pupyteer")
         r.register("quit", self.cmd_exit, "Exit Pupyteer")
 
+    #: Second-token choices for commands that take a subcommand.
+    _SUBCOMMANDS = {
+        "sessions": ["list", "info", "interact", "kill", "rename", "tag", "search"],
+        "jobs": ["list", "kill", "info"],
+        "tasks": ["list", "info", "cancel"],
+        "profiles": ["list", "show", "validate", "load", "unload", "new"],
+        "payloads": ["status", "list", "build", "info", "verify", "remove", "cleanup", "versions"],
+        "config": ["get", "set"],
+        "theme": ["dark", "light", "list"],
+        "evasion": ["status", "run", "list", "stats"],
+        "pipeline": ["run", "build", "test", "auto", "status", "history"],
+    }
+
+    def _complete_names(self, command: str) -> List[str]:
+        """Live object names for the argument position of `command`."""
+        if command == "sessions":
+            return self._engine.sessions.list_ids()
+        if command in ("use", "modules", "info"):
+            return [m["name"] for m in self._engine.module_registry.list_all()]
+        if command == "profiles":
+            return [p["name"] for p in self._engine.profiles.list()]
+        if command == "payloads":
+            return [p.payload_id for p in self._engine.payloads.list_all()]
+        return []
+
     def _setup_readline(self) -> None:
         """Configure readline for command history and tab completion."""
+        if readline is None:
+            logger.debug("readline unavailable — history and tab completion disabled")
+            return
         try:
             readline.set_history_length(1000)
             readline.set_completer(
-                TabCompleter(self._registry.list_commands()).complete
+                TabCompleter(
+                    self._registry.list_commands(),
+                    self._SUBCOMMANDS,
+                    self._complete_names,
+                ).complete
             )
             readline.parse_and_bind("tab: complete")
             if os.path.exists(self._history_file):
                 readline.read_history_file(self._history_file)
         except Exception:
-            pass
+            logger.debug("readline setup failed", exc_info=True)
 
     def _setup_signal_handlers(self) -> None:
         """Set up signal handlers for terminal resize and interrupt."""
@@ -350,32 +426,6 @@ class PupyteerTUI:
         else:
             self.render_error(f"Unknown theme: {args[0]}. Available: {', '.join(available_themes())}")
 
-    async def cmd_sessions(self, args: List[str]) -> None:
-        """Manage sessions — MSF-style."""
-        from pupyteer.tui.commands.sessions import (
-            sessions_list, sessions_info, sessions_interact, sessions_kill,
-        )
-        if not args:
-            args = ["list"]
-        action = args[0]
-        action_args = args[1:]
-        try:
-            if action == "list":
-                result = await sessions_list(self, action_args)
-            elif action == "info" and action_args:
-                result = await sessions_info(self, action_args)
-            elif action == "interact" and action_args:
-                result = await sessions_interact(self, action_args)
-            elif action == "kill" and action_args:
-                result = await sessions_kill(self, action_args)
-            else:
-                self.render_warning("Usage: sessions [list|info <id>|interact <id>|kill <id>]")
-                return
-            if result.get("status") == "ok":
-                self._render_msf_result(result)
-        except Exception as e:
-            self.render_error(f"Sessions error: {e}")
-
     async def cmd_tasks(self, args: List[str]) -> None:
         if not args or args[0] == "list":
             tasks = await self._engine.tasks.list_all()
@@ -412,42 +462,71 @@ class PupyteerTUI:
                 self.render_error(f"Task not found: {args[1]}")
 
     async def cmd_profiles(self, args: List[str]) -> None:
-        if not args or args[0] == "list":
-            profiles = self._engine.profiles.list()
-            headers = ["Name", "Version", "Transport", "Source", "Active"]
-            rows = []
-            for p in profiles:
-                rows.append([
-                    p["name"],
-                    p["version"],
-                    p["transport"],
-                    p["source"],
-                    "✓" if p["active"] else "",
-                ])
-            self.render_table(headers, rows)
+        action = args[0] if args else "list"
+        rest = args[1:]
+        manager = self._engine.profiles
 
-        elif args[0] == "show" and len(args) > 1:
-            profile = self._engine.profiles.get(args[1])
+        if action == "list":
+            profiles = manager.list()
+            if not profiles:
+                self.render_warning("No profiles loaded.")
+                return
+            headers = ["Name", "Version", "Transport", "Source", "Active"]
+            self.render_table(
+                headers,
+                [[p["name"], p["version"], p["transport"], p["source"], "✓" if p["active"] else ""]
+                 for p in profiles],
+            )
+
+        elif action == "show" and rest:
+            profile = manager.get(rest[0])
             if profile:
                 for key, val in profile.as_dict().items():
                     print(f"    {c(key + ':', self._theme.get('info'))} {val}")
             else:
-                self.render_error(f"Profile not found: {args[1]}")
+                self.render_error(f"Profile not found: {rest[0]}")
 
-        elif args[0] == "load" and len(args) > 1:
-            ok = self._engine.profiles.load(args[1])
-            if ok:
-                self.render_success(f"Profile {args[1]} loaded.")
+        elif action == "load" and rest:
+            if manager.load(rest[0]):
+                self.render_success(f"Profile {rest[0]} loaded.")
             else:
-                self.render_error("Failed to load profile.")
+                self.render_error(f"Failed to load profile: {rest[0]}")
 
-        elif args[0] == "validate" and len(args) > 1:
-            errors = self._engine.profiles.validate(args[1])
+        elif action == "validate" and rest:
+            errors = manager.validate_errors(rest[0])
             if errors:
                 for e in errors:
                     self.render_error(e)
             else:
-                self.render_success(f"Profile {args[1]} is valid.")
+                self.render_success(f"Profile {rest[0]} is valid.")
+
+        elif action == "unload":
+            manager.unload()
+            self.render_success("Active profile unloaded.")
+
+        elif action == "new":
+            if not rest:
+                self.render_error("Usage: profiles new <source.yaml>")
+                return
+            try:
+                profile = manager.create_from_file(rest[0])
+            except Exception as e:
+                self.render_error(f"Could not create profile: {e}")
+                return
+            errors = profile.validate_errors()
+            self.render_success(f"Profile '{profile.name}' created from {rest[0]}.")
+            if not profile.is_valid():
+                self.render_warning("It has validation errors — run "
+                                    f"'profiles validate {profile.name}' before loading.")
+            elif errors:
+                for e in errors:
+                    self.render_warning(e)
+
+        else:
+            self.render_warning(
+                "Usage: profiles [list|show <name>|validate <name>|load <name>"
+                "|unload|new <source.yaml>]"
+            )
 
     async def cmd_transports(self, args: List[str]) -> None:
         transports = self._engine.transports.list()
@@ -483,91 +562,121 @@ class PupyteerTUI:
 
     async def cmd_evasion(self, args: List[str]) -> None:
         """Run evasion testing commands."""
-        from pupyteer.tui.commands.evasion import (
-            evasion_status,
-            evasion_run,
-            evasion_list,
-            evasion_stats,
-            evasion_profiles,
-            evasion_runner,
-        )
+        from pupyteer.tui.commands import evasion
 
-        if not args:
-            self.render_warning("Usage: evasion [status|run|list|stats|profiles|runner]")
-            return
-
-        action = args[0]
-        action_args = args[1:]
-
-        try:
-            if action == "status":
-                result = await evasion_status(action_args)
-            elif action == "run":
-                result = await evasion_run(action_args)
-            elif action == "list":
-                result = await evasion_list(action_args)
-            elif action == "stats":
-                result = await evasion_stats(action_args)
-            elif action == "profiles":
-                result = await evasion_profiles(action_args)
-            elif action == "runner":
-                result = await evasion_runner(action_args)
-            else:
-                self.render_error(f"Unknown evasion command: {action}")
-                return
-
-            import json
-            print(json.dumps(result, indent=2, default=str))
-        except Exception as e:
-            self.render_error(f"Evasion error: {e}")
-            logger.exception("Evasion command error")
+        handlers = {
+            "status": evasion.evasion_status,
+            "run": evasion.evasion_run,
+            "list": evasion.evasion_list,
+            "stats": evasion.evasion_stats,
+            "profiles": evasion.evasion_profiles,
+            "runner": evasion.evasion_runner,
+        }
+        await self._dispatch_subcommand(handlers, args, "evasion")
 
     async def cmd_pipeline(self, args: List[str]) -> None:
         """Run unified payload-to-evasion pipeline commands."""
-        from pupyteer.tui.commands.pipeline import (
-            pipeline_run,
-            pipeline_build,
-            pipeline_test,
-            pipeline_auto,
-            pipeline_status,
-            pipeline_history,
-            pipeline_profiles,
-            pipeline_info,
-        )
+        from pupyteer.tui.commands import pipeline
 
+        handlers = {
+            "run": pipeline.pipeline_run,
+            "build": pipeline.pipeline_build,
+            "test": pipeline.pipeline_test,
+            "auto": pipeline.pipeline_auto,
+            "status": pipeline.pipeline_status,
+            "history": pipeline.pipeline_history,
+            "profiles": pipeline.pipeline_profiles,
+            "info": pipeline.pipeline_info,
+        }
+        await self._dispatch_subcommand(handlers, args, "pipeline")
+
+    async def cmd_payloads(self, args: List[str]) -> None:
+        """Manage payload lifecycle — build, verify, list, cleanup."""
+        from pupyteer.tui.commands import payloads
+
+        handlers = {
+            "status": payloads.payload_status,
+            "list": payloads.payload_list,
+            "build": payloads.payload_build,
+            "info": payloads.payload_info,
+            "verify": payloads.payload_verify,
+            "remove": payloads.payload_remove,
+            "cleanup": payloads.payload_cleanup,
+            "versions": payloads.payload_versions,
+        }
+        await self._dispatch_subcommand(handlers, args, "payloads")
+
+    async def _dispatch_subcommand(
+        self,
+        handlers: Dict[str, Any],
+        args: List[str],
+        command: str,
+    ) -> None:
+        """Resolve `<command> <action>` against a handler table and render the result."""
+        usage = f"{command} [{'|'.join(handlers)}] ..."
         if not args:
-            self.render_warning("Usage: pipeline [run|build|test|auto|status|history|profiles|info]")
+            self.render_warning(f"Usage: {usage}")
+            return
+        handler = handlers.get(args[0])
+        if handler is None:
+            self.render_error(f"Unknown {command} command: {args[0]}\n  Usage: {usage}")
+            return
+        try:
+            result = await handler(self, args[1:])
+        except Exception as e:
+            self.render_error(f"{command.title()} error: {e}")
+            logger.exception("%s command error", command)
+            return
+        if result.get("status") != "ok":
+            self.render_error(
+                result.get("error")
+                or result.get("message")
+                or f"{command} {args[0]} failed"
+            )
+            return
+        self._render_command_result(result)
+
+    def _render_command_result(self, result: Dict[str, Any]) -> None:
+        """Render a command result as a table when its shape allows, else as JSON."""
+        import json
+
+        payloads = result.get("payloads")
+        if payloads is not None:
+            if not payloads:
+                self.render_warning("No payloads built.")
+                return
+            headers = ["ID", "Name", "Ver", "Platform", "Arch", "Status", "Size", "Operator"]
+            rows = [
+                [
+                    p["payload_id"][:12], p["name"][:20], p["version"],
+                    p["platform"], p["arch"], p["status"],
+                    f"{p['size_bytes'] // 1024}KB" if p["size_bytes"] else "-",
+                    (p.get("operator") or "-")[:12],
+                ]
+                for p in payloads
+            ]
+            self.render_table(headers, rows)
+            print(f"\n  Total: {len(payloads)} payloads")
             return
 
-        action = args[0]
-        action_args = args[1:]
-
-        try:
-            if action == "run":
-                result = await pipeline_run(action_args)
-            elif action == "build":
-                result = await pipeline_build(action_args)
-            elif action == "test":
-                result = await pipeline_test(action_args)
-            elif action == "auto":
-                result = await pipeline_auto(action_args)
-            elif action == "status":
-                result = await pipeline_status(action_args)
-            elif action == "history":
-                result = await pipeline_history(action_args)
-            elif action == "profiles":
-                result = await pipeline_profiles(action_args)
-            elif action == "info":
-                result = await pipeline_info(action_args)
-            else:
-                self.render_error(f"Unknown pipeline command: {action}")
+        history = result.get("versions")
+        if history is not None:
+            if not history:
+                self.render_warning("No version history.")
                 return
+            headers = ["Version", "ID", "Status", "Built", "SHA-256"]
+            rows = [
+                [
+                    h.get("version", "-"), str(h.get("payload_id", ""))[:12],
+                    h.get("status", "-"), str(h.get("created_at", ""))[:19],
+                    str(h.get("hash_sha256", ""))[:16],
+                ]
+                for h in history
+            ]
+            self.render_table(headers, rows)
+            return
 
-            import json
-            print(json.dumps(result, indent=2, default=str))
-        except Exception as e:
-            self.render_error(f"Pipeline error: {e}")
-            logger.exception("Pipeline command error")
+        print(json.dumps(result, indent=2, default=str))
 
     async def cmd_clear(self, args: List[str]) -> None:
         # Clear screen — no user input passed, safe
@@ -581,25 +690,32 @@ class PupyteerTUI:
         """Manage sessions — MSF-style."""
         from pupyteer.tui.commands.sessions import (
             sessions_list, sessions_info, sessions_interact, sessions_kill,
+            sessions_rename, sessions_tag, sessions_search,
         )
         if not args:
             args = ["list"]
         action = args[0]
         action_args = args[1:]
+        handlers = {
+            "list": sessions_list,
+            "info": sessions_info,
+            "interact": sessions_interact,
+            "kill": sessions_kill,
+            "rename": sessions_rename,
+            "tag": sessions_tag,
+            "search": sessions_search,
+        }
+        handler = handlers.get(action)
+        if handler is None:
+            self.render_warning(
+                "Usage: sessions [list|info <id>|interact <id>|kill <id>"
+                "|rename <id> <name>|tag <id> <tag>|search <query>]"
+            )
+            return
         try:
-            if action == "list":
-                result = await sessions_list(self, action_args)
-            elif action == "info" and action_args:
-                result = await sessions_info(self, action_args)
-            elif action == "interact" and action_args:
-                result = await sessions_interact(self, action_args)
-            elif action == "kill" and action_args:
-                result = await sessions_kill(self, action_args)
-            else:
-                self.render_warning("Usage: sessions [list|info <id>|interact <id>|kill <id>]")
-                return
+            result = await handler(self, action_args)
             if result.get("status") == "ok":
-                self._render_msf_result(result)
+                await self._render_msf_result(result)
         except Exception as e:
             self.render_error(f"Sessions error: {e}")
 
@@ -621,7 +737,7 @@ class PupyteerTUI:
                 self.render_warning("Usage: jobs [list|kill <id>|info <id>]")
                 return
             if result.get("status") == "ok":
-                self._render_msf_result(result)
+                await self._render_msf_result(result)
         except Exception as e:
             self.render_error(f"Jobs error: {e}")
 
@@ -788,8 +904,9 @@ class PupyteerTUI:
 
         # Shutdown
         await self._engine.stop()
-        try:
-            readline.write_history_file(self._history_file)
-        except Exception:
-            pass
+        if readline is not None:
+            try:
+                readline.write_history_file(self._history_file)
+            except Exception:
+                logger.debug("Could not write history file", exc_info=True)
         print(c("  Goodbye.\n", self._theme.get("primary")))
