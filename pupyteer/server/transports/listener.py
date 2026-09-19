@@ -34,6 +34,12 @@ from pupyteer.server.sessions.manager import SessionInfo
 
 logger = logging.getLogger("pupyteer.transports.listener")
 
+# asyncio's StreamReader defaults to 64 KiB per line, which a file-transfer
+# chunk or a long command output blows straight through — readline() then raises
+# and the session dies. Message framing is one JSON object per line, so the
+# ceiling has to be above the largest payload an operator can ask for.
+MAX_MESSAGE_BYTES = 32 * 1024 * 1024
+
 
 class PendingCommand:
     """Tracks a command waiting for agent delivery / response."""
@@ -110,6 +116,7 @@ class AgentListener:
             self._handle_client,
             host=self._host,
             port=self._port,
+            limit=MAX_MESSAGE_BYTES,
         )
         addrs = ", ".join(str(s.getsockname()) for s in self._server.sockets)
         logger.info("Agent listener listening on %s", addrs)
@@ -328,6 +335,14 @@ class AgentListener:
     ) -> Dict[str, Any]:
         """Return queued commands for the session and bump last_checkin."""
         session_id = msg.get("session_id", "")
+
+        # An unknown session means the operator's side lost it — a team-server
+        # restart, or a session killed while the agent kept beaconing. Answering
+        # "no commands" forever leaves a live agent attached to a dead session
+        # that no operator can address, so tell it to register again.
+        if await self._session_manager.get(session_id) is None:
+            logger.info("Check-in for unknown session %s; telling agent to re-register", session_id)
+            return {"type": "error", "message": "unknown_session"}
 
         # Update heartbeat
         await self._session_manager.update_checkin(session_id)

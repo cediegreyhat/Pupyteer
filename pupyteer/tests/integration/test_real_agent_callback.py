@@ -188,6 +188,65 @@ def _drain(proc) -> str:
         return "<unreadable>"
 
 
+class TestFileTransfer:
+    """Files have to move both ways for this to be worth running."""
+
+    @pytest.mark.asyncio
+    async def test_download_and_upload_round_trip(self, tmp_path, listener_port, agent_source):
+        from pupyteer.tui.commands.sessions import sessions_download, sessions_upload
+
+        engine = PupyteerEngine(_write_server_config(tmp_path, listener_port))
+        proc = _start_agent(agent_source, tmp_path)
+        try:
+            await engine.start()
+            session_id = await _await_session(engine)
+            assert session_id, "generated agent never registered a session"
+
+            # A file larger than one 512 KiB chunk, so the loop is really exercised.
+            remote_file = tmp_path / "target" / "secret.bin"
+            remote_file.parent.mkdir(parents=True, exist_ok=True)
+            payload = bytes(range(256)) * 4096          # 1 MiB
+            remote_file.write_bytes(payload)
+
+            tui = _FakeTUI(engine)
+            local_copy = tmp_path / "operator" / "secret.bin"
+            result = await sessions_download(
+                tui, [session_id, str(remote_file), str(local_copy)]
+            )
+            assert result["status"] == "ok", result
+            assert local_copy.read_bytes() == payload, "downloaded file is not the original"
+
+            back = tmp_path / "operator" / "upload.bin"
+            back.write_bytes(payload)
+            dest = tmp_path / "target" / "uploaded.bin"
+            result = await sessions_upload(tui, [session_id, str(back), str(dest)])
+            assert result["status"] == "ok", result
+            assert dest.read_bytes() == payload, "uploaded file is not the original"
+        finally:
+            _stop_agent(proc)
+            await engine.stop()
+
+    @pytest.mark.asyncio
+    async def test_download_reports_a_missing_remote_file(self, tmp_path, listener_port, agent_source):
+        from pupyteer.tui.commands.sessions import sessions_download
+
+        engine = PupyteerEngine(_write_server_config(tmp_path, listener_port))
+        proc = _start_agent(agent_source, tmp_path)
+        try:
+            await engine.start()
+            session_id = await _await_session(engine)
+            assert session_id
+            tui = _FakeTUI(engine)
+            result = await sessions_download(
+                tui, [session_id, str(tmp_path / "definitely-not-here"),
+                      str(tmp_path / "out.bin")]
+            )
+            assert result["status"] == "error", "a missing file must not look like success"
+        finally:
+            _stop_agent(proc)
+            await engine.stop()
+
+
 class TestOperatorShell:
     """What the operator sees: `sessions interact` must print command output."""
 

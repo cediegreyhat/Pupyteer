@@ -262,7 +262,8 @@ class PupyteerTUI:
 
     #: Second-token choices for commands that take a subcommand.
     _SUBCOMMANDS = {
-        "sessions": ["list", "info", "interact", "results", "kill", "rename", "tag", "search"],
+        "sessions": ["list", "info", "interact", "results", "download", "upload",
+                     "kill", "rename", "tag", "search"],
         "jobs": ["list", "kill", "info"],
         "tasks": ["list", "info", "cancel"],
         "profiles": ["list", "show", "validate", "load", "unload", "new"],
@@ -693,6 +694,7 @@ class PupyteerTUI:
         from pupyteer.tui.commands.sessions import (
             sessions_list, sessions_info, sessions_interact, sessions_kill,
             sessions_rename, sessions_tag, sessions_search, sessions_results,
+            sessions_download, sessions_upload,
         )
         if not args:
             args = ["list"]
@@ -703,6 +705,8 @@ class PupyteerTUI:
             "info": sessions_info,
             "interact": sessions_interact,
             "results": sessions_results,
+            "download": sessions_download,
+            "upload": sessions_upload,
             "kill": sessions_kill,
             "rename": sessions_rename,
             "tag": sessions_tag,
@@ -711,8 +715,9 @@ class PupyteerTUI:
         handler = handlers.get(action)
         if handler is None:
             self.render_warning(
-                "Usage: sessions [list|info <id>|interact <id>|results <id>|kill <id>"
-                "|rename <id> <name>|tag <id> <tag>|search <query>]"
+                "Usage: sessions [list|info <id>|interact <id>|results <id>"
+                "|download <id> <remote> [local]|upload <id> <local> <remote>"
+                "|kill <id>|rename <id> <name>|tag <id> <tag>|search <query>]"
             )
             return
         try:

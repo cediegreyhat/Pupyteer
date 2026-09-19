@@ -62,7 +62,8 @@ class HTTPListener(AgentListener):
     async def start(self) -> None:
         ssl_context = self._build_ssl_context()
         self._server = await asyncio.start_server(
-            self._handle_client, host=self._host, port=self._port, ssl=ssl_context,
+            self._handle_client, host=self._host, port=self._port,
+            ssl=ssl_context, limit=MAX_BODY_BYTES,
         )
         addrs = ", ".join(str(s.getsockname()) for s in self._server.sockets)
         scheme = "https" if ssl_context else "http"

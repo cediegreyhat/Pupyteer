@@ -228,8 +228,8 @@ class TransportManager:
         return result
 
     def available_types(self) -> List[str]:
-        """Return available transport types."""
-        return ["http", "https", "dns", "doh", "dot", "tcp", "websocket", "namedpipe"]
+        """Transports with a listener the server can actually run."""
+        return ["tcp", "http", "https"]
 
     @property
     def listener(self) -> Optional[Any]:

