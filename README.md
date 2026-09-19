@@ -207,7 +207,8 @@ This framework is intended **exclusively for authorized security testing and adv
 ## 📜 License
 
 BSD 3-Clause — See [LICENSE](LICENSE) for details. Pupyteer is derived from
-Pupy (Copyright © 2015 Nicolas VERDIER) and retains that notice.
+Pupy (Copyright © 2015 Nicolas VERDIER) and retains that notice. No third-party
+source is vendored; dependencies are pip-installed per `requirements.txt`.
 
 ---
 
