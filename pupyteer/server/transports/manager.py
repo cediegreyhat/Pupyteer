@@ -61,6 +61,7 @@ class TransportManager:
         self._transports: Dict[str, Transport] = {}
         self._listener: Optional[Any] = None  # AgentListener instance
         self._http_listener: Optional[Any] = None
+        self._tls: Optional[Any] = None  # ListenerTLS once the listeners are up
         self._listeners: list = []  # extra listeners (HTTP) shut down with the TCP one
 
     async def initialize(self) -> None:
@@ -119,9 +120,22 @@ class TransportManager:
             return  # already started
         host = self._config.get("server.host", "0.0.0.0")
         port = self._config.get("server.port", 8443)
+
+        # One resolution shared by both listeners: the certificate a payload pins
+        # is decided here, so the two listeners must not be able to disagree.
+        from pupyteer.server.core.tls import listener_tls
+        tls = listener_tls(self._config.get)
+        self._tls = tls
+        if tls is not None:
+            logger.info("Listener TLS active, fingerprint SHA-256 %s", tls.fingerprint)
+
         from pupyteer.server.transports.listener import AgentListener
         self._listener = AgentListener(
-            config={"host": host, "port": port},
+            config={
+                "host": host,
+                "port": port,
+                "ssl_context": tls.ssl_context if tls else None,
+            },
             session_manager=session_manager,
             audit_logger=self._audit,
         )
@@ -136,6 +150,9 @@ class TransportManager:
                     "host": host,
                     "port": int(http_port),
                     "uri": self._config.get("server.http_uri", "/index.html"),
+                    # server.tls wins over an externally supplied pair: it is the
+                    # certificate payloads were built to pin.
+                    "ssl_context": tls.ssl_context if tls else None,
                     "certfile": self._config.get("server.https_cert", "") or None,
                     "keyfile": self._config.get("server.https_key", "") or None,
                 },
@@ -235,6 +252,17 @@ class TransportManager:
     def listener(self) -> Optional[Any]:
         """Return the active AgentListener instance, if any."""
         return self._listener
+
+    @property
+    def listener_tls(self) -> Optional[Any]:
+        """The TLS material the listeners serve, or None while they are plaintext.
+
+        Reported from what was actually resolved at start, not from config, so a
+        console cannot claim TLS it failed to bind.
+        """
+        if self._listener is None:
+            return None
+        return self._tls
 
 
 class _PlaceholderSessionManager:

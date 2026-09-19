@@ -29,6 +29,7 @@ sys.path.insert(
 from pupyteer.agent.core.stub import AgentStubGenerator, StubConfig
 from pupyteer.server.core.config import ConfigManager
 from pupyteer.server.core.engine import PupyteerEngine
+from pupyteer.server.core.tls import certificate_fingerprint
 
 
 def _free_port() -> int:
@@ -174,6 +175,217 @@ class TestHTTPTransport:
         finally:
             _stop_agent(proc)
             await engine.stop()
+
+
+def _write_tls_server_config(tmp_path, port: int) -> str:
+    """A server config that speaks TLS, with its material kept inside tmp_path.
+
+    The certificate is deliberately absent: the listener has to produce it on
+    first start, which is what an operator who flips server.tls will hit.
+    """
+    config_path = tmp_path / "pupyteer-tls.yaml"
+    config_path.write_text(yaml.safe_dump({
+        "server": {
+            "host": "127.0.0.1", "port": port, "tls": True,
+            "tls_cert": str(tmp_path / "listener.crt"),
+            "tls_key": str(tmp_path / "listener.key"),
+            "tls_hostnames": ["127.0.0.1"],
+        },
+        "operator": {"name": "lab-op"},
+    }), encoding="utf-8")
+    return str(config_path)
+
+
+class TestTLS:
+    """The session channel carries every command result, so it has to be encrypted
+    *and* authenticated: a payload that trusts any certificate tells the operator
+    the channel is private while anyone on the path is reading it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_pinned_agent_works_over_tls(self, tmp_path, listener_port):
+        engine = PupyteerEngine(_write_tls_server_config(tmp_path, listener_port))
+        await engine.start()
+        proc = None
+        try:
+            cert_file = tmp_path / "listener.crt"
+            assert cert_file.exists(), "server.tls did not produce a listener certificate"
+            assert (tmp_path / "listener.key").exists()
+
+            agent = _generate_agent(
+                tmp_path, "tlsagent", port=listener_port, sleep=1, jitter=0,
+                tls=True, tls_cert_pem=cert_file.read_text(encoding="ascii"),
+            )
+            proc = _start_agent(agent, tmp_path)
+
+            session_id = await _await_session(engine)
+            assert session_id, "TLS agent never registered: %s" % _drain(proc)
+            output = await _run_on_agent(engine, session_id, "echo tls-roundtrip")
+            assert "tls-roundtrip" in output
+            # What the console advertises has to be what the socket speaks.
+            served = engine.get_status()["config"]["listener_tls"]
+            assert served == certificate_fingerprint(str(cert_file))
+        finally:
+            if proc is not None:
+                _stop_agent(proc)
+            await engine.stop()
+
+    @pytest.mark.asyncio
+    async def test_the_port_refuses_plaintext(self, tmp_path, listener_port):
+        """A TLS listener must not also answer plaintext.
+
+        Dual-use ports are the usual way "encryption available" turns out to
+        mean "encryption optional": a tap, or an agent built without the pin,
+        still gets a session.
+        """
+        engine = PupyteerEngine(_write_tls_server_config(tmp_path, listener_port))
+        await engine.start()
+        try:
+            def probe():
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.settimeout(5)
+                    s.connect(("127.0.0.1", listener_port))
+                    s.sendall(b'{"type": "register", "hostname": "plaintext-probe"}\n')
+                    return s.recv(4096)
+
+            # The server fails the handshake instead of parsing the line, so the
+            # probe gets an alert, an empty read, or a socket error. What it must
+            # not get is a session_id.
+            try:
+                reply = await asyncio.to_thread(probe)
+            except OSError:
+                reply = b""
+            assert b"session_id" not in reply, "listener answered a plaintext register"
+            assert not engine.sessions.list_ids(), "plaintext probe created a session"
+        finally:
+            await engine.stop()
+
+    @pytest.mark.asyncio
+    async def test_a_different_certificate_is_rejected(self, tmp_path, listener_port):
+        """The wrong pin has to fail closed — this is the whole security property."""
+        from pupyteer.server.core.tls import ensure_listener_cert
+
+        other_cert, _, _ = ensure_listener_cert(
+            str(tmp_path / "other.crt"), str(tmp_path / "other.key"),
+            host_names=("127.0.0.1",),
+        )
+        engine = PupyteerEngine(_write_tls_server_config(tmp_path, listener_port))
+        await engine.start()
+        try:
+            agent = _load_agent_module(_generate_agent(
+                tmp_path, "wrongpin", port=listener_port, sleep=1, jitter=0,
+                tls=True, tls_cert_pem=Path(other_cert).read_text(encoding="ascii"),
+            ))
+            transport = agent.TCPTransport("127.0.0.1", listener_port)
+            try:
+                with pytest.raises(Exception) as caught:
+                    await asyncio.to_thread(transport._connect)
+                assert "certificate verify failed" in str(caught.value)
+            finally:
+                transport.close()
+        finally:
+            await engine.stop()
+
+    @pytest.mark.asyncio
+    async def test_https_agent_reaches_the_http_listener(self, tmp_path, listener_port):
+        """The HTTP listener is the one a filtered target can reach, so TLS has to
+        work there too — and an https:// URL with an unpinned trust store is
+        exactly where a self-signed team server gets silently rejected.
+        """
+        http_port = _free_port()
+        config_path = tmp_path / "pupyteer-tls-http.yaml"
+        config_path.write_text(yaml.safe_dump({
+            "server": {
+                "host": "127.0.0.1", "port": listener_port,
+                "http_port": http_port, "http_uri": "/index.html", "tls": True,
+                "tls_cert": str(tmp_path / "hlistener.crt"),
+                "tls_key": str(tmp_path / "hlistener.key"),
+            },
+            "operator": {"name": "lab-op"},
+        }), encoding="utf-8")
+
+        engine = PupyteerEngine(str(config_path))
+        await engine.start()
+        proc = None
+        try:
+            cert = (tmp_path / "hlistener.crt").read_text(encoding="ascii")
+            agent = _generate_agent(
+                tmp_path, "httpsagent", transport="https", port=http_port,
+                sleep=1, jitter=0, tls=True, tls_cert_pem=cert,
+            )
+            proc = _start_agent(agent, tmp_path)
+            session_id = await _await_session(engine)
+            assert session_id, "https agent never registered: %s" % _drain(proc)
+            output = await _run_on_agent(engine, session_id, "echo https-roundtrip")
+            assert "https-roundtrip" in output
+        finally:
+            if proc is not None:
+                _stop_agent(proc)
+            await engine.stop()
+
+    @pytest.mark.asyncio
+    async def test_a_payload_built_before_the_server_starts_connects(
+        self, tmp_path, listener_port
+    ):
+        """The build side and the listen side each derive the pin from config.
+
+        This is the test that catches them drifting: a payload the operator built
+        yesterday, before the server was ever started, has to call home today.
+        """
+        from pupyteer.payloads.manager import PayloadConfig, PayloadManager, PayloadType
+        from pupyteer.server.core.logging import AuditLogger
+
+        config_path = _write_tls_server_config(tmp_path, listener_port)
+        build_config = ConfigManager(config_path)
+        build_config.set("paths.payload_artifacts", str(tmp_path / "artifacts"))
+        manager = PayloadManager(build_config, AuditLogger(build_config))
+
+        cert_file = tmp_path / "listener.crt"
+        assert not cert_file.exists(), "TLS material must not pre-exist the build"
+        meta = await manager.build(PayloadConfig(
+            name="tls-chain", payload_type=PayloadType.SCRIPT,
+            host="127.0.0.1", port=listener_port, sleep=1, jitter=0,
+        ))
+        assert cert_file.exists(), "building a TLS payload produced no listener certificate"
+
+        engine = PupyteerEngine(config_path)
+        proc = None
+        try:
+            await engine.start()
+            proc = _start_agent(Path(meta.artifact_path), tmp_path)
+            session_id = await _await_session(engine)
+            assert session_id, "built payload never registered: %s" % _drain(proc)
+            output = await _run_on_agent(engine, session_id, "echo built-over-tls")
+            assert "built-over-tls" in output
+        finally:
+            if proc is not None:
+                _stop_agent(proc)
+            await engine.stop()
+
+    def test_an_agent_built_without_the_pin_says_so(self, tmp_path):
+        """TLS with no compiled certificate is a build mistake, not a downgrade."""
+        agent = _load_agent_module(_generate_agent(
+            tmp_path, "nopin", port=1, sleep=1, jitter=0, tls=True,
+        ))
+        assert agent.TLS_ON is True
+        assert agent.TLS_CERT_PEM == ""
+        with pytest.raises(Exception, match="no listener certificate"):
+            agent.pinned_tls_context()
+
+    def test_running_one_exits_instead_of_looping_silently(self, tmp_path):
+        """Retrying a handshake it can never complete would look like a target
+        with good egress filtering instead of a payload that was built wrong."""
+        agent = _generate_agent(tmp_path, "nopin-run", port=1, sleep=1, jitter=0, tls=True)
+        proc = subprocess.run([sys.executable, str(agent)], cwd=str(tmp_path),
+                              capture_output=True, timeout=30)
+        assert proc.returncode == 2
+        joined = (proc.stderr + proc.stdout).decode("utf-8", "replace").lower()
+        assert "no listener certificate" in joined
+
+    def test_tls_is_off_unless_the_server_turns_it_on(self, tmp_path):
+        agent = _load_agent_module(_generate_agent(tmp_path, "plaintext", port=1))
+        assert agent.TLS_ON is False
+        assert agent.TLS_CERT_PEM == ""
 
 
 def _drain(proc) -> str:

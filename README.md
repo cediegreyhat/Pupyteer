@@ -71,11 +71,19 @@ server:
   port: 8443        # TCP callbacks
   http_port: 8080   # HTTP callbacks; 0 disables them
   http_uri: "/index.html"
+  tls: true         # serve both listeners over TLS; payloads pin the certificate
 ```
 
-For `--transport https`, either set `server.https_cert` / `server.https_key` so
-the listener terminates TLS, or front the HTTP listener with a reverse proxy
-holding a real certificate — agents verify server certificates.
+`tls: true` generates a self-signed pair at `server.tls_cert` / `server.tls_key`
+on the listener's first start and compiles that certificate into every payload
+built afterwards, so the agent trusts one certificate and nothing else. It is off
+by default because it changes what payloads can connect — turn it on before the
+server starts and before you build, and reuse the same key pair, since replacing
+it strands payloads already in the field.
+
+`--transport https` works with `tls: true`, or with `server.https_cert` /
+`server.https_key` for a certificate you obtained yourself, or against a reverse
+proxy holding a real one.
 
 Or programmatically:
 
@@ -240,7 +248,7 @@ git-ignored.
 .venv/bin/python -m pytest pupyteer/tests/integration/ -v
 ```
 
-**Current test count: 758 tests passing** (`pytest pupyteer/tests`)
+**Current test count: 774 tests passing** (`pytest pupyteer/tests`)
 
 ---
 
@@ -255,22 +263,27 @@ section describes what the running code does, not what its modules could do.
 - **Audit logging** — operator actions recorded with attribution
 - **Credential redaction** — secrets are kept out of audit logs
 - **Input validation** — operator inputs checked before execution
-- **Transport hardening available** — `--transport https` with
-  `server.https_cert`/`server.https_key`, or a reverse proxy holding a real
-  certificate, gives the callbacks TLS. Agents verify server certificates; there
-  is no verification bypass.
+- **Transport TLS with certificate pinning** — set `server.tls: true` and both
+  listeners serve TLS from a generated self-signed pair
+  (`server.tls_cert`/`server.tls_key`). Payloads built while it is on compile that
+  certificate in and trust *only* it: signature verification stays on, so a
+  man-in-the-middle without your certificate is rejected, and you never need a CA
+  certificate for a bare team-server IP. `--transport https` reaches the same
+  listener over `https://`. A certificate already in use is never replaced under
+  those paths — regenerating it would strand every payload in the field.
 - **Verification gates** — `scripts/verify_secure_defaults.py --strict` and
   `scripts/audit_deps.py` both exit non-zero on findings
 
 ### What does not work yet
 
-- **The session channel is plaintext by default.** Over the TCP listener, and the
-  HTTP listener without TLS, messages are newline-delimited JSON — base64 over
-  HTTP is encoding, not encryption. Assume every command you type and every
-  result that comes back is readable to anyone on the path unless you put TLS on
-  it yourself.
-- **Agent registration is unauthenticated.** Anyone who can reach the listener
-  port can register a session and have commands run against the operator's own
+- **TLS is opt-in.** The default is still plaintext: over the TCP listener, and
+  the HTTP listener without TLS, messages are newline-delimited JSON — base64
+  over HTTP is encoding, not encryption. Turn on `server.tls` *before* building
+  payloads and before starting the server (the listener reads it when it binds),
+  and assume anything on the path can read your commands and results otherwise.
+- **Agent registration is unauthenticated.** Pinning proves the *listener* to the
+  agent; nothing proves the agent to the listener. Anyone who can reach the port
+  can register a session and have commands run against the operator's own
   `fs_put`/`exec` path. Bind the listener to an address you control access to;
   the protocol will not do it for you.
 - **There is no operator login in the running tool.** `server/core/auth.py` and

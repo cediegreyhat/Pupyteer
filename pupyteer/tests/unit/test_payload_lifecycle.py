@@ -39,6 +39,20 @@ def audit(config):
     return AuditLogger(config)
 
 
+def _pinned_cert(agent_path: Path) -> str:
+    """The certificate PEM compiled into a generated agent.
+
+    Read from the imported module rather than the source text, so the escaping
+    the template applies cannot hide a mismatch between build and listener.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(agent_path.stem, str(agent_path))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.TLS_CERT_PEM
+
+
 # ─── Spec Field Coverage ─────────────────────────────────────────
 
 
@@ -508,3 +522,72 @@ class TestExpiration:
         meta.status = PayloadStatus.VERIFIED.value
         meta.expiration = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
         assert meta.is_valid is False
+
+
+# ─── Listener TLS Tests ──────────────────────────────────────────
+
+
+class TestListenerTlsIsBakedIn:
+    """An agent pins the listener's certificate at build time, so a build has to
+    produce exactly the certificate the server will present. Getting this wrong
+    is invisible until a payload cannot call home.
+    """
+
+    @pytest.fixture
+    def tls_config(self, config, tmp_path):
+        config.set("server.tls", True)
+        config.set("server.tls_cert", str(tmp_path / "listener.crt"))
+        config.set("server.tls_key", str(tmp_path / "listener.key"))
+        config.set("server.tls_hostnames", ["127.0.0.1", "team-server"])
+        return config
+
+    @pytest.mark.asyncio
+    async def test_build_produces_and_pins_the_listener_certificate(
+        self, tls_config, audit, tmp_path
+    ):
+        from pupyteer.server.core.tls import certificate_fingerprint
+
+        builder = PayloadBuilder(tls_config, audit)
+        cfg = PayloadConfig(name="tls-baked", payload_type=PayloadType.SCRIPT)
+        meta = await builder.build(cfg, builder.generate_payload_id())
+        artifact = Path(meta.artifact_path)
+        assert artifact.exists()
+        code = artifact.read_text(encoding="utf-8")
+
+        assert "TLS_ON = True" in code
+        assert "BEGIN CERTIFICATE" in code
+        # The pair is generated on demand, and what got compiled in is the very
+        # certificate the listener will serve from the same config.
+        assert _pinned_cert(artifact) == (tmp_path / "listener.crt").read_text(encoding="ascii")
+        assert certificate_fingerprint(str(tmp_path / "listener.crt"))
+
+    @pytest.mark.asyncio
+    async def test_a_second_build_reuses_the_certificate(
+        self, tls_config, audit, tmp_path
+    ):
+        """Regenerating it on the next build would strand every earlier payload."""
+        from pupyteer.server.core.tls import certificate_fingerprint
+
+        builder = PayloadBuilder(tls_config, audit)
+        first = Path(str(tmp_path / "listener.crt"))
+        await builder.build(
+            PayloadConfig(name="reuse-a", payload_type=PayloadType.SCRIPT),
+            builder.generate_payload_id())
+        stamp = first.stat().st_mtime_ns
+        fingerprint = certificate_fingerprint(str(first))
+
+        await builder.build(
+            PayloadConfig(name="reuse-b", payload_type=PayloadType.SCRIPT),
+            builder.generate_payload_id())
+        assert first.stat().st_mtime_ns == stamp
+        assert certificate_fingerprint(str(first)) == fingerprint
+
+    @pytest.mark.asyncio
+    async def test_tls_off_leaves_the_agent_plaintext(self, config, audit):
+        builder = PayloadBuilder(config, audit)
+        meta = await builder.build(
+            PayloadConfig(name="no-tls", payload_type=PayloadType.SCRIPT),
+            builder.generate_payload_id())
+        code = Path(meta.artifact_path).read_text(encoding="utf-8")
+        assert "TLS_ON = False" in code
+        assert "BEGIN CERTIFICATE" not in code

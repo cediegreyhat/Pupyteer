@@ -13,7 +13,8 @@ permits raw TCP to an arbitrary port, but it permits web traffic. Without this
 listener, payloads built with transport=http/https had nothing to talk to and
 silently never checked in.
 
-Set server.https_cert/https_key to terminate TLS here; otherwise front the
+server.tls terminates TLS here with the pinned listener certificate; alternatively
+set server.https_cert/https_key for a pair you obtained yourself, or front the
 listener with a reverse proxy and point https payloads at that proxy.
 """
 from __future__ import annotations
@@ -74,6 +75,11 @@ class HTTPListener(AgentListener):
         })
 
     def _build_ssl_context(self) -> Optional[ssl.SSLContext]:
+        # A context the transport manager built from server.tls already carries
+        # the certificate payloads were compiled to pin.
+        supplied = self._config.get("ssl_context")
+        if supplied is not None:
+            return supplied
         cert = self._config.get("certfile")
         key = self._config.get("keyfile")
         if not cert or not key:

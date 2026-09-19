@@ -178,18 +178,61 @@ def check_file_permissions(project_root: Path) -> List[str]:
 
 
 def verify_ssl_defaults() -> List[str]:
-    """Verify SSL/TLS secure defaults."""
+    """Verify the TLS defaults the shipped code actually uses.
+
+    This section reports "SSL/TLS defaults", so it has to look at the TLS path:
+    an agent that trusts any certificate, or a listener that cannot be reached
+    without one, both read as green here and as a plaintext tap on the wire later.
+    """
     findings = []
-    
+
+    try:
+        from pupyteer.agent.core.stub import AgentStubGenerator, StubConfig
+    except ImportError as exc:
+        return [f"Could not import the agent stub to verify TLS: {exc}"]
+
+    # A generated agent is the artifact that ships, so check the real rendering
+    # rather than the template source.
+    plain = AgentStubGenerator().generate(StubConfig(name="gate-plain"))
+    pinned = AgentStubGenerator().generate(
+        StubConfig(name="gate-tls", tls=True, tls_cert_pem="-----BEGIN CERTIFICATE-----\nX\n"))
+
+    for label, code in (("plaintext agent", plain), ("pinned agent", pinned)):
+        if "CERT_NONE" in code or "_create_unverified_context" in code:
+            findings.append(f"{label} disables certificate verification")
+        if "verify_mode = _ssl.CERT_NONE" in code:
+            findings.append(f"{label} accepts any server certificate")
+
+    if "TLS_ON = False" not in plain:
+        findings.append("TLS must be off until the server enables server.tls")
+    if "TLS_ON = True" not in pinned:
+        findings.append("StubConfig.tls does not reach the generated agent")
+    # TLS without a pin is not a downgrade to plaintext, it is a dead payload;
+    # make sure the template still has the branch that says so.
+    if "no listener certificate" not in pinned:
+        findings.append("an agent with TLS and no certificate must fail, not retry silently")
+
+    try:
+        from pupyteer.server.core.config import DEFAULT_CONFIG
+    except ImportError as exc:
+        findings.append(f"Could not import ConfigManager to verify TLS defaults: {exc}")
+        return findings
+
+    server = DEFAULT_CONFIG.get("server", {})
+    if not isinstance(server.get("tls"), bool):
+        findings.append("server.tls should default to a boolean")
+    for key in ("tls_cert", "tls_key"):
+        if not server.get(key):
+            findings.append(f"server.{key} has no default, so enabling TLS would fail to find a certificate")
+
     try:
         from pupyteer.agent.core.auth import AuthConfig
-        # Default should not have insecure settings
         config = AuthConfig()
         if config.jwt_algorithm.lower() == 'none':
             findings.append("JWT algorithm should not default to 'none'")
     except ImportError:
-        pass
-    
+        findings.append("AuthConfig is unavailable; its algorithm default went unchecked")
+
     return findings
 
 

@@ -346,6 +346,15 @@ class PupyteerTUI:
         status = self._engine.get_status()
         server = status["config"]
         print(c(f"  [Server]", theme.get("success")), f"{server['server_host']}:{server['server_port']}")
+        # Whether callbacks are encrypted is the first thing that decides if this
+        # server is safe to start using, so it goes where the operator looks first.
+        fingerprint = server.get("listener_tls") or ""
+        if fingerprint:
+            print(c("  [Channel]", theme.get("success")),
+                  f"TLS, pinned to SHA-256 {fingerprint[:16]}…")
+        else:
+            print(c("  [Channel]", theme.get("error")),
+                  "plaintext callbacks — set server.tls before working a target")
         print(c(f"  [Operator]", theme.get("warning")), f"{server['operator']}")
         print(c(f"  [Profile]", theme.get("accent")), f"{status['state']['loaded_profile'] or 'none'}")
         print(c(f"  [Agents]", theme.get("info")), f"{status['state']['active_sessions']}")

@@ -4,7 +4,8 @@ Provides the core C2 server transport: accepts inbound TCP connections
 from Pupyteer agents, performs session registration, dispatches queued
 command on check-in, and collects command output.
 
-Protocol: newline-delimited JSON messages over a plain TCP socket.
+Protocol: newline-delimited JSON messages over one TCP connection per session,
+wrapped in TLS when the config supplies an ``ssl_context`` (server.tls).
 
 Message types:
     Agent → Server:
@@ -92,6 +93,9 @@ class AgentListener:
     ):
         self._host: str = config.get("host", "0.0.0.0")
         self._port: int = int(config.get("port", 8443))
+        # Supplied by TransportManager when server.tls is on. Absent means the
+        # listener speaks plaintext JSON, which any tap on the wire can read.
+        self._ssl_context = config.get("ssl_context")
         self._session_manager = session_manager
         self._audit = audit_logger
 
@@ -112,17 +116,21 @@ class AgentListener:
 
     async def start(self) -> None:
         """Bind the TCP server and start accepting connections."""
+        ssl_context = self._ssl_context
         self._server = await asyncio.start_server(
             self._handle_client,
             host=self._host,
             port=self._port,
             limit=MAX_MESSAGE_BYTES,
+            ssl=ssl_context,
         )
         addrs = ", ".join(str(s.getsockname()) for s in self._server.sockets)
-        logger.info("Agent listener listening on %s", addrs)
+        logger.info("Agent listener listening on %s (%s)",
+                    addrs, "TLS" if ssl_context else "plaintext")
         self._audit.log_event("listener_started", {
             "host": self._host,
             "port": self._port,
+            "tls": bool(ssl_context),
         })
 
     async def stop(self) -> None:

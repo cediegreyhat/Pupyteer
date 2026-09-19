@@ -9,6 +9,10 @@ __pycache__/
 # Pupyteer generated
 logs/
 payloads/artifacts/
+# The listener's TLS private key. Generated next to the certificate the payloads
+# pin, and committing it would hand whoever has the repo the ability to
+# impersonate the team server to every fielded agent.
+data/tls/
 # Code-graph tool output (graph.html, AST cache). Regenerable with
 # `graphify update .`, and it lands inside the package when the tool is run
 # there, so nothing in it is source.

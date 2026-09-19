@@ -396,6 +396,11 @@ class PupyteerEngine:
             "config": {
                 "server_host": self._config.get("server.host", "0.0.0.0"),
                 "server_port": self._config.get("server.port", 8443),
+                # SHA-256 of the certificate the listener actually serves; empty
+                # while callbacks run in the clear.
+                "listener_tls": getattr(
+                    self._transports.listener_tls, "fingerprint", ""
+                ),
                 "log_level": self._config.get("logging.level", "INFO"),
                 "operator": self._config.get("operator.name", "unknown"),
                 "environment": self._config.environment,

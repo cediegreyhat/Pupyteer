@@ -10,6 +10,8 @@ from pathlib import Path
 
 import yaml
 
+from pupyteer.server.core.tls import DEFAULT_CERT_FILE, DEFAULT_KEY_FILE
+
 logger = logging.getLogger("pupyteer.config")
 
 DEFAULT_CONFIG: Dict[str, Any] = {
@@ -21,6 +23,17 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         # Off by default because port 8080 is routinely occupied on a team box.
         "http_port": 0,
         "http_uri": "/index.html",
+        # Off by default: the session protocol is JSON in the clear, so a listener
+        # on a network the operator does not own should not be trusted by
+        # omission. Enabling TLS makes the agent pin the listener's certificate,
+        # which is the only check either side can make on a self-signed team
+        # server reached by IP.
+        "tls": False,
+        "tls_cert": DEFAULT_CERT_FILE,
+        "tls_key": DEFAULT_KEY_FILE,
+        # Names in the certificate besides server.host. Set them before the
+        # certificate is first created; an existing one is never rewritten.
+        "tls_hostnames": [],
     },
     "logging": {
         "level": "INFO",

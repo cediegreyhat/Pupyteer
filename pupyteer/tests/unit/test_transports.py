@@ -623,5 +623,45 @@ class TestProfileIntegration:
         assert transport.name == "profile-http"
 
 
+class TestListenerTlsResolution:
+    """server.tls decides what both listeners serve and what payloads pin."""
+
+    def test_disabled_tls_produces_no_material_and_no_files(self, tmp_path):
+        from pupyteer.server.core.tls import listener_tls
+
+        config = ConfigManager()
+        config.set("server.tls", False)
+        config.set("server.tls_cert", str(tmp_path / "listener.crt"))
+        assert listener_tls(config.get) is None
+        assert not any(tmp_path.iterdir()), "TLS off must not generate a certificate"
+
+    def test_a_string_true_from_a_config_file_enables_it(self, tmp_path):
+        """Environment overrides and hand-edited YAML arrive as strings."""
+        from pupyteer.server.core.tls import listener_tls
+
+        config = ConfigManager()
+        config.set("server.tls", "true")
+        config.set("server.tls_cert", str(tmp_path / "listener.crt"))
+        config.set("server.tls_key", str(tmp_path / "listener.key"))
+        material = listener_tls(config.get)
+        assert material is not None
+        assert "BEGIN CERTIFICATE" in material.cert_pem
+        assert len(material.fingerprint) == 64
+
+    def test_a_half_pair_is_an_error_not_a_new_certificate(self, tmp_path):
+        """Silently replacing a pinned certificate looks like dead agents."""
+        from pupyteer.server.core.tls import ensure_listener_cert
+
+        cert = tmp_path / "listener.crt"
+        key = tmp_path / "listener.key"
+        ensure_listener_cert(str(cert), str(key))
+        key.unlink()
+
+        with pytest.raises(FileNotFoundError) as caught:
+            ensure_listener_cert(str(cert), str(key))
+        assert "incomplete" in str(caught.value)
+        assert cert.exists(), "the certificate fielded payloads pin must survive"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

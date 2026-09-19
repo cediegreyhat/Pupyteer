@@ -372,6 +372,20 @@ class TestPupyteerTUIRender:
         assert "0.0.0.0:8443" in captured.out
         assert "HTTPS-Default" in captured.out
 
+    def test_banner_warns_when_callbacks_are_plaintext(self, tui, capsys):
+        """A mock status with no fingerprint is the default; the operator should
+        not have to remember to check whether the channel is encrypted.
+        """
+        tui.render_banner()
+        assert "plaintext" in capsys.readouterr().out
+
+    def test_banner_shows_the_pinned_certificate(self, tui, capsys):
+        tui._engine.get_status.return_value["config"]["listener_tls"] = "ab" * 32
+        tui.render_banner()
+        out = capsys.readouterr().out
+        assert "plaintext" not in out
+        assert "TLS" in out and "abababababababab" in out
+
     def test_render_dashboard(self, tui, capsys):
         tui.render_dashboard()
         captured = capsys.readouterr()
