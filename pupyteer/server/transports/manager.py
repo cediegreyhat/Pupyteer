@@ -258,6 +258,15 @@ class TransportManager:
                 "state": "listening" if self._listener.is_running else "stopped",
                 "stats": self._listener.stats,
             })
+        if self._http_listener is not None:
+            # Its own row, not a merge into the TCP one: the two listeners have
+            # different ports and different exposure, and a rejection count that
+            # only ever came from the HTTP port is a fact worth locating.
+            result.append({
+                "name": "agent_listener_http",
+                "state": "listening" if self._http_listener.is_running else "stopped",
+                "stats": self._http_listener.stats,
+            })
         return result
 
     def available_types(self) -> List[str]:

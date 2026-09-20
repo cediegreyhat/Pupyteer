@@ -149,6 +149,16 @@ and the first available of `gnome-screenshot`/`scrot`/`spectacle`/
 library. The image is returned over the session and deleted from the target's
 temp directory; there is no third-party dependency to ship.
 
+The module library reaches the same implant through the same command channel, so
+`use <module>`, `set <OPTION> <value>` and `sessions route <session_id> <module>`
+run it against a live session — `file_list`, `download`, `upload` and `discovery`
+dispatch `fs_list`/`fs_get`/`fs_put`/`exec` tasks and report what the agent
+answered. A module that cannot reach an agent returns an error naming that fact
+rather than an empty success, a transfer that fails part-way reports how many
+bytes did arrive, and a session that will not accept a command at all is reported
+that way immediately instead of after the full wait — a gone implant is not a slow
+one, and the difference decides whether you wait or move on.
+
 ---
 
 ## 🏗️ Architecture
@@ -189,8 +199,8 @@ PUPYTEER
 | **Payloads** | Python script, PE executable, versioning, metadata tracking, signing stub |
 | **Transports** | Served listeners: **TCP** and **HTTP/HTTPS** (same session protocol, one JSON message per POST). Agent-side DNS/DoH/WebSocket stubs exist but have no listener, so `payloads build` rejects them rather than ship a payload that can never call back. |
 | **C2 Profiles** | YAML-based malleable C2 — heartbeat, encoding, timeouts, headers, URIs |
-| **Modules** | Core, Recon, Execution, File Ops, Red-Team, Evasion — standardized ABC |
-| **Sessions** | list/info/interact/rename/kill/tag/search, chunked file upload & download, screen capture, audit trail |
+| **Modules** | Core, Recon, Execution, File Ops, Red-Team, Evasion — standardized ABC, dispatched to the implant over the session command channel |
+| **Sessions** | list/info/interact/rename/kill/tag/search/route, chunked file upload & download, screen capture, audit trail |
 | **Tasks** | Priority queue (CRITICAL → BACKGROUND), async execution, tracking |
 | **Evasion** | XOR/AES/RC4 obfuscation, PE manipulation, anti-sandbox/debug/VM, Litterbox integration |
 | **Security** | audit trail with redaction, input validation, optional TLS on callbacks (see Security for what is not wired) |
@@ -257,7 +267,7 @@ git-ignored.
 .venv/bin/python -m pytest pupyteer/tests/integration/ -v
 ```
 
-**Current test count: 798 tests passing** (`pytest pupyteer/tests`)
+**Current test count: 834 tests passing** (`pytest pupyteer/tests`)
 
 ---
 
@@ -286,7 +296,9 @@ section describes what the running code does, not what its modules could do.
   listener stats and written to the audit log as `registration_rejected`. Payloads
   built by this server compile that secret into their `register` message, and an
   agent whose enrollment is refused exits instead of beaconing against a server
-  that will never admit it. Both listeners apply the same check.
+  that will never admit it. Both listeners apply the same check, and
+  `transports list` reports them as separate rows — a rejection count belongs to
+  the port that was probed, not to whichever listener you happened to start first.
 - **Verification gates** — `scripts/verify_secure_defaults.py --strict` and
   `scripts/audit_deps.py` both exit non-zero on findings
 

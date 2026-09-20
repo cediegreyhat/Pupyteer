@@ -9,6 +9,8 @@ Uses port 0 (OS-assigned free port) to avoid conflicts with other tests.
 from __future__ import annotations
 
 import asyncio
+import base64
+import http.client
 import json
 import socket
 import threading
@@ -58,8 +60,10 @@ class _EngineThread:
     from the test thread.
     """
 
-    def __init__(self, port: int, auth_secret_file: Optional[str] = None):
+    def __init__(self, port: int, auth_secret_file: Optional[str] = None,
+                 http_port: Optional[int] = None):
         self._port = port
+        self._http_port = http_port
         self._auth_secret_file = auth_secret_file
         self.engine: Optional[PupyteerEngine] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -86,6 +90,8 @@ class _EngineThread:
             if self._auth_secret_file is not None:
                 self.engine.config.set(
                     "server.agent_auth_file", self._auth_secret_file)
+            if self._http_port is not None:
+                self.engine.config.set("server.http_port", self._http_port)
             self._loop.run_until_complete(self.engine.start())
             self._ready.set()
             self._loop.run_forever()
@@ -137,6 +143,26 @@ def engine_thread(tmp_path_factory):
     thread.stop()
 
 
+@pytest.fixture(scope="module")
+def dual_listener_thread(tmp_path_factory):
+    """An engine whose TCP and HTTP callback listeners are both up.
+
+    The HTTP listener holds its own counters, so a rejection there is only worth
+    anything to an operator if the reporting layer carries it separately.
+    """
+    port = _find_free_port()
+    http_port = _find_free_port()
+    secret_file = tmp_path_factory.mktemp("dual-callback") / "enrollment.key"
+    secret_file.write_text(_TEST_SECRET + "\n", encoding="utf-8")
+    thread = _EngineThread(port, auth_secret_file=str(secret_file),
+                           http_port=http_port)
+    thread.start()
+    _wait_for_port("127.0.0.1", port, timeout=5)
+    _wait_for_port("127.0.0.1", http_port, timeout=5)
+    yield thread, "127.0.0.1", port, http_port
+    thread.stop()
+
+
 def _tcp_connect(host: str, port: int) -> socket.socket:
     """Create a connected TCP socket with a 5-second timeout."""
     sock = socket.create_connection((host, port), timeout=5)
@@ -184,6 +210,34 @@ def _register_agent(
     session_id = response["session_id"]
     assert session_id, "No session_id in response"
     return sock, session_id
+
+
+def _http_register(host: str, port: int,
+                   auth: Optional[str] = None) -> tuple:
+    """One callback to the HTTP listener; returns (status, decoded reply).
+
+    The listener answers 200 with an application-level refusal, so the status
+    alone proves nothing about enrollment — the reply body is the assertion.
+    """
+    message = {
+        "type": "register",
+        "auth": _TEST_SECRET if auth is None else auth,
+        "hostname": "http-callback",
+        "os": "linux",
+        "arch": "x86_64",
+        "username": "testuser",
+        "agent_version": "1.0.0-test",
+    }
+    connection = http.client.HTTPConnection(host, port, timeout=5)
+    try:
+        connection.request(
+            "POST", "/index.html", json.dumps(message),
+            {"Content-Type": "application/octet-stream"})
+        response = connection.getresponse()
+        body = response.read()
+        return response.status, json.loads(base64.b64decode(body).decode("utf-8"))
+    finally:
+        connection.close()
 
 
 # ---------------------------------------------------------------------------
@@ -299,6 +353,52 @@ class TestLiveEnrollment:
             assert response["message"] == "auth_failed"
         finally:
             sock.close()
+
+
+class TestLiveTransportReporting:
+    """Both listeners have to show up in the transport table, with their own counts.
+
+    A count nobody can see is not a warning: probing the HTTP port is exactly the
+    event the operator needs to notice, and it never reaches the TCP listener.
+    """
+
+    def test_the_http_listener_has_its_own_row(self, dual_listener_thread):
+        thread, _host, _port, _http_port = dual_listener_thread
+        rows = {t["name"]: t for t in thread.engine.transports.list()}
+        assert {"agent_listener", "agent_listener_http"} <= set(rows)
+        assert rows["agent_listener"]["state"] == "listening"
+        assert rows["agent_listener_http"]["state"] == "listening"
+
+    def test_a_rejected_http_callback_is_counted_where_it_happened(
+        self, dual_listener_thread
+    ):
+        thread, host, _port, http_port = dual_listener_thread
+        before = thread.engine.transports.list()
+        tcp_before = next(
+            t["stats"]["registrations_rejected"] for t in before
+            if t["name"] == "agent_listener")
+        http_before = next(
+            t["stats"]["registrations_rejected"] for t in before
+            if t["name"] == "agent_listener_http")
+
+        status, reply = _http_register(host, http_port, auth="not-our-secret")
+
+        assert status == 200
+        assert reply == {"type": "error", "message": "auth_failed"}
+        after = {t["name"]: t["stats"] for t in thread.engine.transports.list()}
+        assert after["agent_listener_http"]["registrations_rejected"] == http_before + 1
+        # The two listeners keep separate ledgers, so this says the rejection was
+        # charged to the port that actually received it.
+        assert after["agent_listener"]["registrations_rejected"] == tcp_before
+
+    def test_a_registered_http_agent_becomes_a_session(self, dual_listener_thread):
+        thread, host, _port, http_port = dual_listener_thread
+        status, reply = _http_register(host, http_port)
+        assert status == 200
+        assert reply["type"] == "registered"
+        session = thread.submit(thread.engine.sessions.get(reply["session_id"]))
+        assert session is not None
+        assert session.hostname == "http-callback"
 
 
 class TestLiveAgentCheckin:

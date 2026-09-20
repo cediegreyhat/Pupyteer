@@ -3,8 +3,12 @@
 These pin down that TUI commands operate on the *running* engine rather than
 constructing a throwaway one, and that the dispatcher routes and renders.
 """
+import ast
+import importlib
 import os
 import sys
+from importlib.util import resolve_name
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -348,3 +352,160 @@ class TestModuleLoadVisibility:
 
         await show_modules(live_tui, [])
         assert "failed to load: file:broken" in capsys.readouterr().out
+
+
+# ─── Lazy imports actually resolve ────────────────────────────────────
+
+
+_TUI_DIR = Path(sys.modules["pupyteer.tui"].__file__).parent
+
+
+def _module_of(path: Path) -> str:
+    """Dotted module name for a source file inside the pupyteer package."""
+    parts = list(path.relative_to(_TUI_DIR.parent).with_suffix("").parts)
+    if parts[-1] == "__init__":
+        parts.pop()
+    return ".".join(parts)
+
+
+def _guarded_lines(tree: ast.AST) -> set:
+    """Line numbers of nodes inside a `try:` body.
+
+    An import there is a probe — the handler catches its ImportError — so the
+    guard must not demand that it resolve.
+    """
+    guarded = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Try):
+            for stmt in node.body:
+                guarded.update(getattr(inner, "lineno", 0) for inner in ast.walk(stmt))
+    return guarded
+
+
+class TestLazyImportsResolve:
+    """A console verb reaches its handler through an import that only runs when the
+    operator types the verb, so a stale or mistyped name sits in the tree unnoticed
+    until someone presses enter. This resolves them all without pressing anything.
+    """
+
+    @pytest.mark.parametrize(
+        "path", sorted(_TUI_DIR.rglob("*.py")), ids=lambda p: str(p.relative_to(_TUI_DIR)))
+    def test_every_pupyteer_import_resolves(self, path):
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(path))
+        guarded = _guarded_lines(tree)
+        module = _module_of(path)
+
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Import, ast.ImportFrom)):
+                continue
+            if node.lineno in guarded:
+                continue
+            if isinstance(node, ast.ImportFrom):
+                if not node.level and not (node.module or "").startswith("pupyteer"):
+                    continue
+                target = resolve_name("." * node.level + (node.module or ""), module)
+                names = [a.name for a in node.names if a.name != "*"]
+            elif isinstance(node, ast.Import):
+                target = None
+                names = [a.name for a in node.names if a.name.startswith("pupyteer")]
+            else:
+                continue
+
+            for name in names:
+                imported = importlib.import_module(target or name)
+                if target is None:
+                    continue
+                if not hasattr(imported, name):
+                    # `from package import member` also binds a submodule, which
+                    # only appears as an attribute once something has imported it.
+                    try:
+                        importlib.import_module(f"{target}.{name}")
+                        continue
+                    except ModuleNotFoundError:
+                        pass
+                assert hasattr(imported, name), (
+                    f"{module}:{node.lineno} imports {name!r} from {target!r}, "
+                    f"which does not define it"
+                )
+
+
+class TestModuleVerbsReachTheirHandlers:
+    """`search`, `run` and `reload` were typed verbs that imported a name their
+    module did not define, so each one died on the keypress. The assertion here is
+    that the printed answer comes from msf_core, which only the real handler says.
+    """
+
+    @pytest.mark.asyncio
+    async def test_search_answers_from_msf_core(self, live_tui, engine, capsys):
+        engine.module_registry.count.return_value = 2
+        engine.module_registry.list_all.return_value = [
+            {"name": "file_list", "category": "file_ops",
+             "description": "List a remote directory"},
+        ]
+        await live_tui.cmd_search(["file"])
+        printed = capsys.readouterr().out
+        assert "file_list" in printed, "search never reached the module table"
+        assert "search error" not in printed.lower()
+
+    @pytest.mark.asyncio
+    async def test_run_answers_from_msf_core(self, live_tui, engine, capsys):
+        engine.module_registry.count.return_value = 0
+        await live_tui.cmd_run([])
+        printed = capsys.readouterr().out
+        assert "No active module" in printed, "run never reached the exploit path"
+        assert "run error" not in printed.lower()
+
+    @pytest.mark.asyncio
+    async def test_reload_answers_from_msf_core(self, live_tui, engine, capsys):
+        engine.module_registry.count.return_value = 7
+        await live_tui.cmd_reload([])
+        printed = capsys.readouterr().out
+        assert "reloaded" in printed.lower(), "reload never touched the registry"
+        engine.module_registry.discover.assert_called_once()
+        assert "reload error" not in printed.lower()
+
+
+class TestSessionsRouteDispatch:
+    """`sessions route` is the console's only verb for running a module against a
+    session, and it was neither listed in the usage nor present in the dispatch map.
+    """
+
+    @pytest.mark.asyncio
+    async def test_route_runs_the_module_and_shows_its_output(self, live_tui, engine, capsys):
+        session = SimpleNamespace(hostname="lab-host", os="windows",
+                                  arch="x64", username="svc")
+        engine.sessions.get = AsyncMock(return_value=session)
+        engine.module_registry.count.return_value = 1
+        engine.module_registry.execute = AsyncMock(
+            return_value={"status": "ok", "output": "lab-host\\svc"})
+
+        await live_tui.cmd_sessions(["route", "sess-1", "discovery"])
+
+        engine.module_registry.execute.assert_awaited_once()
+        printed = capsys.readouterr().out
+        assert "discovery" in printed
+        assert "lab-host" in printed, (
+            "the module ran but its answer stayed inside the result dict, which "
+            "reads to the operator exactly like a module that found nothing"
+        )
+
+    @pytest.mark.asyncio
+    async def test_route_failure_is_reported_as_a_failure(self, live_tui, engine, capsys):
+        session = SimpleNamespace(hostname="lab-host", os="windows",
+                                  arch="x64", username="svc")
+        engine.sessions.get = AsyncMock(return_value=session)
+        engine.module_registry.count.return_value = 1
+        engine.module_registry.execute = AsyncMock(
+            return_value={"status": "error", "error": "Module not found: nope"})
+
+        await live_tui.cmd_sessions(["route", "sess-1", "nope"])
+
+        printed = capsys.readouterr().out
+        assert "Module not found" in printed
+        assert "executed" not in printed
+
+    @pytest.mark.asyncio
+    async def test_usage_lists_route(self, live_tui, capsys):
+        await live_tui.cmd_sessions(["frobnicate"])
+        assert "route <id> <module>" in capsys.readouterr().out

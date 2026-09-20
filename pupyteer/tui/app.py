@@ -722,6 +722,7 @@ class PupyteerTUI:
             sessions_list, sessions_info, sessions_interact, sessions_kill,
             sessions_rename, sessions_tag, sessions_search, sessions_results,
             sessions_download, sessions_upload, sessions_screenshot,
+            sessions_route,
         )
         if not args:
             args = ["list"]
@@ -739,6 +740,7 @@ class PupyteerTUI:
             "rename": sessions_rename,
             "tag": sessions_tag,
             "search": sessions_search,
+            "route": sessions_route,
         }
         handler = handlers.get(action)
         if handler is None:
@@ -746,7 +748,7 @@ class PupyteerTUI:
                 "Usage: sessions [list|info <id>|interact <id>|results <id>"
                 "|download <id> <remote> [local]|upload <id> <local> <remote>"
                 "|screenshot <id> [local]|kill <id>|rename <id> <name>"
-                "|tag <id> <tag>|search <query>]"
+                "|tag <id> <tag>|search <query>|route <id> <module>]"
             )
             return
         try:
@@ -808,9 +810,9 @@ class PupyteerTUI:
 
     async def cmd_search(self, args: List[str]) -> None:
         """Search modules."""
-        from pupyteer.tui.commands.msf_core import search_modules
+        from pupyteer.tui.commands.msf_core import search
         try:
-            result = await search_modules(self, args)
+            result = await search(self, args)
         except Exception as e:
             self.render_error(f"search error: {e}")
 
@@ -856,7 +858,7 @@ class PupyteerTUI:
 
     async def cmd_run(self, args: List[str]) -> None:
         """Run the active module."""
-        from pupyteer.tui.commands.msf_core import run_module
+        from pupyteer.tui.commands.msf_core import run as run_module
         try:
             result = await run_module(self, args)
         except Exception as e:
@@ -864,7 +866,7 @@ class PupyteerTUI:
 
     async def cmd_reload(self, args: List[str]) -> None:
         """Reload module registry."""
-        from pupyteer.tui.commands.msf_core import reload_modules
+        from pupyteer.tui.commands.msf_core import reload as reload_modules
         try:
             result = await reload_modules(self, args)
         except Exception as e:

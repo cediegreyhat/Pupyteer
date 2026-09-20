@@ -478,7 +478,8 @@ async def _dispatch_module(tui: Any, module_name: str, session_id: str, args: Di
 
     # Use the engine's module registry to execute
     registry = _get_context(tui).registry
-    result = await registry.execute(module_name, session, args)
+    result = await registry.execute(
+        module_name, session, args, session_manager=tui._engine.sessions)
 
     if result.get('status') == 'ok':
         tui.render_success(f"Module executed successfully on {session_id}")

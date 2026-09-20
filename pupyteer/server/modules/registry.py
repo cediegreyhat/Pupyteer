@@ -369,9 +369,20 @@ class ModuleRegistry:
         return instance
 
     async def execute(
-        self, name: str, session: Any, args: Dict[str, Any]
+        self,
+        name: str,
+        session: Any,
+        args: Dict[str, Any],
+        session_manager: Any = None,
     ) -> Dict[str, Any]:
-        """Convenience: instantiate, validate, execute, cleanup in one call."""
+        """Convenience: instantiate, validate, execute, cleanup in one call.
+
+        ``session_manager`` is what lets a module queue a command on the agent and
+        wait for its answer. Without it a module can only read the fields the
+        listener already collected at registration, and it will do that quietly and
+        return a green status — so callers that mean to work *on* the session pass
+        it. ``ModuleExecutor`` injects the same thing on its path.
+        """
         instance = self.create(name)
         if instance is None:
             return {"status": "error", "error": f"Module not found: {name}"}
@@ -380,6 +391,9 @@ class ModuleRegistry:
         errors = instance.validate_args(args)
         if errors:
             return {"status": "error", "error": "; ".join(errors)}
+
+        if session_manager is not None:
+            instance._session_manager = session_manager  # type: ignore[attr-defined]
 
         # Ensure initialized
         if not instance._initialized:

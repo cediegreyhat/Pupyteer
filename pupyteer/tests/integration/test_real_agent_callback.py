@@ -773,6 +773,63 @@ class TestOperatorShell:
             await engine.stop()
 
 
+class TestModuleLibrary:
+    """`use`/`run` are the documented way to drive an implant, so the module path
+    has to work against a generated agent — the unit tests speak to a stubbed
+    session manager, which cannot show a request the agent does not understand.
+    """
+
+    @pytest.mark.asyncio
+    async def test_recon_modules_drive_a_real_agent(self, tmp_path, listener_port, agent_source):
+        engine = PupyteerEngine(_write_server_config(tmp_path, listener_port))
+        proc = _start_agent(agent_source, tmp_path)
+        try:
+            await engine.start()
+            session_id = await _await_session(engine)
+            assert session_id, "generated agent never registered a session"
+
+            registry = engine.module_registry
+            assert registry.count() or registry.discover()
+            session = await engine.sessions.get(session_id)
+
+            marker = tmp_path / "module-fs-marker"
+            marker.write_text("listed", encoding="utf-8")
+
+            listed = await registry.execute(
+                "file_list", session, {"path": str(tmp_path)},
+                session_manager=engine.sessions)
+            assert listed["status"] == "ok", listed
+            names = {entry["name"] for entry in listed["entries"]}
+            assert marker.name in names, f"file_list did not see the marker: {names}"
+
+            found = await registry.execute(
+                "discovery", session, {"target": "whoami"},
+                session_manager=engine.sessions)
+            assert found["status"] == "ok", found
+            assert found["output"].strip(), "discovery came back with no output"
+
+            source = tmp_path / "pushed-by-module.bin"
+            source.write_bytes(b"module path" * 40)
+            landed = tmp_path / "landed" / "by-module.bin"
+            pushed = await registry.execute(
+                "upload", session,
+                {"local_path": str(source), "remote_path": str(landed)},
+                session_manager=engine.sessions)
+            assert pushed["status"] == "ok", pushed
+            assert landed.read_bytes() == source.read_bytes(), "uploaded file is not the original"
+
+            pulled = tmp_path / "pulled-by-module.bin"
+            got = await registry.execute(
+                "download", session,
+                {"remote_path": str(source), "local_path": str(pulled)},
+                session_manager=engine.sessions)
+            assert got["status"] == "ok", got
+            assert pulled.read_bytes() == source.read_bytes(), "downloaded file is not the original"
+        finally:
+            _stop_agent(proc)
+            await engine.stop()
+
+
 def _write_server_config(tmp_path, port: int, **server_overrides) -> str:
     config_path = tmp_path / "pupyteer.yaml"
     server = {

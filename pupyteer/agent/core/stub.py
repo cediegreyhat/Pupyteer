@@ -963,7 +963,12 @@ def mod_exec(command: str, timeout: int = 60) -> dict:
 {% endif %}
 
 {% if include_fs %}
-def mod_fs_list(path: str = ".") -> list:
+def mod_fs_list(path: str = ".") -> dict:
+    """One directory, as an object: a listing and a failure must not share a shape.
+
+    An empty directory is a real answer, and a server that has to guess which of
+    the two it got will guess wrong in its own favour.
+    """
     try:
         entries = []
         for e in _o.scandir(path):
@@ -978,9 +983,9 @@ def mod_fs_list(path: str = ".") -> list:
                 })
             except OSError:
                 pass
-        return entries
+        return {"path": path, "entries": entries}
     except Exception as e:
-        return [{"error": str(e)}]
+        return {"error": str(e)}
 
 def mod_fs_get(remote_path: str, offset: int = 0, length: int = 0) -> bytes:
     """Read up to *length* bytes from *offset*; length 0 means the whole rest.

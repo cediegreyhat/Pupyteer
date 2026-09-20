@@ -1,8 +1,10 @@
 """Unit tests for Pupyteer module system — registry, discovery, lifecycle, validation."""
 import asyncio
+import base64
+import json
 import os
 import sys
-import tempfile
+import time
 from pathlib import Path
 from typing import Any, Dict
 
@@ -20,6 +22,7 @@ from pupyteer.server.modules.registry import (
     ModuleState,
     ModuleHealth,
 )
+from pupyteer.server.sessions import transfer
 
 
 # ─── Fixtures ────────────────────────────────────────────────────────
@@ -368,19 +371,81 @@ class TestModuleRegistry:
 
 
 class TestModuleExecution:
+    """What a module answers, and whether it actually asked the agent.
+
+    A module that returns a well-shaped empty result for work it never did is the
+    failure mode these tests exist to catch: the operator sees "ok" and believes a
+    file landed. So every dispatching module is checked twice — once with no way to
+    reach the agent, which must be an error, and once against a session manager
+    that records what was queued.
+    """
+
+    @staticmethod
+    def _session(session_id: str = "sess-1") -> Any:
+        return type(
+            "Session", (),
+            {"session_id": session_id, "hostname": "test-host", "os": "linux",
+             "arch": "x64", "username": "root", "remote_address": "127.0.0.1:1",
+             "connected_at": 0, "last_checkin": 0},
+        )()
+
+    @staticmethod
+    def _agent(answers: Dict[str, Any]) -> Any:
+        """A session manager that completes every command with `answers`.
+
+        `answers` maps a queued command line to the result string, falling back to
+        ``answers["*"]``, so a test can assert on the exact task a module built.
+        """
+        queued: list = []
+
+        class _Stub:
+            async def interact(self, session_id: str, command: str) -> str:
+                command_id = f"cmd-{len(queued)}"
+                queued.append({"command_id": command_id, "command": command,
+                               "status": "queued", "result": None})
+                return command_id
+
+            async def get_pending_commands(self, session_id: str) -> list:
+                for entry in queued:
+                    if entry["status"] == "queued":
+                        answer = answers.get(entry["command"], answers.get("*", ""))
+                        entry["status"] = "completed"
+                        entry["result"] = answer if isinstance(answer, str) \
+                            else json.dumps(answer)
+                return queued
+
+        stub = _Stub()
+        stub.queued = queued
+        return stub
+
     @pytest.mark.asyncio
     async def test_execute_sysinfo(self, registry):
         registry.discover()
-        result = await registry.execute("sysinfo", type("Session", (), {"hostname": "test-host", "os": "linux", "arch": "x64", "username": "root"})(), {})
+        session = self._session()
+        result = await registry.execute(
+            "sysinfo", session, {}, session_manager=self._agent({}))
         assert result["status"] == "ok"
         assert result["data"]["hostname"] == "test-host"
 
     @pytest.mark.asyncio
-    async def test_execute_exec(self, registry):
+    async def test_execute_exec_dispatches_to_the_agent(self, registry):
         registry.discover()
-        result = await registry.execute("exec", None, {"command": "whoami"})
+        agent = self._agent({"whoami": "root"})
+        result = await registry.execute(
+            "exec", self._session(), {"command": "whoami"}, session_manager=agent)
         assert result["status"] == "ok"
-        assert result["command"] == "whoami"
+        assert result["output"] == "root"
+        assert agent.queued[0]["command"] == "whoami"
+
+    @pytest.mark.asyncio
+    async def test_execute_exec_without_an_agent_is_an_error(self, registry):
+        """The command is not dispatched without a session manager, and must not
+        come back looking like it ran.
+        """
+        registry.discover()
+        result = await registry.execute("exec", self._session(), {"command": "whoami"})
+        assert result["status"] == "error"
+        assert "nothing was sent" in result["error"]
 
     @pytest.mark.asyncio
     async def test_execute_exec_missing_command(self, registry):
@@ -390,11 +455,94 @@ class TestModuleExecution:
         assert "command" in result["error"].lower()
 
     @pytest.mark.asyncio
-    async def test_execute_upload(self, registry):
+    async def test_a_dead_session_is_not_reported_as_a_slow_agent(self, registry):
+        """`interact` refuses to queue for a session that is gone. Spending the
+        whole timeout before saying "timed out" sends the operator chasing a
+        beaconing problem that does not exist.
+        """
+        class _Closed:
+            async def interact(self, session_id: str, command: str):
+                return None
+
+            async def get_pending_commands(self, session_id: str) -> list:
+                raise AssertionError("nothing was queued, so nothing may be polled")
+
         registry.discover()
-        result = await registry.execute("upload", None, {"local_path": "/tmp/a.txt", "remote_path": "/tmp/b.txt"})
+        started = time.monotonic()
+        result = await registry.execute(
+            "exec", self._session(), {"command": "whoami", "timeout": 30},
+            session_manager=_Closed())
+        assert result["status"] == "error"
+        assert "would not accept a command" in result["error"]
+        assert "timed out" not in result["error"]
+        assert time.monotonic() - started < 1.0, "the module waited out a dead session"
+
+    @pytest.mark.asyncio
+    async def test_a_silent_agent_says_so_with_the_command_it_asked_about(self, registry):
+        class _NeverAnswers:
+            async def interact(self, session_id: str, command: str) -> str:
+                return "cmd-dead"
+
+            async def get_pending_commands(self, session_id: str) -> list:
+                return []
+
+        registry.discover()
+        result = await registry.execute(
+            "exec", self._session(), {"command": "whoami", "timeout": 0.2},
+            session_manager=_NeverAnswers())
+        assert result["status"] == "error"
+        assert "timed out" in result["error"]
+        assert result["command_id"] == "cmd-dead"
+
+    @pytest.mark.asyncio
+    async def test_execute_upload_streams_the_file(self, registry, tmp_path):
+        registry.discover()
+        source = tmp_path / "source.txt"
+        source.write_bytes(b"x" * 1024)
+        target = tmp_path / "landed" / "on-target.txt"
+        agent = self._agent({"*": {"ok": True, "written": 1024}})
+        result = await registry.execute(
+            "upload", self._session(),
+            {"local_path": str(source), "remote_path": str(target)},
+            session_manager=agent)
         assert result["status"] == "ok"
-        assert result["local_path"] == "/tmp/a.txt"
+        assert result["bytes_transferred"] == 1024
+        task = json.loads(agent.queued[0]["command"])
+        assert task["action"] == "fs_put"
+        assert task["path"] == str(target)
+        assert base64.b64decode(task["data"]) == b"x" * 1024
+
+    @pytest.mark.asyncio
+    async def test_execute_upload_reports_what_never_arrived(self, registry, tmp_path):
+        """A refusal mid-way keeps the partial byte count: most of a file is a
+        corrupt file, and an operator needs to know it is one.
+        """
+        registry.discover()
+        source = tmp_path / "source.bin"
+        source.write_bytes(b"y" * (transfer.DEFAULT_CHUNK_SIZE + 7))
+
+        class _DiskFull:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def interact(self, session_id: str, command: str) -> str:
+                self.calls += 1
+                return f"cmd-{self.calls}"
+
+            async def get_pending_commands(self, session_id: str) -> list:
+                if self.calls < 2:
+                    return [{"command_id": "cmd-1", "status": "completed",
+                             "result": json.dumps({"ok": True})}]
+                return [{"command_id": "cmd-2", "status": "completed",
+                         "result": json.dumps({"ok": False, "error": "disk full"})}]
+
+        result = await registry.execute(
+            "upload", self._session(),
+            {"local_path": str(source), "remote_path": "/tmp/x.bin"},
+            session_manager=_DiskFull())
+        assert result["status"] == "error"
+        assert result["bytes_transferred"] == transfer.DEFAULT_CHUNK_SIZE
+        assert "disk full" in result["error"]
 
     @pytest.mark.asyncio
     async def test_execute_upload_missing_args(self, registry):
@@ -403,25 +551,122 @@ class TestModuleExecution:
         assert result["status"] == "error"
 
     @pytest.mark.asyncio
-    async def test_execute_download(self, registry):
+    async def test_execute_download_reassembles_chunks(self, registry, tmp_path):
         registry.discover()
-        result = await registry.execute("download", None, {"remote_path": "/etc/passwd"})
+        payload = base64.b64encode(b"hello target").decode()
+        agent = self._agent({"*": {"size": 12, "offset": 0, "length": 12,
+                                   "eof": True, "data": payload}})
+        local = tmp_path / "pulled.txt"
+        result = await registry.execute(
+            "download", self._session(),
+            {"remote_path": "/etc/hosts", "local_path": str(local)},
+            session_manager=agent)
         assert result["status"] == "ok"
-        assert result["remote_path"] == "/etc/passwd"
+        assert result["bytes_transferred"] == 12
+        assert local.read_bytes() == b"hello target"
+        assert json.loads(agent.queued[0]["command"])["action"] == "fs_get"
 
     @pytest.mark.asyncio
-    async def test_execute_file_list(self, registry):
+    async def test_execute_download_names_the_file_it_pulled(
+        self, registry, tmp_path
+    ):
+        """No local_path is not no file: the basename comes off the target."""
         registry.discover()
-        result = await registry.execute("file_list", None, {"path": "/tmp"})
-        assert result["status"] == "ok"
-        assert result["path"] == "/tmp"
+        cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            result = await registry.execute(
+                "download", self._session(), {"remote_path": "/var/log/app.log"},
+                session_manager=self._agent(
+                    {"*": {"size": 2, "eof": True,
+                           "data": base64.b64encode(b"hi").decode()}}))
+            assert result["status"] == "ok"
+            assert Path(result["local_path"]).name == "app.log"
+            assert (tmp_path / "app.log").read_bytes() == b"hi"
+        finally:
+            os.chdir(cwd)
 
     @pytest.mark.asyncio
-    async def test_execute_discovery(self, registry):
+    async def test_execute_download_of_a_missing_file_fails(
+        self, registry, tmp_path
+    ):
         registry.discover()
-        result = await registry.execute("discovery", None, {"target": "whoami"})
+        result = await registry.execute(
+            "download", self._session(),
+            {"remote_path": "/nope/nope", "local_path": str(tmp_path / "out")},
+            session_manager=self._agent({"*": {"error": "[Errno 2] no such file"}}))
+        assert result["status"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_execute_download_missing_args(self, registry):
+        registry.discover()
+        result = await registry.execute("download", None, {})
+        assert result["status"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_execute_file_list_reads_the_target(self, registry):
+        registry.discover()
+        entries = [{"name": "passwd", "is_file": True, "is_dir": False,
+                    "size": 1200, "mtime": 1.0}]
+        agent = self._agent({"*": {"path": "/etc", "entries": entries}})
+        result = await registry.execute(
+            "file_list", self._session(), {"path": "/etc"},
+            session_manager=agent)
         assert result["status"] == "ok"
-        assert result["target"] == "whoami"
+        assert result["entries"] == entries
+        assert json.loads(agent.queued[0]["command"])["action"] == "fs_list"
+
+    @pytest.mark.asyncio
+    async def test_an_empty_directory_is_not_an_error(self, registry):
+        registry.discover()
+        result = await registry.execute(
+            "file_list", self._session(), {"path": "/empty"},
+            session_manager=self._agent({"*": {"path": "/empty", "entries": []}}))
+        assert result["status"] == "ok"
+        assert result["entries"] == []
+
+    @pytest.mark.asyncio
+    async def test_a_directory_the_agent_cannot_open_is_not_empty(
+        self, registry
+    ):
+        """The old shape reported a failure as a listing of one entry named
+        `error`, which a caller reading `entries` cannot tell from content.
+        """
+        registry.discover()
+        result = await registry.execute(
+            "file_list", self._session(), {"path": "/denied"},
+            session_manager=self._agent({"*": {"error": "Permission denied"}}))
+        assert result["status"] == "error"
+        assert "Permission denied" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_execute_file_list_without_an_agent_is_an_error(self, registry):
+        registry.discover()
+        result = await registry.execute("file_list", self._session(), {"path": "/tmp"})
+        assert result["status"] == "error"
+        assert "entries" not in result
+
+    @pytest.mark.asyncio
+    async def test_execute_discovery_asks_the_agent(self, registry):
+        registry.discover()
+        # The agent renders an exec answer as stripped text, not a JSON object,
+        # so this is the shape a real session returns.
+        agent = self._agent({"*": "root"})
+        result = await registry.execute(
+            "discovery", self._session(), {"target": "whoami"},
+            session_manager=agent)
+        assert result["status"] == "ok"
+        assert result["output"] == "root"
+        dispatched = json.loads(agent.queued[0]["command"])
+        assert dispatched["action"] == "exec"
+        assert dispatched["command"] == "whoami"
+
+    @pytest.mark.asyncio
+    async def test_execute_discovery_without_an_agent_is_an_error(self, registry):
+        registry.discover()
+        result = await registry.execute(
+            "discovery", self._session(), {"target": "whoami"})
+        assert result["status"] == "error"
 
     @pytest.mark.asyncio
     async def test_execute_credential_collect(self, registry):
@@ -450,6 +695,55 @@ class TestModuleExecution:
         result = await registry.execute("nonexistent", None, {})
         assert result["status"] == "error"
         assert "not found" in result["error"].lower()
+
+
+class TestRegistryInjectsTheSessionManager:
+    """`ModuleRegistry.execute` is the console's path into a module.
+
+    `ModuleExecutor` injects the session manager that lets a module queue work on
+    the agent; without the same on this path every module quietly answers from
+    session metadata and reports success.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_session_manager_reaches_the_module(self, registry):
+        seen = {}
+
+        class _Probe(PupyModule):
+            name = "probe"
+            version = "1.0.0"
+            description = "records what it was given"
+            author = "test"
+            category = ModuleCategory.RECON
+
+            async def execute(self, session, args):
+                seen["manager"] = getattr(self, "_session_manager", None)
+                return {"status": "ok"}
+
+        registry._modules["probe"] = _Probe
+        manager = object()
+        result = await registry.execute("probe", None, {}, session_manager=manager)
+        assert result["status"] == "ok"
+        assert seen["manager"] is manager
+
+    @pytest.mark.asyncio
+    async def test_a_module_left_without_one_sees_nothing(self, registry):
+        seen = {}
+
+        class _Probe(PupyModule):
+            name = "quiet"
+            version = "1.0.0"
+            description = "records what it was given"
+            author = "test"
+            category = ModuleCategory.RECON
+
+            async def execute(self, session, args):
+                seen["manager"] = getattr(self, "_session_manager", None)
+                return {"status": "ok"}
+
+        registry._modules["quiet"] = _Probe
+        await registry.execute("quiet", None, {})
+        assert seen["manager"] is None
 
 
 # ─── ModuleRegistry Health Tests ─────────────────────────────────────
