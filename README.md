@@ -138,6 +138,29 @@ async def main():
 asyncio.run(main())
 ```
 
+### Prove the Callback Loop Before a Payload Has To
+
+```bash
+python -m pupyteer.tools.callback_test                    # shipped defaults
+python -m pupyteer.tools.callback_test --config ./pupyteer.yaml
+```
+
+Starts a listener on a free loopback port, **generates an agent through the same
+template `payloads build` renders**, runs it as a real subprocess, and checks the
+three things that decide whether an engagement can start: a session appears, a
+command runs on the host, and its output comes back. TLS and the enrollment
+secret are read from the listener that is actually running rather than assumed by
+a second implementation, so a PASS means a payload built from this config can
+beacon against it — and the certificate, secret and audit trail of the test
+server all land in a scratch directory, so a run leaves nothing on the team
+server.
+
+A `RESULT: FAIL` names the step that never happened and what the agent said about
+it. An agent that exits with `listener rejected our enrollment secret` came from a
+different server, and the fix is a rebuild rather than a retry. Any refusals the
+listener counted on the way are reported too, with the same names `transports
+list` uses.
+
 ### Work a Session
 
 Run the generated artifact on the target host; it registers over the listener
@@ -259,7 +282,7 @@ pupyteer/
 │   ├── integration/   # integration tests
 │   └── regression/    # regression tests
 │
-├── tools/             # agent simulator, callback tester
+├── tools/             # callback self-test (generated agent against a real listener)
 │
 └── docs/              # operator manual, developer docs, profile & module guides,
                        # security notes, installation guide
@@ -283,7 +306,7 @@ git-ignored.
 .venv/bin/python -m pytest pupyteer/tests/integration/ -v
 ```
 
-**Current test count: 922 tests passing** (`pytest pupyteer/tests`)
+**Current test count: 925 tests passing** (`pytest pupyteer/tests`)
 
 The suite runs against real engines and real listeners, and repoints every file a
 default-config server writes — the audit trail, the enrollment secret, the TLS
@@ -291,6 +314,11 @@ pair, the credential file — into a temp directory. A session fixture fails the
 if `logs/audit.json` in the checkout grows, because a test that writes to an
 operator's real audit trail is also a test that can log in with a credential left
 there for a human to find.
+
+`tools/callback_test` is under test as well, including a case that breaks the
+listener on purpose: a self-test that drifts from the protocol reports PASS
+against a server that would refuse every payload built for it, which is worse than
+no self-test at all.
 
 ---
 

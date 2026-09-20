@@ -413,7 +413,11 @@ class TestLiveBeaconAuth:
             initial = stored.last_checkin
 
             time.sleep(0.1)
-            for wrong in (None, "", "x" * len(beacon), beacon[:-1] + "f"):
+            # Same length, different token: a wrong *number* of characters is a
+            # different mistake than a wrong value, and `beacon[:-1] + "f"` would
+            # have been the right answer one run in sixteen.
+            flipped = beacon[:-1] + ("0" if beacon[-1] != "0" else "1")
+            for wrong in (None, "", "x" * len(beacon), flipped):
                 message = {"type": "checkin", "session_id": session_id}
                 if wrong is not None:
                     message["beacon"] = wrong
