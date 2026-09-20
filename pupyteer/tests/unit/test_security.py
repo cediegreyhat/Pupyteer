@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -27,17 +28,33 @@ from pupyteer.server.core.rbac import (
 from pupyteer.server.core.session_auth import (
     SessionAuthorization, CommandContext, SecureCommandExecutor,
 )
-from pupyteer.server.core.auth import AuthLayer
+from pupyteer.server.core.auth import AuthLayer, permissions_for
 from pupyteer.server.core.config import ConfigManager
 from pupyteer.server.core.logging import AuditLogger
+from pupyteer.server.core.operators import (
+    MIN_PASSWORD_CHARS, OperatorStore, WeakCredential, hash_password,
+)
 
 
 # ─── Fixtures ────────────────────────────────────────────────────────
 
+# A lab password, not a real one: these tests check that a credential is
+# verified, not that it is hard to guess (that is MIN_PASSWORD_CHARS's job).
+PASSWORD = "lab-operator-credential"
+
 
 @pytest.fixture
-def config():
-    return ConfigManager()
+def config(tmp_path):
+    """Config pointed at a scratch directory.
+
+    The credential store and the audit file both have defaults relative to the
+    working directory, so without this a unit test run writes into the repo's own
+    ./data and ./logs and rotates a real audit trail for no reason.
+    """
+    cfg = ConfigManager()
+    cfg.set("security.operators_file", str(tmp_path / "operators.json"))
+    cfg.set("audit.log_file", str(tmp_path / "audit.json"))
+    return cfg
 
 
 @pytest.fixture
@@ -52,12 +69,21 @@ def auth(config, audit):
 
 @pytest.fixture
 def rbac(auth):
-    return PermissionChecker(auth)
+    return PermissionChecker(auth, auth.operators)
 
 
 @pytest.fixture
 def session_auth(auth, rbac):
     return SessionAuthorization(auth, rbac)
+
+
+def _login(auth: AuthLayer, username: str = "lab-op",
+           role: Role = Role.OPERATOR, password: str = PASSWORD) -> str:
+    """Give `auth` a stored operator and return the token their login got."""
+    auth.add_operator(username, password, role)
+    token = auth.authenticate(username, password)
+    assert token, "a stored credential must authenticate"
+    return token
 
 
 # ─── Input Validation Tests ──────────────────────────────────────────
@@ -413,12 +439,9 @@ class TestSessionAuthorization:
         assert perm == Permission.CONFIG_WRITE
 
     def test_authorize_public_command(self, session_auth, auth):
-        # Create a session for testing
-        auth._credentials["testuser"] = "hash"
-        auth._sessions["valid-token"] = MagicMock(
-            operator="testuser", expires_at=9999999999.0, expired=False
-        )
-        ctx = session_auth.authorize_command("valid-token", "help", [])
+        """`help` stays reachable, or an operator cannot find the way to log in."""
+        token = _login(auth, "testuser", Role.VIEWER)
+        ctx = session_auth.authorize_command(token, "help", [])
         assert ctx.authorized is True
         assert ctx.operator == "testuser"
 
@@ -427,56 +450,71 @@ class TestSessionAuthorization:
             session_auth.authorize_command("invalid-token", "help", [])
 
     def test_authorize_insufficient_permission(self, session_auth, auth):
-        # Create a viewer session
-        auth._credentials["viewer"] = "hash"
-        auth._sessions["viewer-token"] = MagicMock(
-            operator="viewer", expires_at=9999999999.0, expired=False
-        )
-        session_auth._rbac.assign_role("viewer", Role.VIEWER)
-        
-        with pytest.raises(AccessDenied):
-            session_auth.authorize_command("viewer-token", "sessions", ["kill", "s1"])
+        token = _login(auth, "viewer", Role.VIEWER)
+        with pytest.raises(AccessDenied) as caught:
+            session_auth.authorize_command(token, "sessions", ["kill", "s1"])
+        assert caught.value.permission == Permission.SESSION_KILL
 
     def test_authorize_sufficient_permission(self, session_auth, auth):
-        # Create an operator session
-        auth._credentials["operator"] = "hash"
-        auth._sessions["op-token"] = MagicMock(
-            operator="operator", expires_at=9999999999.0, expired=False
-        )
-        session_auth._rbac.assign_role("operator", Role.OPERATOR)
-        
-        ctx = session_auth.authorize_command("op-token", "sessions", ["kill", "s1"])
+        token = _login(auth, "operator", Role.OPERATOR)
+        ctx = session_auth.authorize_command(token, "sessions", ["kill", "s1"])
         assert ctx.authorized is True
 
+    def test_a_role_change_does_not_reach_a_token_already_issued(self, session_auth, auth):
+        """The permission set is the copy taken at login.
+
+        Raising your own role has to wait for a fresh login; otherwise one command
+        would turn a viewer into an admin mid-session and the audit trail would
+        never record the change happening.
+        """
+        token = _login(auth, "climber", Role.VIEWER)
+        auth.set_role("climber", Role.ADMIN)
+        with pytest.raises(AccessDenied):
+            session_auth.authorize_command(token, "config", ["set", "a", "b"])
+
+    def test_renaming_the_operator_in_config_does_not_change_the_token(
+        self, session_auth, auth
+    ):
+        """What the log calls you is not who may act.
+
+        These used to be the same lookup: permissions were read by operator name,
+        and the name came from config the console could write without asking.
+        """
+        token = _login(auth, "viewer", Role.VIEWER)
+        auth._config.set("operator.name", "root")
+        assert auth.get_operator(token) == "viewer"
+        with pytest.raises(AccessDenied):
+            session_auth.authorize_command(token, "sessions", ["kill", "s1"])
+
+    def test_an_unclassified_verb_is_refused_not_allowed(self, session_auth, auth):
+        """A verb nobody wrote down must not be the one verb that runs for free."""
+        token = _login(auth, "anyone", Role.VIEWER)
+        with pytest.raises(AccessDenied) as caught:
+            session_auth.authorize_command(token, "brand-new-verb", [])
+        assert caught.value.permission == SessionAuthorization.UNCLASSIFIED
+
     def test_validate_session_access(self, session_auth, auth):
-        auth._credentials["user"] = "hash"
-        auth._sessions["token"] = MagicMock(
-            operator="user", expires_at=9999999999.0, expired=False
-        )
-        assert session_auth.validate_session_access("token", "any-session") is True
+        token = _login(auth, "user", Role.OPERATOR)
+        assert session_auth.validate_session_access(token, "any-session") is True
 
     def test_validate_session_access_invalid_token(self, session_auth):
         assert session_auth.validate_session_access("bad-token", "session") is False
 
     def test_command_history(self, session_auth, auth):
-        auth._credentials["user"] = "hash"
-        auth._sessions["token"] = MagicMock(
-            operator="user", expires_at=9999999999.0, expired=False
-        )
-        session_auth.authorize_command("token", "help", [])
+        token = _login(auth, "user", Role.OPERATOR)
+        session_auth.authorize_command(token, "help", [])
         history = session_auth.get_command_history()
         assert len(history) == 1
         assert history[0].command == "help"
 
     def test_clear_history(self, session_auth, auth):
-        auth._credentials["user"] = "hash"
-        auth._sessions["token"] = MagicMock(
-            operator="user", expires_at=9999999999.0, expired=False
-        )
-        session_auth.authorize_command("token", "help", [])
+        token = _login(auth, "user", Role.OPERATOR)
+        session_auth.authorize_command(token, "help", [])
         session_auth.clear_history()
         assert len(session_auth.get_command_history()) == 0
 
+
+# ─── CommandContext Tests ─────────────────────────────────────────────────────
 
 class TestCommandContext:
     def test_to_audit_dict(self):
@@ -671,46 +709,267 @@ class TestSecureDefaults:
         assert isinstance(result, list)
 
 
+class TestOperatorStore:
+    """The credential file itself: what a wrong guess costs, and what is on disk."""
+
+    @staticmethod
+    def _store(tmp_path) -> OperatorStore:
+        return OperatorStore(str(tmp_path / "operators.json"))
+
+    def test_a_correct_password_returns_the_record(self, tmp_path):
+        store = self._store(tmp_path)
+        store.add("keeper", PASSWORD, Role.OPERATOR)
+        assert store.verify("keeper", PASSWORD) is not None
+
+    def test_a_wrong_password_and_an_unknown_name_answer_alike(self, tmp_path):
+        """Neither says which it was: the console is the only door, and this is a
+        free oracle for anybody who can type at it.
+        """
+        store = self._store(tmp_path)
+        store.add("keeper", PASSWORD, Role.OPERATOR)
+        assert store.verify("keeper", "not-the-password") is None
+        assert store.verify("nobody", PASSWORD) is None
+
+    def test_an_unknown_name_pays_for_the_hash_it_did_not_get(self, tmp_path, monkeypatch):
+        """The two rejects are the same answer only if they cost the same to observe.
+
+        Checked as a call, not as a stopwatch: a timing assertion would fail on a
+        loaded CI box and pass for the wrong reason on an idle one.
+        """
+        import pupyteer.server.core.operators as operators_module
+
+        paid = []
+        monkeypatch.setattr(operators_module, "_pay_kdf", lambda password: paid.append(password))
+        store = self._store(tmp_path)
+        store.add("keeper", PASSWORD, Role.OPERATOR)
+        assert store.verify("nobody", PASSWORD) is None
+        assert paid == [PASSWORD]
+        assert store.verify("keeper", "not-the-password") is None
+        assert paid == [PASSWORD], "a known name hashes for real, not twice"
+
+    def test_an_add_does_not_drop_whoever_the_file_already_held(self, tmp_path):
+        """A second console session must not overwrite the first one's operators.
+
+        The store rewrites the whole file on every write, so a write that trusted
+        its own memory would delete the entries another process had added.
+        """
+        path = str(tmp_path / "operators.json")
+        keeper = OperatorStore(path)
+        keeper.add("keeper", PASSWORD, Role.OPERATOR)
+        late = OperatorStore(path)
+        late.add("second", "another-long-secret", Role.ADMIN)
+        assert keeper.names() == ["keeper", "second"]
+
+    def test_reading_the_file_does_not_reveal_the_password(self, tmp_path):
+        store = self._store(tmp_path)
+        store.add("keeper", PASSWORD, Role.OPERATOR)
+        raw = (tmp_path / "operators.json").read_text(encoding="utf-8")
+        assert PASSWORD not in raw
+        assert "hash" in raw and "salt" in raw
+
+    def test_a_hash_made_with_other_parameters_still_verifies(self, tmp_path):
+        """The parameters are stored beside the digest.
+
+        Changing them in a later release would otherwise look like every
+        credential going bad at once.
+        """
+        path = tmp_path / "operators.json"
+        cheap = hash_password(PASSWORD, params={"n": 2 ** 12, "r": 8, "p": 1})
+        assert cheap["params"]["n"] == 2 ** 12
+        import json
+        path.write_text(json.dumps({"version": 1, "operators": {
+            "keeper": dict(role="operator", kdf=cheap["kdf"], salt=cheap["salt"],
+                           params=cheap["params"], hash=cheap["hash"])}}),
+            encoding="utf-8")
+        store = OperatorStore(str(path))
+        assert store.verify("keeper", PASSWORD) is not None
+
+    def test_a_short_password_is_refused(self, tmp_path):
+        store = self._store(tmp_path)
+        with pytest.raises(WeakCredential) as caught:
+            store.add("keeper", "hunter2", Role.ADMIN)
+        assert str(MIN_PASSWORD_CHARS) in str(caught.value)
+        assert not store.names(), "a rejected credential must not be half-stored"
+
+    def test_a_second_add_needs_replace(self, tmp_path):
+        """Silently overwriting a working password looks like a broken login later."""
+        store = self._store(tmp_path)
+        store.add("keeper", PASSWORD, Role.OPERATOR)
+        with pytest.raises(WeakCredential):
+            store.add("keeper", "a-different-long-secret", Role.OPERATOR)
+        store.add("keeper", "a-different-long-secret", Role.OPERATOR, replace=True)
+        assert store.verify("keeper", "a-different-long-secret") is not None
+        assert store.verify("keeper", PASSWORD) is None
+
+    def test_an_unreadable_entry_does_not_take_the_others_with_it(self, tmp_path):
+        path = tmp_path / "operators.json"
+        import json
+        good = hash_password(PASSWORD)
+        path.write_text(json.dumps({"version": 1, "operators": {
+            "broken": {"role": "wizard", "kdf": "scrypt", "salt": good["salt"],
+                       "params": good["params"], "hash": good["hash"]},
+            "keeper": {"role": "operator", "kdf": good["kdf"], "salt": good["salt"],
+                       "params": good["params"], "hash": good["hash"]},
+        }}), encoding="utf-8")
+        store = OperatorStore(str(path))
+        assert store.names() == ["keeper"], "one bad entry must not lock out the rest"
+        assert store.verify("keeper", PASSWORD) is not None
+        assert store.get("broken") is None, "the unreadable entry is not a credential"
+
+    def test_a_corrupt_file_reads_as_empty_rather_than_trusted(self, tmp_path):
+        path = tmp_path / "operators.json"
+        path.write_text("{not json", encoding="utf-8")
+        store = OperatorStore(str(path))
+        assert store.names() == []
+        assert store.exists is False
+        with pytest.raises(WeakCredential, match="cannot be parsed"):
+            store.add("rescue", PASSWORD, Role.ADMIN)
+
+    def test_no_temporary_file_is_left_behind(self, tmp_path):
+        self._store(tmp_path).add("keeper", PASSWORD, Role.ADMIN)
+        leftovers = [p.name for p in tmp_path.iterdir() if p.name != "operators.json"]
+        assert leftovers == [], f"atomic write left {leftovers}"
+
+    def test_bootstrap_only_fills_an_empty_store(self, tmp_path):
+        """Otherwise a second run of a startup script would reset a team's admin."""
+        store = self._store(tmp_path)
+        created = store.bootstrap("admin")
+        assert len(created["password"]) >= MIN_PASSWORD_CHARS
+        assert store.verify("admin", created["password"]) is not None
+        with pytest.raises(WeakCredential):
+            store.bootstrap("admin")
+
+    def test_bootstrap_password_is_not_the_username_or_something_typed(self, tmp_path):
+        created = self._store(tmp_path).bootstrap("admin")
+        password = created["password"]
+        assert password != "admin"
+        assert len(password) >= 32, "print-once means reading it off a screen, not a file"
+        assert set(password) <= set("0123456789abcdef"), "no case to get wrong when typing it"
+
+
+class TestAuthLayerCredentials:
+    """Login, tokens and what a token can do. This class had no tests at all,
+    which is how it went a year unwired: nothing could say it was broken.
+    """
+
+    def test_an_empty_store_is_a_fact_not_a_failure(self, auth):
+        assert auth.has_operators is False
+        assert auth.authenticate("admin", "anything") is None
+
+    def test_a_token_carries_the_role_it_logged_in_with(self, auth):
+        token = _login(auth, "op", Role.OPERATOR)
+        assert auth.role_of(token) == "operator"
+        assert auth.authorize(token, Permission.SESSION_KILL) is True
+        assert auth.authorize(token, Permission.CONFIG_WRITE) is False
+
+    def test_a_viewer_token_holds_nothing_but_reading(self, auth):
+        token = _login(auth, "watcher", Role.VIEWER)
+        for perm in (Permission.SESSION_KILL, Permission.MODULE_RUN,
+                     Permission.PAYLOAD_BUILD, Permission.CONFIG_WRITE,
+                     Permission.AUDIT_READ):
+            assert auth.authorize(token, perm) is False, f"a viewer holds {perm}"
+        assert auth.authorize(token, Permission.SESSION_READ) is True
+
+    def test_five_wrong_passwords_lock_the_name_and_time_unlocks_it(self, auth, monkeypatch):
+        """The lockout used to be permanent, so five typos locked an operator out
+        of their own server with no way back except editing the file.
+        """
+        auth.add_operator("keeper", PASSWORD, Role.ADMIN)
+        clock = [1000.0]
+        monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+        for _ in range(5):
+            assert auth.authenticate("keeper", "wrong-password-here") is None
+        assert auth.authenticate("keeper", PASSWORD) is None, "still locked"
+        clock[0] += auth._lockout_seconds + 1
+        assert auth.authenticate("keeper", PASSWORD), "the window has to expire"
+
+    def test_replacing_a_credential_drops_nobody_but_revoke_drops_the_token(self, auth):
+        token = _login(auth, "op", Role.OPERATOR)
+        assert auth.revoke(token) is True
+        assert auth.get_operator(token) is None
+        assert auth.authorize(token, Permission.SESSION_READ) is False
+
+    def test_removing_an_operator_ends_the_sessions_it_logged_in(self, auth):
+        token = _login(auth, "leaver", Role.OPERATOR)
+        assert auth.remove_operator("leaver") is True
+        assert auth.get_operator(token) is None, (
+            "a revoked credential that leaves a live token behind is not a removal"
+        )
+
+    def test_a_bootstrap_password_is_audited_without_being_stored(self, auth, config):
+        created = auth.bootstrap("admin")
+        raw = Path(config.get("audit.log_file")).read_text(encoding="utf-8")
+        assert "auth_operator_bootstrapped" in raw
+        assert created["password"] not in raw, "the audit log rotates; a password in it does not stay secret"
+
+    @pytest.mark.parametrize("value,expected", [
+        (True, True), (False, False), ("false", False), ("FALSE", False),
+        ("off", False), ("", True), ("no", False), (None, True), ("0", False),
+        ("anything else", True),
+    ])
+    def test_require_auth_is_only_offed_by_saying_so(self, config, audit, value, expected):
+        """A blank or garbled `require_auth` means on.
+
+        `require_auth:` with nothing after it is a line nobody typed meaning
+        "hand me an unauthenticated console", and the default has to survive it.
+        """
+        config.set("security.require_auth", value)
+        assert AuthLayer(config, audit).require_auth is expected
+
+
 # ─── Integration Tests ───────────────────────────────────────────────
 
 
 class TestSecurityIntegration:
-    def test_full_authorization_flow(self, auth, rbac):
-        """Test complete flow: authenticate -> assign role -> authorize command."""
-        # Setup
-        checker = PermissionChecker(auth)
+    def test_full_authorization_flow(self, auth, config):
+        """Stored credential -> login -> command authorized -> logout.
+
+        The whole chain, because each link on its own passed while the chain was
+        unreachable: the credential file, the token and the verb table all had
+        tests, and nothing joined them to a console.
+        """
+        checker = PermissionChecker(auth, auth.operators)
         session_auth = SessionAuthorization(auth, checker)
-        
-        # Add operator and assign role
-        auth._credentials["operator1"] = "hash"
-        checker.assign_role("operator1", Role.OPERATOR)
-        
-        # Create session
-        auth._sessions["session-token"] = MagicMock(
-            operator="operator1", expires_at=9999999999.0, expired=False
-        )
-        
-        # Authorize a command
-        ctx = session_auth.authorize_command("session-token", "sessions", ["list"])
+
+        auth.add_operator("operator1", PASSWORD, Role.OPERATOR)
+        token = auth.authenticate("operator1", PASSWORD)
+        assert token, "a stored credential must be able to log in"
+        assert auth.role_of(token) == Role.OPERATOR.value
+
+        ctx = session_auth.authorize_command(token, "sessions", ["list"])
         assert ctx.authorized is True
         assert ctx.operator == "operator1"
 
-    def test_rbac_blocks_unauthorized(self, auth, rbac):
-        """Test that RBAC properly blocks unauthorized actions."""
-        checker = PermissionChecker(auth)
-        session_auth = SessionAuthorization(auth, checker)
-        
-        auth._credentials["viewer1"] = "hash"
-        checker.assign_role("viewer1", Role.VIEWER)
-        
-        auth._sessions["viewer-token"] = MagicMock(
-            operator="viewer1", expires_at=9999999999.0, expired=False
-        )
-        
+        assert auth.revoke(token) is True
         with pytest.raises(AccessDenied):
-            session_auth.authorize_command("viewer-token", "sessions", ["kill", "s1"])
+            session_auth.authorize_command(token, "sessions", ["list"])
+
+    def test_the_credential_file_holds_no_password(self, auth, config):
+        """What lands on disk is a salted digest, not something to log in with."""
+        auth.add_operator("keeper", PASSWORD, Role.ADMIN)
+        path = Path(config.get("security.operators_file"))
+        raw = path.read_text(encoding="utf-8")
+        assert PASSWORD not in raw
+        assert "keeper" in raw
+        assert "salt" in raw and "hash" in raw
+        if os.name == "posix":
+            # Windows synthesises 0o666 for anything writable, so the bits are not
+            # a fact about the file there. Asserting them would be theatre.
+            assert path.stat().st_mode & 0o077 == 0
+
+    def test_rbac_blocks_unauthorized(self, auth):
+        """Test that RBAC properly blocks unauthorized actions."""
+        checker = PermissionChecker(auth, auth.operators)
+        session_auth = SessionAuthorization(auth, checker)
+
+        token = _login(auth, "viewer1", Role.VIEWER)
+        checker.assign_role("viewer1", Role.VIEWER)
+
+        with pytest.raises(AccessDenied):
+            session_auth.authorize_command(token, "sessions", ["kill", "s1"])
 
     def test_validation_rejects_injection(self):
+
         """Test that input validation rejects injection attempts."""
         # Path traversal
         with pytest.raises(ValueError):

@@ -82,13 +82,18 @@ class AuditLogger:
             # Allow passthrough for non-spec events (prefixed with "x_")
             spec_event = event
 
-        operator = data.pop("_operator", self._operator)
+        details = dict(data)
+        operator = details.pop("_operator", None)
+        # The emitter takes `operator` as its own argument, so leaving that key in
+        # `details` raises a TypeError out of the code whose job is to record what
+        # happened. Both spellings mean "who this entry is attributed to".
+        subject = details.pop("operator", None)
         entry = self._emitter.emit(
             event=spec_event,
-            operator=operator,
+            operator=operator or subject or self._operator,
             session=session,
             result=result,
-            **data,
+            **details,
         )
 
         # Also write to the legacy plain JSON file if configured
