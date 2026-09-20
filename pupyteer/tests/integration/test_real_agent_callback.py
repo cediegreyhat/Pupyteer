@@ -210,10 +210,71 @@ class TestEnrollment:
         class _Recorder:
             def request(self, msg):
                 captured.update(msg)
+                return {"type": "registered", "session_id": "s-1",
+                        "beacon_token": "beacon-1"}
+
+        assert agent._register(_Recorder()) == ("s-1", "beacon-1")
+        assert captured["auth"] == _TEST_SECRET
+
+    def test_a_registration_without_a_token_is_not_a_session(self, tmp_path):
+        """An agent that beacons tokenless is an agent that will never be answered.
+
+        Better to fail the registration than to settle into a loop that looks to
+        the operator like a target with poor connectivity.
+        """
+        agent = _load_agent_module(_generate_agent(tmp_path, "notoken", port=1))
+
+        class _OldServer:
+            def request(self, msg):
                 return {"type": "registered", "session_id": "s-1"}
 
-        assert agent._register(_Recorder()) == "s-1"
-        assert captured["auth"] == _TEST_SECRET
+        with pytest.raises(agent.TransportError):
+            agent._register(_OldServer())
+
+    def test_the_generated_agent_beacons_with_its_token(self, tmp_path):
+        """Every message after registration, not the first one only."""
+        agent = _load_agent_module(
+            _generate_agent(tmp_path, "beacons", port=1, sleep=1, jitter=0))
+
+        sent = []
+
+        class _Recorder:
+            def request(self, msg):
+                sent.append(msg)
+                if msg["type"] == "checkin":
+                    if len([m for m in sent if m["type"] == "checkin"]) > 1:
+                        raise agent.TransportError("loop over")
+                    return {"type": "commands", "commands": [
+                        {"command_id": "c-1", "command": "echo beacon-test"}]}
+                return {"type": "ack"}
+
+        with pytest.raises(agent.TransportError):
+            agent._run_session(_Recorder(), "s-1", "beacon-1")
+
+        assert [m["type"] for m in sent] == ["checkin", "output", "checkin"]
+        assert all(m.get("beacon") == "beacon-1" for m in sent), (
+            "a beacon went out without the proof that it owns its session")
+
+    def test_a_refused_beacon_breaks_the_loop_so_the_agent_reregisters(
+        self, tmp_path
+    ):
+        """A token the server does not know is a session that has to be re-opened.
+
+        main() only re-registers when _run_session returns by raising, so a
+        refusal that was logged and carried on with would leave the payload
+        mute forever against a server that would answer it after one more
+        registration.
+        """
+        agent = _load_agent_module(
+            _generate_agent(tmp_path, "refused", port=1, sleep=1, jitter=0))
+
+        class _StrangerDenied:
+            def request(self, msg):
+                return {"type": "error", "message": "beacon_auth_failed"}
+
+        with pytest.raises(agent.TransportError) as excinfo:
+            agent._run_session(_StrangerDenied(), "s-1", "not-our-token")
+        assert "beacon_auth_failed" in str(excinfo.value)
 
     @pytest.mark.asyncio
     async def test_an_agent_without_the_secret_is_refused_and_gives_up(

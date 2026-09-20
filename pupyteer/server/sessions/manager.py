@@ -48,6 +48,11 @@ class SessionInfo:
     tags: List[str] = field(default_factory=list)
     task_status: str = "idle"
     remote_address: str = ""
+    #: Proof that a beacon belongs to this session, handed out when it registered.
+    #: The enrollment secret says a payload may become *a* session; only this says
+    #: it is *this* one. Empty means no beacon from this session can be verified,
+    #: so a session conjured anywhere other than the listener is inert.
+    beacon_token: str = ""
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -60,6 +65,11 @@ class SessionInfo:
         d = asdict(self)
         d["state"] = self.state.value
         d["uptime_seconds"] = self.uptime_seconds
+        # `sessions list`, `sessions info` and `sessions search` all render this,
+        # which is to say it ends up on screens, in team chat and in exported
+        # engagement notes. The token is what an outsider does not get to have, so
+        # it leaves the record for the listener's own use only.
+        d.pop("beacon_token", None)
         return d
 
 

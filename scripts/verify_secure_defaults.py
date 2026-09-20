@@ -273,29 +273,49 @@ def verify_ssl_defaults() -> List[str]:
     except OSError as exc:
         findings.append(f"Could not read the shipped defaults to verify TLS: {exc}")
 
+    # What actually runs on a target is generated from a template, so the
+    # verification rule worth gating is the one in the text that ships. This used to
+    # read the default jwt_algorithm of AuthConfig, a module no payload imports.
     try:
-        from pupyteer.agent.core.auth import AuthConfig
-        config = AuthConfig()
-        if config.jwt_algorithm.lower() == 'none':
-            findings.append("JWT algorithm should not default to 'none'")
-    except ImportError:
-        findings.append("AuthConfig is unavailable; its algorithm default went unchecked")
+        from pupyteer.agent.core.stub import AgentStubGenerator, StubConfig
+    except ImportError as exc:
+        findings.append(f"Could not import the agent stub to verify its TLS: {exc}")
+        return findings
+
+    agent = AgentStubGenerator().generate(StubConfig(
+        name="gate-tls", tls=True,
+        tls_cert_pem="-----BEGIN CERTIFICATE-----\ngate\n-----END CERTIFICATE-----\n"))
+    if "_ssl.CERT_NONE" in agent:
+        findings.append("a generated agent can turn certificate verification off")
+    if "_ssl.CERT_REQUIRED" not in agent:
+        findings.append("the generated agent never requires the listener's certificate")
+    # Trusting the system store is not the pin a self-signed listener certificate
+    # exists to establish: it accepts whatever the target already accepts.
+    for fallback in ("load_default_certs", "set_default_verify_paths"):
+        if fallback in agent:
+            findings.append(
+                f"the generated agent falls back to the target's CA store ({fallback})")
 
     return findings
 
 
 def verify_registration_auth() -> List[str]:
-    """Verify that reaching the listener is not enough to be handed a session.
+    """Verify that reaching the listener is not enough to own a session.
 
     TLS keeps the channel private; the enrollment secret is the only thing that
     decides *who may open a session at all*. Get this wrong and whoever finds the
     port gets a dashboard full of handlers they can queue commands into.
+
+    And the secret is spent the moment the session exists — it is presented once,
+    at registration. So this also checks the second proof, the one that says a
+    beacon belongs to the session it names rather than to a session id someone read
+    off a screen.
     """
     findings = []
 
     try:
         from pupyteer.server.core.config import DEFAULT_CONFIG
-        from pupyteer.server.core.enrollment import secret_accepts
+        from pupyteer.server.core.enrollment import beacon_accepts, secret_accepts
     except ImportError as exc:
         return [f"Could not import the enrollment module to verify it: {exc}"]
 
@@ -338,6 +358,28 @@ def verify_registration_auth() -> List[str]:
     # A refusal the agent retries forever looks like a target with bad egress.
     if "auth_failed" not in agent:
         findings.append("the generated agent does not react to a rejected enrollment")
+
+    # Enrollment is proved once, here. Every message after it has to carry the
+    # per-session token, or a session id — which is printed on screens, listed by
+    # `sessions list` and written to the audit log — is a credential.
+    if '"beacon": beacon' not in agent:
+        findings.append(
+            "the generated agent beacons without the token registration handed it")
+    if '"beacon_token"' not in agent:
+        findings.append("the generated agent never reads a beacon token out of its reply")
+
+    if beacon_accepts("gate-beacon", "gate-beacon") is not True:
+        findings.append("a correct beacon token is being rejected")
+    for presented in (None, "", "gate-beaco", "GATE-BEACON", 12345, ["gate-beacon"]):
+        if beacon_accepts("gate-beacon", presented) is not False:
+            findings.append(f"a beacon token of {presented!r} is being accepted")
+    # Unlike the enrollment secret this has no off switch. A session that was never
+    # handed a proof failing closed is the difference between "that payload is from
+    # an older server" and "every session is open, and only some look open".
+    for expected in ("", None):
+        if beacon_accepts(expected, "gate-beacon") is not False:
+            findings.append(
+                f"a session whose beacon token is {expected!r} accepts beacons")
 
     return findings
 

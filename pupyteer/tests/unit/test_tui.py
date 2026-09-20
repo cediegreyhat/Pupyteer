@@ -584,6 +584,38 @@ class TestPupyteerTUICommands:
         assert "No active transports" in captured.out
 
     @pytest.mark.asyncio
+    async def test_cmd_transports_shows_every_kind_of_refusal(self, tui, capsys):
+        """A refusal an operator cannot read is not a warning.
+
+        The three kinds mean three different things — a stranger at the port, a
+        payload that cannot finish a handshake, someone speaking for a session
+        whose id they got hold of without its token — and none of them may be the
+        one that stays invisible because the table only prints the first.
+        """
+        tui._engine.transports.list.return_value = [{
+            "name": "agent_listener", "state": "listening",
+            "stats": {"bytes_sent": 10, "bytes_received": 20,
+                      "registrations_rejected": 3, "beacons_refused": 2,
+                      "handshakes_refused": 1},
+        }]
+        await tui.cmd_transports([])
+        out = capsys.readouterr().out
+        assert "registrations rejected=3" in out
+        assert "beacons refused=2" in out
+        assert "handshakes refused=1" in out
+
+    @pytest.mark.asyncio
+    async def test_cmd_transports_invents_no_refusal_to_report(self, tui, capsys):
+        tui._engine.transports.list.return_value = [{
+            "name": "agent_listener", "state": "listening",
+            "stats": {"bytes_sent": 0, "bytes_received": 0},
+        }]
+        await tui.cmd_transports([])
+        out = capsys.readouterr().out
+        assert "rejected" not in out
+        assert "refused" not in out
+
+    @pytest.mark.asyncio
     async def test_cmd_config_list(self, tui, capsys):
         await tui.cmd_config([])
         captured = capsys.readouterr()

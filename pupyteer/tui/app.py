@@ -915,13 +915,19 @@ class PupyteerTUI:
             return
         for t in transports:
             stats = t["stats"]
-            # Whoever is knocking without the enrollment secret is the one fact in
-            # this table the operator has to notice, and it is absent until it happens.
-            rejected = stats.get("registrations_rejected", 0)
-            suffix = (
-                "  " + c(f"registrations rejected={rejected}",
-                         self._theme.get("error"))
-                if rejected else ""
+            # Whoever is refused at this port is the one fact in this table the
+            # operator has to notice, and it is absent until it happens. Each kind
+            # of refusal means something different: a stranger reaching the port, a
+            # payload that cannot finish a handshake, and someone speaking for a
+            # session whose id they got hold of without its token.
+            suffix = "".join(
+                "  " + c(f"{label}={stats[key]}", self._theme.get("error"))
+                for key, label in (
+                    ("registrations_rejected", "registrations rejected"),
+                    ("beacons_refused", "beacons refused"),
+                    ("handshakes_refused", "handshakes refused"),
+                )
+                if stats.get(key)
             )
             print(f"    {c(t['name'], self._theme.get('success'))} [{t['state']}]  sent={stats['bytes_sent']}B  recv={stats['bytes_received']}B{suffix}")
 

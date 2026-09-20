@@ -352,11 +352,15 @@ class TestSessionManager:
 
     @pytest.mark.asyncio
     async def test_to_dict(self):
-        info = SessionInfo(session_id="dict", hostname="h", os="linux", state=SessionState.CONNECTED)
+        info = SessionInfo(session_id="dict", hostname="h", os="linux",
+                           state=SessionState.CONNECTED, beacon_token="proof-1")
         d = info.to_dict()
         assert d["session_id"] == "dict"
         assert d["state"] == "connected"
         assert "uptime_seconds" in d
+        # Every session view an operator has renders this — list, info, search —
+        # so anything in it is something that ends up on a screen or in an export.
+        assert "beacon_token" not in d
 
     @pytest.mark.asyncio
     async def test_initialize_and_shutdown(self, sessions):

@@ -99,6 +99,13 @@ refused before a session is created, so finding the open port is no longer enoug
 to get a handler. Turn it off with `agent_auth: false` only on an interface you
 already trust; the banner and a startup warning say when it is off.
 
+That secret is spent the moment the session exists, so the third proof is on the
+wire rather than in a config file: `register` answers with a token for that
+session alone, and every `checkin` and `output` has to carry it. Nothing about it
+is configurable — there is no off switch, because a session nobody handed a proof
+to must not be the kind anyone can command — and it never appears in `sessions
+list`, in `sessions info` or in the audit log, only in `beacons_refused`.
+
 `--transport https` works with `tls: true`, or with `server.https_cert` /
 `server.https_key` for a certificate you obtained yourself, or against a reverse
 proxy holding a real one.
@@ -276,7 +283,7 @@ git-ignored.
 .venv/bin/python -m pytest pupyteer/tests/integration/ -v
 ```
 
-**Current test count: 906 tests passing** (`pytest pupyteer/tests`)
+**Current test count: 922 tests passing** (`pytest pupyteer/tests`)
 
 The suite runs against real engines and real listeners, and repoints every file a
 default-config server writes — the audit trail, the enrollment secret, the TLS
@@ -323,6 +330,19 @@ section describes what the running code does, not what its modules could do.
   that will never admit it. Both listeners apply the same check, and
   `transports list` reports them as separate rows — a rejection count belongs to
   the port that was probed, not to whichever listener you happened to start first.
+- **Beacons prove their own session** — `register` hands the agent a random token
+  for that session alone, and every later `checkin` or `output` has to present it.
+  The enrollment secret is spent the moment a session exists, and a session id only
+  *names* one: twelve hex characters that are printed when an agent joins, listed by
+  `sessions list` and written to the audit trail. Without the second proof, whoever
+  has one could drain that session's queued commands (your tasking, often including
+  where you go next) and answer them with text of their own, which you would read as
+  something a target said. The token never reaches `sessions list`/`info`/`search`
+  or the audit log; refusals count toward `beacons_refused` in `transports list` and
+  leave one `beacon_refused` line per peer and session per minute. A payload built
+  before this still registers and is then refused on every beacon, so it never runs
+  a command and re-registers instead — `beacons_refused` climbing while nothing
+  arrives is that payload, and it needs rebuilding from this server.
 - **Verification gates** — `scripts/verify_secure_defaults.py --strict` and
   `scripts/audit_deps.py` both exit non-zero on findings
 - **Operator login and role gate** — the console will not start the engine until a
@@ -346,16 +366,20 @@ section describes what the running code does, not what its modules could do.
 - **Enrollment is one shared secret, not per-agent credentials.** Every payload
   this server builds carries the same string, so it identifies the team server,
   not the host: whoever recovers a dropped binary can enroll sessions as if they
-  were you, and so can whoever reads `data/keys/enrollment.key`. Rotating it
-  strands everything already in the field — there is no re-keying channel, because
-  an agent that cannot register cannot receive a new secret. `server.agent_auth:
-  false` removes the check entirely.
+  were you, and so can whoever reads `data/keys/enrollment.key`. What they cannot
+  do with it is speak for a session that is already there — that needs the token
+  that registration handed to that one payload. Rotating it strands everything
+  already in the field — there is no re-keying channel, because an agent that
+  cannot register cannot receive a new secret. `server.agent_auth: false` removes
+  the check entirely.
 - **Login gates the console, not the network.** Whoever can reach a listener
-  still only gets what TLS and enrollment (`server.agent_auth`) allow, and `--headless`
-  runs the server with no console to sign in to at all. `agent/core/auth.py`'s
-  JWT/challenge-response code is still not wired into the agent-channel protocol,
-  so there is no per-operator authorisation of what reaches a session — the check
-  happens before the console dispatches a verb, and nowhere else. Signing in is
+  still only gets what TLS, enrollment (`server.agent_auth`) and the session's own
+  beacon token allow, and `--headless` runs the server with no console to sign in
+  to at all. There is no per-operator authorisation of what reaches a session —
+  the check happens before the console dispatches a verb, and nowhere else. The
+  agent-side JWT/challenge-response module that used to sit unused in
+  `agent/core/auth.py` has been deleted rather than left to look like a
+  capability. Signing in is
   also not what protects the keyboard: anyone who can read the terminal while a
   token is live, or who can write `data/keys/operators.json`, is operator. And an
   `admin` can move `audit.log_file` in the config or delete the file — attribution

@@ -194,10 +194,11 @@ def _recv_json(sock: socket.socket) -> Optional[Dict[str, Any]]:
 def _register_agent(
     host: str, port: int, hostname: str = "test-agent", auth: Optional[str] = None
 ) -> tuple:
-    """Register an agent and return (socket, session_id).
+    """Register an agent and return (socket, session_id, beacon_token).
 
     ``auth`` overrides the enrollment secret this module's listener expects;
-    ``None`` means present the correct one.
+    ``None`` means present the correct one. The token comes back with the session
+    and has to travel on every later message, which is the point.
     """
     sock = _tcp_connect(host, port)
     _send_json(sock, {
@@ -214,7 +215,9 @@ def _register_agent(
     assert response["type"] == "registered", f"Unexpected: {response}"
     session_id = response["session_id"]
     assert session_id, "No session_id in response"
-    return sock, session_id
+    beacon = response.get("beacon_token", "")
+    assert beacon, "registration handed out no proof for later beacons"
+    return sock, session_id, beacon
 
 
 def _http_register(host: str, port: int,
@@ -257,7 +260,7 @@ class TestLiveAgentRegistration:
         """Registration creates a SessionInfo in the SessionManager."""
         thread, host, port = engine_thread
 
-        sock, session_id = _register_agent(host, port, hostname="reg-test")
+        sock, session_id, _ = _register_agent(host, port, hostname="reg-test")
 
         try:
             session = thread.submit(thread.engine.sessions.get(session_id))
@@ -274,8 +277,8 @@ class TestLiveAgentRegistration:
         """Each registration produces a distinct session ID."""
         thread, host, port = engine_thread
 
-        sock1, sid1 = _register_agent(host, port, hostname="agent-1")
-        sock2, sid2 = _register_agent(host, port, hostname="agent-2")
+        sock1, sid1, _ = _register_agent(host, port, hostname="agent-1")
+        sock2, sid2, _ = _register_agent(host, port, hostname="agent-2")
 
         try:
             assert sid1 != sid2
@@ -360,6 +363,229 @@ class TestLiveEnrollment:
             sock.close()
 
 
+class TestLiveBeaconAuth:
+    """A session id names a session; only the token proves a beacon owns it.
+
+    Twelve hex characters are not a secret: they are printed when an agent joins,
+    listed by `sessions list`, and written to the audit log. Without a second
+    proof, anyone holding one could take the commands queued for that host — which
+    is the operator's own tasking, often including where to go next — and answer
+    with text of their choosing, which the operator reads as something the target
+    said. These tests are the difference between that and a session only its own
+    payload can beacon on.
+    """
+
+    def test_a_beacon_without_its_token_gets_no_commands(self, engine_thread):
+        thread, host, port = engine_thread
+
+        sock, session_id, beacon = _register_agent(host, port, hostname="steal-q")
+        try:
+            cmd_id = thread.submit(
+                thread.engine.sessions.interact(session_id, "ipconfig /all"))
+            assert cmd_id
+
+            _send_json(sock, {"type": "checkin", "session_id": session_id})
+            response = _recv_json(sock)
+            assert response["type"] == "error"
+            assert response["message"] == "beacon_auth_failed"
+
+            # And the tasking is still there for the agent that can prove itself,
+            # rather than consumed or revealed by the attempt.
+            _send_json(sock, {"type": "checkin", "session_id": session_id,
+                              "beacon": beacon})
+            delivered = _recv_json(sock)
+            assert delivered["type"] == "commands"
+            assert [c["command_id"] for c in delivered["commands"]] == [cmd_id]
+        finally:
+            sock.close()
+
+    def test_a_refused_beacon_does_not_look_like_a_heartbeat(self, engine_thread):
+        """last_checkin is how an operator decides a host is still there.
+
+        A stranger bumping it would keep a dead session looking alive, so the
+        refusal happens before the heartbeat, not after the answer is withheld.
+        """
+        thread, host, port = engine_thread
+
+        sock, session_id, beacon = _register_agent(host, port, hostname="ghost-hb")
+        try:
+            stored = thread.submit(thread.engine.sessions.get(session_id))
+            initial = stored.last_checkin
+
+            time.sleep(0.1)
+            for wrong in (None, "", "x" * len(beacon), beacon[:-1] + "f"):
+                message = {"type": "checkin", "session_id": session_id}
+                if wrong is not None:
+                    message["beacon"] = wrong
+                _send_json(sock, message)
+                assert _recv_json(sock)["message"] == "beacon_auth_failed"
+
+            after = thread.submit(thread.engine.sessions.get(session_id))
+            assert after.last_checkin == initial, (
+                "an unverifiable beacon moved the session's heartbeat"
+            )
+        finally:
+            sock.close()
+
+    def test_foreign_output_cannot_complete_a_command(self, engine_thread):
+        """The write side matters more than the read side.
+
+        Anyone can queue a command; a forged result is what an operator acts on.
+        """
+        thread, host, port = engine_thread
+
+        sock, session_id, beacon = _register_agent(host, port, hostname="forged")
+        try:
+            cmd_id = thread.submit(
+                thread.engine.sessions.interact(session_id, "hashdump"))
+
+            _send_json(sock, {"type": "checkin", "session_id": session_id,
+                              "beacon": beacon})
+            assert len(_recv_json(sock)["commands"]) == 1
+
+            _send_json(sock, {
+                "type": "output",
+                "session_id": session_id,
+                "command_id": cmd_id,
+                "output": "no credentials found",
+            })
+            response = _recv_json(sock)
+            assert response["type"] == "error"
+            assert response["message"] == "beacon_auth_failed"
+
+            history = thread.submit(
+                thread.engine.sessions.get_command_history(session_id))
+            entry = next(c for c in history if c["command_id"] == cmd_id)
+            assert entry["status"] != "completed", (
+                "an unverified beacon completed a command and supplied its result"
+            )
+            assert "no credentials found" not in str(entry.get("result", ""))
+        finally:
+            sock.close()
+
+    def test_an_output_for_a_session_that_never_existed_is_dropped(
+        self, engine_thread
+    ):
+        """An ack used to be the answer to any session id, real or invented.
+
+        A {"type": "ack"} plus an audit line saying session X completed command Y
+        is a fabricated result wearing the shape of a real one.
+        """
+        thread, host, port = engine_thread
+
+        sock = _tcp_connect(host, port)
+        try:
+            _send_json(sock, {
+                "type": "output",
+                "session_id": "ffffffffffff",
+                "command_id": "deadbeef",
+                "output": "owned",
+            })
+            response = _recv_json(sock)
+            assert response["type"] == "error"
+            assert response["message"] == "unknown_session"
+        finally:
+            sock.close()
+
+        assert not thread.engine.audit.query(session="ffffffffffff"), (
+            "a session that never registered left an audit trail"
+        )
+
+    def test_the_token_is_absent_from_everything_an_operator_reads(
+        self, engine_thread
+    ):
+        """The proof has to be invisible to the people the proof is against.
+
+        Sessions render through to_dict() in `sessions list`, `info` and `search`;
+        the enrollment event is written to a rotating audit file. Either place
+        leaking the token turns a log an operator shares into a set of credentials.
+        """
+        thread, host, port = engine_thread
+
+        sock, session_id, beacon = _register_agent(host, port, hostname="quiet")
+        try:
+            stored = thread.submit(thread.engine.sessions.get(session_id))
+            assert stored.beacon_token == beacon, "registration did not keep its own proof"
+            assert "beacon_token" not in stored.to_dict()
+            assert beacon not in json.dumps(stored.to_dict())
+
+            # `session_registered` is one of the names the audit layer folds into
+            # its spec vocabulary, so this is the event name it is filed under.
+            events = thread.engine.audit.query(event="agent_connected")
+            mine = [e for e in events if e.get("session") == session_id]
+            assert mine, "registration left no audit trail"
+            assert beacon not in json.dumps(mine), (
+                "the audit log carries a beacon token"
+            )
+        finally:
+            sock.close()
+
+    def test_refused_beacons_are_counted_at_the_listener_that_refused_them(
+        self, engine_thread
+    ):
+        """A count nobody can read is not a warning."""
+        thread, host, port = engine_thread
+
+        before = thread.engine.transports.listener.stats["beacons_refused"]
+
+        sock, session_id, _beacon = _register_agent(host, port, hostname="counted")
+        try:
+            _send_json(sock, {"type": "checkin", "session_id": session_id})
+            _recv_json(sock)
+        finally:
+            sock.close()
+
+        after = thread.engine.transports.listener.stats["beacons_refused"]
+        assert after == before + 1
+        rows = {t["name"]: t for t in thread.engine.transports.list()}
+        assert rows["agent_listener"]["stats"]["beacons_refused"] == after
+
+    def test_a_refused_beacon_is_audited_once_per_window(self, engine_thread):
+        """Exact count, thin trace: the same policy the handshake refusal uses.
+
+        Otherwise someone poking at session ids can use this event to evict the
+        entries an operator actually wanted out of a log that rotates.
+        """
+        thread, host, port = engine_thread
+
+        before = thread.engine.transports.listener.stats["beacons_refused"]
+        sock, session_id, _beacon = _register_agent(host, port, hostname="thinned")
+        try:
+            for _ in range(5):
+                _send_json(sock, {"type": "checkin", "session_id": session_id,
+                                  "beacon": "wrong"})
+                assert _recv_json(sock)["message"] == "beacon_auth_failed"
+        finally:
+            sock.close()
+
+        assert thread.engine.transports.listener.stats["beacons_refused"] == before + 5
+        events = thread.engine.audit.query(event="beacon_refused")
+        mine = [e for e in events
+                if isinstance(e.get("details"), dict)
+                and e["details"].get("session_id") == session_id]
+        assert len(mine) == 1, f"expected one trace line for five refusals, got {len(mine)}"
+        assert mine[0]["details"]["verb"] == "checkin"
+
+    def test_an_unknown_session_still_says_so_rather_than_bad_token(
+        self, engine_thread
+    ):
+        """Two refusals with two different fixes, and the agent picks by name.
+
+        A session the server lost needs a re-register; a beacon that cannot prove
+        itself needs a rebuild. Collapsing them sends an operator down the wrong
+        one of those paths.
+        """
+        thread, host, port = engine_thread
+
+        sock = _tcp_connect(host, port)
+        try:
+            _send_json(sock, {"type": "checkin", "session_id": "0123456789ab",
+                              "beacon": "whatever"})
+            assert _recv_json(sock)["message"] == "unknown_session"
+        finally:
+            sock.close()
+
+
 class TestLiveTransportReporting:
     """Both listeners have to show up in the transport table, with their own counts.
 
@@ -413,7 +639,7 @@ class TestLiveAgentCheckin:
         """Sending a checkin updates the session's last_checkin timestamp."""
         thread, host, port = engine_thread
 
-        sock, session_id = _register_agent(host, port, hostname="checkin-test")
+        sock, session_id, beacon = _register_agent(host, port, hostname="checkin-test")
 
         try:
             before = thread.submit(thread.engine.sessions.get(session_id))
@@ -422,7 +648,8 @@ class TestLiveAgentCheckin:
 
             time.sleep(0.1)
 
-            _send_json(sock, {"type": "checkin", "session_id": session_id})
+            _send_json(sock, {"type": "checkin", "session_id": session_id,
+                              "beacon": beacon})
             response = _recv_json(sock)
 
             assert response is not None
@@ -438,10 +665,11 @@ class TestLiveAgentCheckin:
         """Checkin with no queued commands returns empty commands list."""
         thread, host, port = engine_thread
 
-        sock, session_id = _register_agent(host, port, hostname="empty-checkin")
+        sock, session_id, beacon = _register_agent(host, port, hostname="empty-checkin")
 
         try:
-            _send_json(sock, {"type": "checkin", "session_id": session_id})
+            _send_json(sock, {"type": "checkin", "session_id": session_id,
+                              "beacon": beacon})
             response = _recv_json(sock)
             assert response is not None
             assert response["type"] == "commands"
@@ -457,7 +685,7 @@ class TestLiveCommandDispatch:
         """A queued command is returned on the next checkin."""
         thread, host, port = engine_thread
 
-        sock, session_id = _register_agent(host, port, hostname="dispatch-test")
+        sock, session_id, beacon = _register_agent(host, port, hostname="dispatch-test")
 
         try:
             # Queue a command
@@ -467,7 +695,8 @@ class TestLiveCommandDispatch:
             assert cmd_id is not None
 
             # Checkin should deliver it
-            _send_json(sock, {"type": "checkin", "session_id": session_id})
+            _send_json(sock, {"type": "checkin", "session_id": session_id,
+                              "beacon": beacon})
             response = _recv_json(sock)
 
             assert response is not None
@@ -482,7 +711,7 @@ class TestLiveCommandDispatch:
         """Sending command output returns ack and completes the command."""
         thread, host, port = engine_thread
 
-        sock, session_id = _register_agent(host, port, hostname="output-test")
+        sock, session_id, beacon = _register_agent(host, port, hostname="output-test")
 
         try:
             # Queue a command
@@ -491,7 +720,8 @@ class TestLiveCommandDispatch:
             )
 
             # Checkin to deliver
-            _send_json(sock, {"type": "checkin", "session_id": session_id})
+            _send_json(sock, {"type": "checkin", "session_id": session_id,
+                              "beacon": beacon})
             resp = _recv_json(sock)
             assert resp is not None
             assert len(resp["commands"]) == 1
@@ -502,6 +732,7 @@ class TestLiveCommandDispatch:
                 "session_id": session_id,
                 "command_id": cmd_id,
                 "output": "testuser\n",
+                "beacon": beacon,
             })
             ack = _recv_json(sock)
             assert ack is not None
@@ -522,7 +753,7 @@ class TestLiveCommandDispatch:
         """Full end-to-end loop: register → queue → checkin → output → ack."""
         thread, host, port = engine_thread
 
-        sock, session_id = _register_agent(host, port, hostname="full-loop")
+        sock, session_id, beacon = _register_agent(host, port, hostname="full-loop")
 
         try:
             # Verify session exists
@@ -536,7 +767,8 @@ class TestLiveCommandDispatch:
             assert cmd_id
 
             # Checkin → get command
-            _send_json(sock, {"type": "checkin", "session_id": session_id})
+            _send_json(sock, {"type": "checkin", "session_id": session_id,
+                              "beacon": beacon})
             checkin_resp = _recv_json(sock)
             assert checkin_resp is not None
             assert checkin_resp["type"] == "commands"
@@ -549,6 +781,7 @@ class TestLiveCommandDispatch:
                 "session_id": session_id,
                 "command_id": cmd_id,
                 "output": "pupyteer_ok\n",
+                "beacon": beacon,
             })
             ack_resp = _recv_json(sock)
             assert ack_resp is not None
@@ -625,7 +858,7 @@ class TestLiveSessionCleanup:
         """After a socket disconnect, session is still tracked (until timeout)."""
         thread, host, port = engine_thread
 
-        sock, session_id = _register_agent(host, port, hostname="persist-test")
+        sock, session_id, _ = _register_agent(host, port, hostname="persist-test")
 
         # Close connection
         sock.close()

@@ -596,7 +596,8 @@ class TestDependencyAudit:
 
 
 class TestEnrollmentSecret:
-    """The rule that decides which payloads may become sessions."""
+    """The rules that decide which payloads may become sessions, and which
+    messages may speak for one afterwards."""
 
     class _Getter:
         """A stand-in for ConfigManager.get over a fixed mapping."""
@@ -640,6 +641,33 @@ class TestEnrollmentSecret:
         assert secret_accepts(None, None) is True
         assert secret_accepts(None, "anything") is True
         assert secret_accepts("", "") is False
+
+    def test_a_beacon_token_admits_its_own_session_and_nothing_else(self):
+        from pupyteer.server.core.enrollment import beacon_accepts
+
+        assert beacon_accepts("b3acon", "b3acon") is True
+        for presented in (None, "", "b3aco", "B3ACON", "b3acon!", 12345, ["b3acon"]):
+            assert beacon_accepts("b3acon", presented) is False, repr(presented)
+
+    def test_a_beacon_token_has_no_off_switch(self):
+        """The enrollment secret has one; this cannot.
+
+        A session nobody handed a proof to must not be commandable by whoever
+        guesses its id — otherwise the sessions that failed to get a token are the
+        only ones anyone can address, and they are the open ones.
+        """
+        from pupyteer.server.core.enrollment import beacon_accepts
+
+        assert beacon_accepts("", "anything") is False
+        assert beacon_accepts(None, "anything") is False
+
+    def test_beacon_tokens_are_unique_and_not_shaped_like_session_ids(self):
+        """A session id leaks into operator output; the proof of a beacon may not."""
+        from pupyteer.server.core.enrollment import new_beacon_token
+
+        tokens = {new_beacon_token() for _ in range(50)}
+        assert len(tokens) == 50
+        assert all(len(token) >= 32 for token in tokens)
 
     def test_registration_authentication_is_on_by_default(self, tmp_path):
         from pupyteer.server.core.enrollment import listener_secret
