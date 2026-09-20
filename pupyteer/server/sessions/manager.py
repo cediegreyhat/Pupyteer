@@ -339,9 +339,14 @@ class SessionManager:
         queue = self._command_queue.get(session_id, [])
         for cmd in queue:
             if cmd["command_id"] == command_id:
-                cmd["status"] = "completed"
+                # Result before status: these dicts are handed out live by
+                # get_command_history, so a reader that comes behind this loop
+                # must never be able to see a completed command whose output has
+                # not arrived yet. "completed" with no result reads as an empty
+                # command on the target, and an operator moves on.
                 cmd["result"] = result
                 cmd["completed_at"] = time.time()
+                cmd["status"] = "completed"
                 break
 
         # Update task status based on remaining queue
