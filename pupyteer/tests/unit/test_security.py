@@ -705,19 +705,42 @@ class TestSecureDefaults:
         findings = gate.check_config_defaults()
         assert any("security.operators" in f for f in findings), findings
 
-    def test_the_shipped_defaults_carry_no_credential_of_any_name(self):
+    def test_the_shipped_defaults_name_the_same_files_as_the_code(
+            self, stock_generated_files):
+        """The config an install copies and the defaults the code uses have to agree.
+
+        When they drift, a server writes its audit trail or its credential file to
+        somewhere the operator's backup job — and their disk encryption, and their
+        panic wipe — does not cover. Two lists of the same paths, kept in two files,
+        is exactly the kind of thing that drifts.
+        """
         import yaml
         from pupyteer.server.core.operators import DEFAULT_OPERATORS_FILE
-        from pupyteer.server.core.config import DEFAULT_CONFIG
 
         shipped = (Path(__file__).resolve().parents[2]
                    / "config" / "defaults" / "pupyteer.yaml")
         data = yaml.safe_load(shipped.read_text(encoding="utf-8")) or {}
-        security = data.get("security") or {}
-        assert "operators" not in security
-        assert security["operators_file"] == DEFAULT_OPERATORS_FILE, \
-            "the shipped file and the code default must name the same place"
-        assert DEFAULT_CONFIG["security"]["operators_file"] == DEFAULT_OPERATORS_FILE
+        assert "operators" not in (data.get("security") or {}), \
+            "a credential in the shipped config is a credential in every install"
+
+        named = {f"{section}.{key}": value
+                 for section, values in data.items()
+                 if isinstance(values, dict)
+                 for key, value in values.items()
+                 if isinstance(value, str) and value.startswith("./")}
+        assert named, "the shipped config is supposed to name the generated files"
+
+        undocumented = sorted(set(stock_generated_files) - set(named))
+        assert not undocumented, \
+            f"the shipped config does not tell an operator where {undocumented} is"
+        for dotted, value in sorted(named.items()):
+            if dotted in stock_generated_files:
+                assert value == stock_generated_files[dotted], (
+                    f"{dotted}: the config says {value!r}, the code says "
+                    f"{stock_generated_files[dotted]!r}")
+
+        assert stock_generated_files["security.operators_file"] == \
+            DEFAULT_OPERATORS_FILE
 
     def test_check_file(self, tmp_path):
         from scripts.verify_secure_defaults import check_file

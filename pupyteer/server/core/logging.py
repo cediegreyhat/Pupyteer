@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from pupyteer.server.core.config import ConfigManager
+from pupyteer.server.core.config import ConfigManager, DEFAULT_AUDIT_LOG_FILE
 
 # Re-export the spec section 11 event catalog and helpers
 from pupyteer.server.core.audit import (
@@ -56,7 +56,7 @@ class AuditLogger:
             self._log_file.parent.mkdir(parents=True, exist_ok=True)
 
         # Structured audit log store (rotation + querying)
-        audit_log_path = config.get("audit.log_file", "./logs/audit.json")
+        audit_log_path = config.get("audit.log_file", DEFAULT_AUDIT_LOG_FILE)
         self._store = AuditLogStore(
             log_path=Path(audit_log_path),
             max_bytes=config.get("audit.max_bytes", 10 * 1024 * 1024),

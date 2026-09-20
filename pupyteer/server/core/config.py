@@ -20,6 +20,10 @@ logger = logging.getLogger("pupyteer.config")
 #: property of everyone who reads any of those.
 DEFAULT_OPERATORS_FILE = "./data/keys/operators.json"
 
+#: The audit trail. A default the code keeps to itself is not a default an
+#: operator can find, and this one decides where an engagement's record lands.
+DEFAULT_AUDIT_LOG_FILE = "./logs/audit.json"
+
 DEFAULT_CONFIG: Dict[str, Any] = {
     "server": {
         "host": "0.0.0.0",
@@ -56,6 +60,14 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "level": "INFO",
         "format": "json",
         "file": None,
+    },
+    "audit": {
+        # Absolute rather than under paths.logs, because it is the file an
+        # engagement is judged on and `logs: null` must not move it by accident.
+        "log_file": DEFAULT_AUDIT_LOG_FILE,
+        "max_bytes": 10 * 1024 * 1024,
+        "backup_count": 5,
+        "compress": True,
     },
     "operator": {
         "name": "unknown",

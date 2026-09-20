@@ -278,6 +278,13 @@ git-ignored.
 
 **Current test count: 906 tests passing** (`pytest pupyteer/tests`)
 
+The suite runs against real engines and real listeners, and repoints every file a
+default-config server writes — the audit trail, the enrollment secret, the TLS
+pair, the credential file — into a temp directory. A session fixture fails the run
+if `logs/audit.json` in the checkout grows, because a test that writes to an
+operator's real audit trail is also a test that can log in with a credential left
+there for a human to find.
+
 ---
 
 ## 🔒 Security
