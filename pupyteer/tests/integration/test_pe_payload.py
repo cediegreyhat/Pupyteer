@@ -153,6 +153,26 @@ async def _await_exit(proc, timeout: float = 30.0):
     return None
 
 
+async def _await_result(engine, session_id: str, command_id: str,
+                        timeout: float = 60.0) -> str | None:
+    """The output of one command, or None if it never came back."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        history = await engine.sessions.get_command_history(session_id)
+        for entry in history:
+            if (entry.get("command_id") == command_id
+                    and entry.get("status") == "completed"):
+                return entry.get("result") or ""
+        await asyncio.sleep(0.25)
+    return None
+
+
+async def _run(engine, session_id: str, command: str) -> str | None:
+    command_id = await engine.sessions.interact(session_id, command)
+    assert command_id, "command never queued"
+    return await _await_result(engine, session_id, command_id)
+
+
 @pytest.mark.asyncio
 async def test_pe_payload_registers_and_runs_a_command_over_tls(tmp_path):
     """The claim the whole TLS section exists to support: a .exe that calls home."""
@@ -171,20 +191,83 @@ async def test_pe_payload_registers_and_runs_a_command_over_tls(tmp_path):
         assert info.os == "windows" and info.arch == "x64"
         assert info.hostname
 
-        command_id = await engine.sessions.interact(session_id, "echo pe-tls-roundtrip")
-        assert command_id, "command never queued"
-        deadline = time.time() + 30
-        output = None
-        while time.time() < deadline and output is None:
-            history = await engine.sessions.get_command_history(session_id)
-            for entry in history:
-                if (entry.get("command_id") == command_id
-                        and entry.get("status") == "completed"):
-                    output = entry.get("result") or ""
-            if output is None:
-                await asyncio.sleep(0.25)
+        output = await _run(engine, session_id, "echo pe-tls-roundtrip")
         assert output is not None, "PE payload never returned command output"
         assert "pe-tls-roundtrip" in output
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            proc.wait(timeout=10)
+        await engine.stop()
+
+
+#: A line and a count that together are well over one TLS record (Schannel caps
+#: a record at 16384 bytes of plaintext) and do not divide evenly into one.
+_BIG_LINES = 400
+_BIG_LINE = "pupyteer-pe-tls-multi-record-line-0123456789abcdefghij"
+
+
+@pytest.mark.asyncio
+async def test_pe_payload_returns_a_result_bigger_than_one_record(tmp_path):
+    """A command that prints more than one TLS record can hold.
+
+    Splitting a line across records is the normal case rather than an edge case:
+    a directory listing runs past 16 KB without anybody trying. The listener
+    reassembles a byte stream and never tells either end a split happened, so
+    the only thing provable from outside is that the whole text arrived — a
+    result clipped at a record boundary would otherwise read as a target that
+    simply had less to say.
+    """
+    port = _free_port()
+    config_path, secret, material = _start_server(tmp_path, port)
+    exe = await _build(tmp_path, port, secret, material.cert_pem, name="bigout")
+
+    engine = PupyteerEngine(config_path)
+    await engine.start()
+    proc = subprocess.Popen([str(exe)], cwd=str(tmp_path))
+    try:
+        session_id = await _await_session(engine)
+        assert session_id, "PE payload never registered over TLS"
+
+        output = await _run(
+            engine, session_id,
+            f"for /L %i in (1,1,{_BIG_LINES}) do @echo {_BIG_LINE}")
+        expected = _BIG_LINES * (len(_BIG_LINE) + 1)      # + the newline
+        assert output is not None, "PE payload never returned the big result"
+        assert output.count(_BIG_LINE) == _BIG_LINES, (
+            f"got {len(output)} bytes of a result that should be {expected}: "
+            f"{output[:60]!r} … {output[-60:]!r}")
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            proc.wait(timeout=10)
+        await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_pe_payload_returns_output_that_is_not_clean_text(tmp_path):
+    """A result carrying a byte that JSON has to escape.
+
+    Command output is whatever a program wrote, and a coloured program writes
+    0x1b. Passing such a byte through as itself does not print one odd
+    character: the listener cannot decode the line, the result is dropped, and
+    the operator is left waiting on a command that never finishes. The byte has
+    to leave as an escape and come back as the byte it was.
+    """
+    port = _free_port()
+    config_path, secret, material = _start_server(tmp_path, port)
+    exe = await _build(tmp_path, port, secret, material.cert_pem, name="ctrlout")
+
+    engine = PupyteerEngine(config_path)
+    await engine.start()
+    proc = subprocess.Popen([str(exe)], cwd=str(tmp_path))
+    try:
+        session_id = await _await_session(engine)
+        assert session_id, "PE payload never registered over TLS"
+
+        output = await _run(engine, session_id, "echo a\x1bb\x07c")
+        assert output is not None, "output with a control byte never came back"
+        assert "\x1b" in output and "\x07" in output, repr(output)
     finally:
         if proc.poll() is None:
             proc.terminate()
