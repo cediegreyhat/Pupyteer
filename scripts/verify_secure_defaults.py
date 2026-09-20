@@ -18,6 +18,7 @@ import os
 import re
 import stat
 import sys
+import tempfile
 from pathlib import Path
 from typing import List, Tuple
 
@@ -315,7 +316,8 @@ def verify_registration_auth() -> List[str]:
 
     try:
         from pupyteer.server.core.config import DEFAULT_CONFIG
-        from pupyteer.server.core.enrollment import beacon_accepts, secret_accepts
+        from pupyteer.server.core.enrollment import (
+            EnrollmentLedger, beacon_accepts, listener_ledger)
     except ImportError as exc:
         return [f"Could not import the enrollment module to verify it: {exc}"]
 
@@ -329,18 +331,38 @@ def verify_registration_auth() -> List[str]:
             "server.agent_auth_file has no default, so a build could not find the "
             "secret to compile into a payload")
 
-    # The rule itself, in both directions: the right secret works, and nothing
-    # close to it does. An "expected" of None is the only thing that admits an
-    # absent secret, and that is the operator's explicit server.agent_auth: false.
-    if secret_accepts("gate-secret", "gate-secret") is not True:
-        findings.append("a correct enrollment secret is being rejected")
-    for presented in (None, "", "gate-secre", "GATE-SECRET", 12345, ["gate-secret"]):
-        if secret_accepts("gate-secret", presented) is not False:
-            findings.append(f"an enrollment secret of {presented!r} is being accepted")
-    if secret_accepts("", "") is not False:
-        findings.append(
-            "an empty expected secret admits anyone, which is a misconfiguration "
-            "and not the same statement as auth being off")
+    # The rule itself, in both directions, checked against the object the listener
+    # actually consults rather than a helper nobody calls.
+    with tempfile.TemporaryDirectory() as workdir:
+        ledger = EnrollmentLedger(Path(workdir) / "enrollment.key")
+        secret = ledger.current()
+        if not ledger.accepts(secret):
+            findings.append("a correct enrollment secret is being rejected")
+        for presented in (None, "", secret[:-1], secret.upper(), 12345, [secret]):
+            if ledger.accepts(presented):
+                findings.append(f"an enrollment secret of {presented!r} is being accepted")
+        # A credential file that has gone missing must stop the listener, not
+        # quietly reinstate it under a secret no payload knows.
+        vanished = EnrollmentLedger(Path(workdir) / "gone.key")
+        if vanished.accepted() or vanished.accepts("anything"):
+            findings.append(
+                "a missing enrollment file generates a replacement secret and "
+                "enrols whoever presents it, instead of accepting nobody")
+
+    # Authentication off is a statement the operator has to make about the config,
+    # and an unrecognised value is not that statement.
+    open_ledger = listener_ledger(lambda key, default=None: {
+        "server.agent_auth": False, "server.agent_auth_file": ":memory:"}.get(key, default))
+    if open_ledger is not None:
+        findings.append("server.agent_auth: false still checks enrollment secrets")
+    for raw in ("", "maybe", None, 1, True):
+        getter = lambda key, default=None, raw=raw: {
+            "server.agent_auth": raw,
+            "server.agent_auth_file": ":memory:"}.get(key, default)
+        if listener_ledger(getter) is None:
+            findings.append(
+                f"server.agent_auth={raw!r} is being read as a request for an "
+                "unauthenticated listener")
 
     try:
         from pupyteer.agent.core.stub import AgentStubGenerator, StubConfig

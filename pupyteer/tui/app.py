@@ -19,6 +19,7 @@ except ImportError:
 
 from pupyteer.server.core.config import ConfigManager
 from pupyteer.server.core.engine import PupyteerEngine
+from pupyteer.server.core.enrollment import secret_fingerprint
 from pupyteer.server.core.operators import MIN_PASSWORD_CHARS, WeakCredential
 from pupyteer.server.core.rbac import AccessDenied, Role
 from pupyteer.tui.themes import Theme, _Ansi, c, get_theme, available_themes
@@ -278,6 +279,9 @@ class PupyteerTUI:
         r.register("whoami", self.cmd_whoami, "Show who this console is acting as")
         r.register("operator", self.cmd_operator, "Manage operator credentials",
                    "operator [list|add <name> <role>|role <name> <role>|remove <name>]")
+        r.register("enrollment", self.cmd_enrollment,
+                   "Which payloads may enrol: show, rotate, revoke",
+                   "enrollment [show|rotate|revoke <fingerprint>]")
         r.register("exit", self.cmd_exit, "Exit Pupyteer")
         r.register("quit", self.cmd_exit, "Exit Pupyteer")
 
@@ -294,6 +298,7 @@ class PupyteerTUI:
         "evasion": ["status", "run", "list", "stats"],
         "pipeline": ["run", "build", "test", "auto", "status", "history"],
         "operator": ["list", "add", "role", "remove"],
+        "enrollment": ["show", "rotate", "revoke"],
     }
 
     def _complete_names(self, command: str) -> List[str]:
@@ -670,6 +675,112 @@ class PupyteerTUI:
         except ValueError:
             offered = ", ".join(r.value for r in Role if r is not Role.SYSTEM)
             return None, f"Unknown role {word!r}; choose from {offered}"
+
+
+    # ------------------------------------------------------------------ #
+    #  Enrollment boundary                                               #
+    # ------------------------------------------------------------------ #
+
+    async def cmd_enrollment(self, args: List[str]) -> None:
+        """`enrollment show|rotate|revoke` — which payloads may become a session.
+
+        The secret is named here by fingerprint and its value is never printed.
+        It is the one credential every deployed agent shares, which makes it the
+        one worth the most to whoever finds it in a terminal scrollback or an
+        audit line; the file is the only copy and the console's job is to keep it
+        that way.
+        """
+        ledger = self._engine.transports.enrollment
+        usage = "enrollment [show|rotate|revoke <fingerprint>]"
+        if ledger is None:
+            if self._engine.transports.listener_requires_auth is False:
+                self.render_error(
+                    "Agent authentication is off, so this listener enrols "
+                    "whatever reaches its port — there is no boundary to manage "
+                    "until server.agent_auth is on.")
+            else:
+                self.render_warning(
+                    "No agent listener is running yet, so nothing is checking "
+                    "registrations against anything.")
+            return
+
+        verb = args[0] if args else "show"
+        if verb == "show":
+            self._enrollment_show(ledger)
+            return
+        if verb == "rotate":
+            await self._enrollment_rotate(ledger)
+            return
+        if verb == "revoke":
+            self._enrollment_revoke(ledger, args[1:])
+            return
+        self.render_error(f"Unknown enrollment command: {verb}\n  Usage: {usage}")
+
+    def _enrollment_show(self, ledger) -> None:
+        rows = ledger.status()
+        if not rows:
+            self.render_error(
+                f"{ledger.path} holds no enrollment secret, so this listener "
+                "admits nobody. Restore the file, or delete it and restart to "
+                "start a new boundary and rebuild the payloads.")
+            return
+        self.render_table(["FINGERPRINT", "ROLE"],
+                          [[r["fingerprint"], r["role"]] for r in rows])
+        retired = len(rows) - 1
+        if retired:
+            self.render_warning(
+                f"{retired} retired secret(s) still enrol payloads built with "
+                "them. That is the point of a rotation, not a leak — but each "
+                "one is a door, and `enrollment revoke <fingerprint>` is how you "
+                "close one you no longer need.")
+
+    async def _enrollment_rotate(self, ledger) -> None:
+        try:
+            new, retired = ledger.rotate()
+        except ValueError as exc:
+            self.render_error(f"Refused: {exc}")
+            return
+        self._engine.audit.log_event(
+            "enrollment_rotated",
+            {"new": secret_fingerprint(new), "retired": secret_fingerprint(retired)},
+            result="success")
+        self.render_success(
+            "New enrollment secret in place. Payloads built from here on carry "
+            f"it ({secret_fingerprint(new)[:8]}…); the one before "
+            f"({secret_fingerprint(retired)[:8]}…) is still accepted, so "
+            "everything already deployed keeps its session.")
+        print("  Nothing you build now will use the old one. Once no session you "
+              "care about is built with it, close it:\n"
+              f"    enrollment revoke {secret_fingerprint(retired)}")
+
+    def _enrollment_revoke(self, ledger, rest: List[str]) -> None:
+        if not rest:
+            self.render_warning("Usage: enrollment revoke <fingerprint>")
+            return
+        wanted = rest[0].strip().lower()
+        rows = ledger.status()
+        if rows and wanted == rows[0]["fingerprint"]:
+            # The message is the difference between this and a typo: the current
+            # secret is the one new payloads are built with, so cutting it off is
+            # a rotation, and saying "not found" would send an operator hunting
+            # for a fingerprint that is plainly on the screen.
+            self.render_error(
+                "Refused: that is the current secret, and what `payloads build` "
+                "compiles into new agents. Run `enrollment rotate` first — that "
+                "retires it and keeps it working until you revoke it here.")
+            return
+        if not ledger.revoke(wanted):
+            self.render_error(
+                f"No retired secret with fingerprint {wanted!r}. "
+                "`enrollment show` lists what is accepted.")
+            return
+        self._engine.audit.log_event(
+            "enrollment_revoked", {"fingerprint": wanted}, result="success")
+        self.render_success(
+            f"{wanted} no longer enrols anything. Payloads built with it will be "
+            "turned away on their next registration; sessions that already exist "
+            "keep running on their own beacon token — kill those with "
+            "`sessions kill <id>` if that is what you meant.")
 
 
     # ------------------------------------------------------------------ #

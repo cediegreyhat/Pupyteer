@@ -7,6 +7,7 @@ like a gate that works.
 """
 import asyncio
 import os
+import socket
 import sys
 
 import pytest
@@ -168,6 +169,20 @@ class TestRoleGate:
         tui, engine = signed_in
         assert await tui._authorize("config", ["get", "server.port"]) is True
         assert await tui._authorize("config", ["set", "server.port", "9001"]) is False
+
+    @pytest.mark.asyncio
+    async def test_turning_the_enrollment_boundary_over_needs_config_write(
+            self, signed_in):
+        """Reading which payloads may enrol is a viewer's job; changing it is not.
+
+        `enrollment` with no argument shows the ledger, so a gate that asked only
+        about the verb would let a viewer rotate the secret every payload in the
+        field was built with. The refinement is what separates the two.
+        """
+        tui, engine = signed_in
+        assert await tui._authorize("enrollment", ["show"]) is True
+        assert await tui._authorize("enrollment", ["rotate"]) is False
+        assert await tui._authorize("enrollment", ["revoke", "0123456789abcdef"]) is False
 
     @pytest.mark.asyncio
     async def test_making_a_credential_is_not_part_of_being_an_operator(
@@ -361,6 +376,188 @@ class TestOperatorVerb:
         engine, tui = _console(tmp_path, monkeypatch)
         await tui.cmd_whoami([])
         assert "Not signed in" in capsys.readouterr().out
+
+
+class TestEnrollmentConsole:
+    """What the console says about the enrollment boundary, and what it keeps unsaid.
+
+    Every payload this server builds carries the same secret, so the value has to
+    stay in its file: `enrollment show` names secrets by fingerprint because a
+    terminal scrollback, a shared screen, or an audit line is exactly where a
+    credential that unlocks the listener would be found. The other half of what
+    these pin is what the command must not let an operator believe — that revoking
+    a secret also closed the sessions it opened.
+    """
+
+    @pytest_asyncio.fixture
+    async def listening(self, tmp_path, monkeypatch):
+        """A console whose engine has a listener actually checking registrations.
+
+        `enrollment` reads the ledger the running listeners consult, so a console
+        that never started one has nothing to show — and it must say which of the
+        two states it is in rather than report an empty boundary.
+        """
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        engine, tui = _console(tmp_path, monkeypatch)
+        secret_file = tmp_path / "enrollment.key"
+        for key, value in (("server.host", "127.0.0.1"),
+                           ("server.port", port),
+                           ("server.tls", False),
+                           ("server.agent_auth_file", str(secret_file))):
+            engine.config.set(key, value)
+        await engine.transports.start_listener(engine.sessions)
+        try:
+            yield tui, engine
+        finally:
+            await engine.transports.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_show_lists_fingerprints_and_never_a_value(self, listening, capsys):
+        from pupyteer.server.core.enrollment import secret_fingerprint
+
+        tui, engine = listening
+        ledger = engine.transports.enrollment
+        current = ledger.current()
+        capsys.readouterr()
+
+        await tui.cmd_enrollment(["show"])
+        out = capsys.readouterr().out
+        assert secret_fingerprint(current) in out
+        assert current not in out, "the console printed the enrollment secret"
+        assert "current" in out
+
+    @pytest.mark.asyncio
+    async def test_show_says_what_a_retired_secret_still_opens(self, listening, capsys):
+        """A rotation leaves a line in the file, and that line is a live door.
+
+        `enrollment show` is where an operator learns how many payloads from the
+        old build can still enrol; leaving the count unmentioned is how a boundary
+        quietly acccepts secrets nobody remembers choosing.
+        """
+        tui, engine = listening
+        engine.transports.enrollment.current()
+        await tui.cmd_enrollment(["rotate"])
+        capsys.readouterr()
+
+        await tui.cmd_enrollment(["show"])
+        out = capsys.readouterr().out
+        assert "retired" in out.lower()
+        assert "1 retired secret" in out, out
+
+    @pytest.mark.asyncio
+    async def test_a_rotation_is_audited_by_fingerprint_only(self, listening, capsys):
+        tui, engine = listening
+        ledger = engine.transports.enrollment
+        old = ledger.current()
+        capsys.readouterr()
+
+        await tui.cmd_enrollment(["rotate"])
+
+        rows = engine.audit._store.query(event="enrollment_rotated")
+        assert len(rows) == 1
+        details = rows[0]["details"]
+        assert ledger.accepted()[0] not in (old,)
+        assert old not in repr(rows), "the audit log recorded an enrollment secret"
+        assert len(details["retired"]) == 16 and len(details["new"]) == 16
+        # The whole point of reporting both: the operator is told which line to
+        # close, in the form they can type back in.
+        assert details["retired"] in capsys.readouterr().out
+
+    @pytest.mark.asyncio
+    async def test_the_console_refuses_to_revoke_the_secret_new_payloads_use(
+            self, listening, capsys):
+        from pupyteer.server.core.enrollment import secret_fingerprint
+
+        tui, engine = listening
+        ledger = engine.transports.enrollment
+        current = ledger.current()
+        capsys.readouterr()
+
+        await tui.cmd_enrollment(["revoke", secret_fingerprint(current)])
+
+        assert ledger.accepts(current), "the current secret was cut out of the file"
+        out = capsys.readouterr().out
+        assert "Refused" in out and "rotate" in out
+        assert not engine.audit._store.query(event="enrollment_revoked")
+
+    @pytest.mark.asyncio
+    async def test_revoking_tells_the_operator_what_it_does_not_reach(
+            self, listening, capsys):
+        """The distinction that decides whether the operator thinks they are done.
+
+        A revoked secret stops new registrations and nothing else: a session that
+        already exists proves itself with its own beacon token. If the console says
+        only "revoked", an operator believes the payload they lost is off the
+        network while it is still taking commands.
+        """
+        from pupyteer.server.core.enrollment import secret_fingerprint
+
+        tui, engine = listening
+        ledger = engine.transports.enrollment
+        old = ledger.current()
+        await tui.cmd_enrollment(["rotate"])
+        capsys.readouterr()
+
+        await tui.cmd_enrollment(["revoke", secret_fingerprint(old)])
+
+        assert not ledger.accepts(old)
+        assert len(ledger.accepted()) == 1
+        out = capsys.readouterr().out
+        assert "sessions kill" in out, out
+        rows = engine.audit._store.query(event="enrollment_revoked")
+        assert len(rows) == 1 and rows[0]["details"]["fingerprint"] == secret_fingerprint(old)
+        assert old not in repr(rows)
+
+    @pytest.mark.asyncio
+    async def test_a_fingerprint_nobody_has_prints_is_not_a_revocation(
+            self, listening, capsys):
+        tui, engine = listening
+        ledger = engine.transports.enrollment
+        current = ledger.current()
+        capsys.readouterr()
+
+        await tui.cmd_enrollment(["revoke", "0123456789abcdef"])
+
+        assert "No retired secret" in capsys.readouterr().out
+        assert ledger.accepts(current)
+
+    @pytest.mark.asyncio
+    async def test_before_a_listener_is_up_it_says_so_instead_of_minting_a_secret(
+            self, tmp_path, monkeypatch, capsys):
+        engine, tui = _console(tmp_path, monkeypatch)
+        secret_file = tmp_path / "enrollment.key"
+        engine.config.set("server.agent_auth_file", str(secret_file))
+
+        await tui.cmd_enrollment(["show"])
+
+        assert "No agent listener is running" in capsys.readouterr().out
+        assert not secret_file.exists(), (
+            "reading a boundary that does not exist created one")
+
+    @pytest.mark.asyncio
+    async def test_with_authentication_off_it_names_the_missing_boundary(
+            self, tmp_path, monkeypatch, capsys):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        engine, tui = _console(tmp_path, monkeypatch)
+        secret_file = tmp_path / "enrollment.key"
+        for key, value in (("server.host", "127.0.0.1"), ("server.port", port),
+                           ("server.tls", False), ("server.agent_auth", False),
+                           ("server.agent_auth_file", str(secret_file))):
+            engine.config.set(key, value)
+        await engine.transports.start_listener(engine.sessions)
+        try:
+            await tui.cmd_enrollment(["rotate"])
+        finally:
+            await engine.transports.shutdown()
+
+        out = capsys.readouterr().out
+        assert "authentication is off" in out
+        assert not secret_file.exists(), (
+            "a listener that checks nothing wrote a secret it will never use")
 
 
 class TestVerbTableIsComplete:

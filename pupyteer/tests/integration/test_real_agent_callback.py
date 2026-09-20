@@ -316,6 +316,56 @@ class TestEnrollment:
             await engine.stop()
 
     @pytest.mark.asyncio
+    async def test_closing_a_secret_leaves_the_sessions_it_already_opened(
+            self, tmp_path, listener_port):
+        """What an operator does after losing a payload, and exactly how far it reaches.
+
+        Revoking the secret is the only thing that shuts a recovered payload out of
+        a team server, and it has to work without a restart — the alternative is
+        dropping every session the operator is working on at the moment they notice
+        the loss. So one action must simultaneously stop the old secret opening
+        anything new and leave the session it opened alone. Either half passes on
+        its own; only together do they say what revocation actually is.
+        """
+        from pupyteer.server.core.enrollment import secret_fingerprint
+
+        engine = PupyteerEngine(_write_server_config(tmp_path, listener_port))
+        agent = _start_agent(
+            _generate_agent(tmp_path, "kept-alive", port=listener_port,
+                            sleep=1, jitter=0), tmp_path)
+        try:
+            await engine.start()
+            session_id = await _await_session(engine)
+            assert session_id, "agent never registered"
+
+            ledger = engine.transports.enrollment
+            assert ledger is not None and ledger.accepts(_TEST_SECRET)
+            ledger.rotate()                          # new payloads get a new secret
+            assert ledger.revoke(secret_fingerprint(_TEST_SECRET)) is True
+            assert not ledger.accepts(_TEST_SECRET)
+
+            # The session that secret opened is untouched: after registering, an
+            # agent presents only its own beacon token.
+            output = await _run_on_agent(engine, session_id, "echo still-here")
+            assert "still-here" in output, (
+                "revoking an enrollment secret cut off a live session")
+
+            # A second payload built with the closed secret gets nothing, from the
+            # same listener that never stopped.
+            stranger = _generate_agent(tmp_path, "closed_out", port=listener_port,
+                                       sleep=1, jitter=0)
+            refused = await asyncio.to_thread(
+                subprocess.run, [sys.executable, str(stranger)], cwd=str(tmp_path),
+                capture_output=True, timeout=60)
+            assert refused.returncode == 3, (
+                f"a revoked secret still enrols (rc={refused.returncode}): {_drain(refused)}")
+            assert engine.sessions.list_ids() == [session_id], (
+                "a revoked enrollment secret opened a second session")
+        finally:
+            _stop_agent(agent)
+            await engine.stop()
+
+    @pytest.mark.asyncio
     async def test_turning_agent_auth_off_admits_an_unauthenticated_agent(
         self, tmp_path, listener_port
     ):

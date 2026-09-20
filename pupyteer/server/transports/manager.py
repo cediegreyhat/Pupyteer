@@ -65,6 +65,9 @@ class TransportManager:
         # None until a listener is actually running; before that, no registration
         # has been checked against anything.
         self._auth_required: Optional[bool] = None
+        # The enrollment file the running listeners check against. Same lifetime
+        # as _auth_required: nothing has been checked before a listener exists.
+        self._enrollment: Optional[Any] = None
         self._listeners: list = []  # extra listeners (HTTP) shut down with the TCP one
 
     async def initialize(self) -> None:
@@ -133,15 +136,25 @@ class TransportManager:
             logger.info("Listener TLS active, fingerprint SHA-256 %s", tls.fingerprint)
 
         # ...and so does the enrollment secret a registration is checked against.
-        # Both listeners share one value: a payload built against one must not be
-        # turned away by the other.
-        from pupyteer.server.core.enrollment import listener_secret
-        auth_secret = listener_secret(self._config.get)
-        self._auth_required = auth_secret is not None
-        if auth_secret is None:
+        # Both listeners share one ledger: a payload built against one must not be
+        # turned away by the other. It is handed to them as the file rather than as
+        # a resolved value, so a secret an operator deletes takes effect on the
+        # next registration instead of the next restart.
+        from pupyteer.server.core.enrollment import listener_ledger
+        enrollment = listener_ledger(self._config.get)
+        self._auth_required = enrollment is not None
+        self._enrollment = enrollment
+        if enrollment is None:
             logger.warning(
                 "Agent authentication is disabled: anything that reaches %s:%d "
                 "can register a session", host, port)
+        else:
+            enrollment.current()   # generate on first use, while starting up
+            if len(enrollment.accepted()) > 1:
+                logger.warning(
+                    "Accepting %d enrollment secrets; `enrollment show` lists them "
+                    "and the ones you no longer need should be revoked",
+                    len(enrollment.accepted()))
 
         from pupyteer.server.transports.listener import AgentListener
         self._listener = AgentListener(
@@ -149,7 +162,7 @@ class TransportManager:
                 "host": host,
                 "port": port,
                 "ssl_context": tls.ssl_context if tls else None,
-                "auth_secret": auth_secret,
+                "enrollment": enrollment,
             },
             session_manager=session_manager,
             audit_logger=self._audit,
@@ -168,7 +181,7 @@ class TransportManager:
                     # server.tls wins over an externally supplied pair: it is the
                     # certificate payloads were built to pin.
                     "ssl_context": tls.ssl_context if tls else None,
-                    "auth_secret": auth_secret,
+                    "enrollment": enrollment,
                     "certfile": self._config.get("server.https_cert", "") or None,
                     "keyfile": self._config.get("server.https_key", "") or None,
                 },
@@ -299,6 +312,18 @@ class TransportManager:
         if self._listener is None:
             return None
         return self._auth_required
+
+    @property
+    def enrollment(self) -> Optional[Any]:
+        """The enrollment ledger the running listeners check, or None.
+
+        None means either no listener is up — nothing is checking registrations
+        yet — or agent authentication is switched off, which the console reports
+        as the two different things they are.
+        """
+        if self._listener is None:
+            return None
+        return self._enrollment
 
 
 class _PlaceholderSessionManager:

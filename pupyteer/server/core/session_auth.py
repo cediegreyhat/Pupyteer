@@ -94,6 +94,10 @@ class SessionAuthorization:
         "evasion": Permission.EVASION_READ,    # refined by subcommand
         "pipeline": Permission.PAYLOAD_BUILD,  # refined by subcommand
         "operator": Permission.OPERATOR_MANAGE,
+        # The enrollment boundary is server configuration in the same sense
+        # `config set` is: it decides which payloads may become sessions, so
+        # reading it is a viewer's job and turning it over is not.
+        "enrollment": Permission.CONFIG_READ,   # refined by subcommand
     }
     
     # Subcommand refinement. `"*"` is what an unrecognised subcommand needs, and
@@ -178,6 +182,12 @@ class SessionAuthorization:
             "add": Permission.OPERATOR_MANAGE,
             "role": Permission.OPERATOR_MANAGE,
             "remove": Permission.OPERATOR_MANAGE,
+        },
+        "enrollment": {
+            "show": Permission.CONFIG_READ,
+            "rotate": Permission.CONFIG_WRITE,
+            "revoke": Permission.CONFIG_WRITE,
+            "*": Permission.CONFIG_WRITE,
         },
     }
 

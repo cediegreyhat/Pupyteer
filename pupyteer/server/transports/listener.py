@@ -34,11 +34,7 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
-from pupyteer.server.core.enrollment import (
-    beacon_accepts,
-    new_beacon_token,
-    secret_accepts,
-)
+from pupyteer.server.core.enrollment import beacon_accepts, new_beacon_token
 from pupyteer.server.core.logging import AuditLogger
 from pupyteer.server.sessions.manager import SessionInfo
 
@@ -117,10 +113,12 @@ class AgentListener:
         # Supplied by TransportManager when server.tls is on. Absent means the
         # listener speaks plaintext JSON, which any tap on the wire can read.
         self._ssl_context = config.get("ssl_context")
-        # Supplied by TransportManager: the enrollment secret a register message
-        # has to carry. None disables the check, which is what server.agent_auth:
-        # false asks for.
-        self._auth_secret: Optional[str] = config.get("auth_secret")
+        # Supplied by TransportManager: the enrollment file a register message has
+        # to match a line of. Consulted per registration rather than resolved once
+        # here, so an operator who deletes a secret stops it working without having
+        # to restart the server and drop every session in the dashboard. None
+        # disables the check, which is what server.agent_auth: false asks for.
+        self._enrollment = config.get("enrollment")
         self._session_manager = session_manager
         self._audit = audit_logger
 
@@ -466,16 +464,23 @@ class AgentListener:
         writer: asyncio.StreamWriter,
     ) -> Dict[str, Any]:
         """Create a new session and register it."""
-        if not secret_accepts(self._auth_secret, msg.get("auth")):
+        ledger = self._enrollment
+        if ledger is not None and not ledger.accepts(msg.get("auth")):
             # Deliberately before anything is created: a session is a handler an
             # operator can run commands through and push files to, so a stranger
             # must not be able to conjure one by reaching the port.
             self._stats["registrations_rejected"] += 1
-            logger.warning(
-                "Rejected registration from %s: enrollment secret %s",
-                remote,
-                "absent" if not msg.get("auth") else "wrong",
-            )
+            if not ledger.accepted():
+                # Says something different from "wrong secret": here the server
+                # is the one that cannot present a credential, and no payload
+                # built against anything will get in until it is fixed.
+                why = "accepting no enrollment secret at all"
+            elif not msg.get("auth"):
+                why = "absent"
+            else:
+                why = "wrong"
+            logger.warning("Rejected registration from %s: enrollment secret %s",
+                           remote, why)
             self._audit.log_event(
                 "registration_rejected",
                 {

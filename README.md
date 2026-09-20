@@ -80,6 +80,7 @@ server:
   http_uri: "/index.html"
   tls: true         # on by default; serve both listeners over TLS, payloads pin the certificate
   agent_auth: true  # require payloads to present this server's enrollment secret
+  agent_auth_file: "./data/keys/enrollment.key"  # that secret's file, newest secret first
 ```
 
 `tls` is on unless a config turns it off: the listener generates a self-signed
@@ -92,12 +93,32 @@ server that has already fielded payloads — the key pair belongs to the payload
 built against it, so replacing or moving it strands every one of them.
 
 `agent_auth` (on by default) is the other half: TLS proves the listener to the
-agent, the enrollment secret proves the agent to the listener. On first use the
-server generates a secret at `server.agent_auth_file` and every payload built
-afterwards bakes it into its `register` message; a registration without it is
-refused before a session is created, so finding the open port is no longer enough
-to get a handler. Turn it off with `agent_auth: false` only on an interface you
-already trust; the banner and a startup warning say when it is off.
+agent, the enrollment secret proves the payload to the listener. It is not
+encryption — confidentiality on the wire comes from TLS alone — and it is not
+per-agent credentials: the server generates one secret and compiles it into
+every payload it builds, so it identifies this team server and not the host
+carrying it. A `register` without it is refused before a session is created, so
+finding the open port is no longer enough to get a handler. `agent_auth: false`
+is the opt-out, and it is an explicit one: with it off the listener trusts
+whoever reaches the port, which is fine on a loopback lab interface and not fine
+anywhere else. The banner and a startup warning say when it is off.
+
+On first start the server writes that secret to `server.agent_auth_file`
+(`./data/keys/enrollment.key`, mode `0600`), and nothing else holds it — not
+the config, not the audit log, never the terminal. The file is a list, newest
+first: the first line is what `payloads build` compiles, the lines under it are
+retired secrets still accepted so everything already deployed keeps its place, a
+`#` line labels the secret below it, and deleting a line is the decision that
+closes that door. The listener re-reads the file when a payload arrives rather
+than when it starts, so a deletion lands without a restart — and a restart would
+drop every session you are working at the moment you noticed. The console manages
+the list and names every line by its fingerprint:
+
+```
+pupyteer > enrollment show                    # accepted secrets and their role
+pupyteer > enrollment rotate                  # new secret current, old one retired
+pupyteer > enrollment revoke <fingerprint>    # close one retired door
+```
 
 That secret is spent the moment the session exists, so the third proof is on the
 wire rather than in a config file: `register` answers with a token for that
@@ -105,6 +126,15 @@ session alone, and every `checkin` and `output` has to carry it. Nothing about i
 is configurable — there is no off switch, because a session nobody handed a proof
 to must not be the kind anyone can command — and it never appears in `sessions
 list`, in `sessions info` or in the audit log, only in `beacons_refused`.
+
+Two things here get missed often enough to be worth saying plainly. Revoking an
+enrollment secret does not stop a session that is already established — it only
+turns the next registration away — so cutting off a live handler is `sessions
+kill <id>`. And a listener whose enrollment file has gone missing admits nobody
+rather than minting a replacement while payloads knock: a fresh secret would look
+like a server that works while turning everything you deployed into a stranger.
+`enrollment show` says so when the file holds nothing; restore it, or delete it
+and restart to start a new boundary and rebuild the payloads.
 
 `--transport https` works with `tls: true`, or with `server.https_cert` /
 `server.https_key` for a certificate you obtained yourself, or against a reverse
@@ -157,9 +187,9 @@ server.
 
 A `RESULT: FAIL` names the step that never happened and what the agent said about
 it. An agent that exits with `listener rejected our enrollment secret` came from a
-different server, and the fix is a rebuild rather than a retry. Any refusals the
-listener counted on the way are reported too, with the same names `transports
-list` uses.
+different server, or from a secret since revoked, and the fix is a rebuild rather
+than a retry. Any refusals the listener counted on the way are reported too, with
+the same names `transports list` uses.
 
 ### Work a Session
 
@@ -242,7 +272,7 @@ PUPYTEER
 | **Sessions** | list/info/interact/rename/kill/tag/search/route, chunked file upload & download, screen capture, audit trail |
 | **Tasks** | Priority queue (CRITICAL → BACKGROUND), async execution, tracking |
 | **Evasion** | XOR/AES/RC4 obfuscation, PE manipulation, anti-sandbox/debug/VM, Litterbox integration |
-| **Security** | console login with roles and a default-deny verb table, audit trail with redaction, input validation, TLS on callbacks by default (see Security for what is not wired) |
+| **Security** | console login with roles and a default-deny verb table, enrollment secret shared by every payload this server builds, with rotation and revocation from the console, audit trail with redaction, input validation, TLS on callbacks by default (see Security for what is not wired) |
 | **Audit** | JSON-structured logs, operator attribution bound to the sign-in, redaction, rotation, query API |
 | **TUI** | ASCII banner, themes, autocomplete, history, resize handling, dashboard, login and re-auth in place |
 
@@ -355,14 +385,32 @@ section describes what the running code does, not what its modules could do.
   with TLS on and no certificate resolved to pin is refused at build time.
   A build made while TLS is off says so in its build log.
 - **Authenticated agent enrollment** — with `server.agent_auth` on (the default)
-  the server keeps a generated secret at `server.agent_auth_file`; a `register`
-  that does not present it is refused *before* any session exists, counted in the
-  listener stats and written to the audit log as `registration_rejected`. Payloads
-  built by this server compile that secret into their `register` message, and an
-  agent whose enrollment is refused exits instead of beaconing against a server
-  that will never admit it. Both listeners apply the same check, and
-  `transports list` reports them as separate rows — a rejection count belongs to
+  the server keeps its generated secrets at `server.agent_auth_file`; a `register`
+  that does not present one of them is refused *before* any session exists, counted
+  in the listener stats and written to the audit log as `registration_rejected`.
+  Payloads built by this server compile the current one into their `register`
+  message, and an agent whose enrollment is refused exits instead of beaconing
+  against a server that will never admit it. Both listeners apply the same check,
+  and `transports list` reports them as separate rows — a rejection count belongs to
   the port that was probed, not to whichever listener you happened to start first.
+- **Enrollment rotation and revocation** — because that file is a list rather than
+  one string, recovering a payload no longer costs the whole boundary at once.
+  `enrollment rotate` makes a new secret current and retires the previous one *in
+  place*: it stays in the file and is still admitted, so the rotation itself
+  orphans nothing already deployed, and both fingerprints are reported so you can
+  say which is which when the separate decision to close it comes. The file keeps
+  at most eight retired secrets; a rotation that would carry more drops the oldest
+  and logs that payloads built with them can no longer enrol. Only a retired line
+  is revocable — `enrollment revoke` refuses the current fingerprint, because that
+  is what `payloads build` is compiling as you type and deleting it would quietly
+  promote a retired secret into the job; rotate first. Nothing but fingerprints
+  reaches an operator or the audit trail: `enrollment show` prints a
+  fingerprint/role table whose retired rows carry the UTC stamp of the rotation
+  that retired them, and `enrollment_rotated` / `enrollment_revoked` log
+  fingerprints only. Reading the boundary needs `config:read`, turning it over
+  needs `config:write`, which is `admin`. Revocation stops the next registration,
+  not the session in front of it — that one proves itself with its beacon token,
+  and `sessions kill <id>` is the verb that ends it.
 - **Beacons prove their own session** — `register` hands the agent a random token
   for that session alone, and every later `checkin` or `output` has to present it.
   The enrollment secret is spent the moment a session exists, and a session id only
@@ -399,12 +447,15 @@ section describes what the running code does, not what its modules could do.
 - **Enrollment is one shared secret, not per-agent credentials.** Every payload
   this server builds carries the same string, so it identifies the team server,
   not the host: whoever recovers a dropped binary can enroll sessions as if they
-  were you, and so can whoever reads `data/keys/enrollment.key`. What they cannot
-  do with it is speak for a session that is already there — that needs the token
-  that registration handed to that one payload. Rotating it strands everything
-  already in the field — there is no re-keying channel, because an agent that
-  cannot register cannot receive a new secret. `server.agent_auth: false` removes
-  the check entirely.
+  were you, and so can whoever reads `data/keys/enrollment.key` — which holds every
+  secret still accepted, not just the current one. What they cannot do with it is
+  speak for a session that is already there — that needs the token that
+  registration handed to that one payload. Rotation is the answer for the
+  boundary, not for an individual agent: there is still no re-keying channel, so a
+  deployed payload keeps the secret it was built with and cannot be handed a new
+  one. Revoking that secret turns it away from its next registration onwards, while
+  the session it already has runs on its own token until it dies or you kill it.
+  `server.agent_auth: false` removes the check entirely.
 - **Login gates the console, not the network.** Whoever can reach a listener
   still only gets what TLS, enrollment (`server.agent_auth`) and the session's own
   beacon token allow, and `--headless` runs the server with no console to sign in

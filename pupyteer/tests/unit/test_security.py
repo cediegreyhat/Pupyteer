@@ -614,7 +614,7 @@ class TestEnrollmentSecret:
         path = tmp_path / "keys" / "enrollment.key"
         first = ensure_team_secret(str(path))
         assert len(first) >= 32, "a guessable enrollment secret is not a boundary"
-        assert path.read_text(encoding="ascii").strip() == first
+        assert path.read_text(encoding="utf-8").splitlines()[-1].strip() == first
         # Re-read, never regenerated: payloads already deployed carry the old one,
         # and replacing it silently means none of them can check in.
         assert ensure_team_secret(str(path)) == first
@@ -627,20 +627,174 @@ class TestEnrollmentSecret:
         with pytest.raises(ValueError, match="restore the enrollment secret"):
             ensure_team_secret(str(path))
 
-    def test_the_right_secret_admits_and_everything_else_refuses(self):
-        from pupyteer.server.core.enrollment import secret_accepts
+    def test_a_bare_secret_file_still_works(self, tmp_path):
+        """The shape every deployed server's file already has.
 
-        assert secret_accepts("s3cret", "s3cret") is True
-        for presented in (None, "", "s3cre", "S3CRET", "s3cret!", 12345, ["s3cret"]):
-            assert secret_accepts("s3cret", presented) is False, repr(presented)
+        The ledger format is additive: a file written by an earlier build — one
+        hex line, no header, no labels — must enrol the payloads built from it
+        after the upgrade as well as before. Upgrading a team server cannot be
+        the event that turns its own field agents away.
+        """
+        from pupyteer.server.core.enrollment import EnrollmentLedger
 
-    def test_only_a_disabled_check_admits_an_absent_secret(self):
-        """None means the operator turned auth off; '' means something went wrong."""
-        from pupyteer.server.core.enrollment import secret_accepts
+        path = tmp_path / "enrollment.key"
+        path.write_text("a" * 64 + "\n", encoding="ascii")
+        ledger = EnrollmentLedger(path)
+        assert ledger.current() == "a" * 64
+        assert ledger.accepts("a" * 64)
 
-        assert secret_accepts(None, None) is True
-        assert secret_accepts(None, "anything") is True
-        assert secret_accepts("", "") is False
+    def test_the_right_secret_admits_and_everything_else_refuses(self, tmp_path):
+        from pupyteer.server.core.enrollment import EnrollmentLedger
+
+        ledger = EnrollmentLedger(tmp_path / "enrollment.key")
+        secret = ledger.current()
+        assert ledger.accepts(secret)
+        for presented in (None, "", "s3cre", secret.upper(), secret + "!",
+                          12345, [secret]):
+            assert not ledger.accepts(presented), repr(presented)
+
+    def test_a_ledger_that_exists_refuses_an_absent_secret(self, tmp_path):
+        """The off switch is the config, not an empty line in the file.
+
+        `listener_ledger` returns None when authentication is off, and that None is
+        the only thing that lets a registration through with nothing to present.
+        Once a ledger exists it admits a value or it does not.
+        """
+        from pupyteer.server.core.enrollment import EnrollmentLedger
+
+        ledger = EnrollmentLedger(tmp_path / "enrollment.key")
+        assert not ledger.accepts("")
+        assert not ledger.accepts(None)
+
+    def test_a_missing_file_enrols_nobody_and_mints_nothing(self, tmp_path):
+        """A running server whose credential file vanished stops, it does not restart.
+
+        Generating a secret here would look like a listener that works while
+        turning every deployed payload into a stranger — a decision for an
+        operator, not for a code path that only means to check a value.
+        """
+        from pupyteer.server.core.enrollment import EnrollmentLedger
+
+        path = tmp_path / "gone.key"
+        ledger = EnrollmentLedger(path)
+        assert ledger.accepted() == []
+        assert not ledger.accepts("anything")
+        assert not path.exists()
+
+    def test_a_rotated_secret_enrols_and_the_retired_one_still_does_too(self, tmp_path):
+        """Rotation moves the boundary; only deleting a line closes it.
+
+        Both answers matter on the same day: new payloads must be buildable with
+        the new secret immediately, and the agents already deployed must not
+        become strangers the moment an operator decides to stop trusting the one
+        they might have lost.
+        """
+        from pupyteer.server.core.enrollment import EnrollmentLedger
+
+        ledger = EnrollmentLedger(tmp_path / "enrollment.key")
+        previous = ledger.current()
+        new, retired = ledger.rotate()
+
+        assert new != previous == retired
+        assert ledger.current() == new
+        assert ledger.accepts(new)
+        assert ledger.accepts(retired), (
+            "a rotation orphaned every payload deployed before it")
+
+    def test_deleting_a_line_stops_enrolling_that_secret(self, tmp_path):
+        """Revocation the operator can actually pull, and what it applies to.
+
+        The listener re-reads the file per registration, so this holds for a
+        ledger object that is already in use by a running listener — nothing is
+        cached at startup that would make the edit wait for a restart.
+        """
+        from pupyteer.server.core.enrollment import EnrollmentLedger
+
+        ledger = EnrollmentLedger(tmp_path / "enrollment.key")
+        old = ledger.current()
+        new, _retired = ledger.rotate()
+        assert ledger.accepts(old)
+
+        rows = ledger.status()
+        assert ledger.revoke(rows[1]["fingerprint"]) is True
+        assert ledger.accepts(old) is False
+        assert ledger.accepts(new) is True, "revoking one line closed the listener"
+        assert not (tmp_path / "enrollment.key.tmp").exists()
+
+    def test_the_current_secret_cannot_be_revoked(self, tmp_path):
+        """Deleting it would promote a retired secret into the builder's job.
+
+        The line index 0 is what `payloads build` compiles as this is typed; a
+        revoke that removed it would leave the operator believing they had one
+        enrollment secret and hand them a different, older one.
+        """
+        from pupyteer.server.core.enrollment import EnrollmentLedger
+
+        ledger = EnrollmentLedger(tmp_path / "enrollment.key")
+        current = ledger.current()
+        ledger.rotate()
+        rows = ledger.status()
+        assert rows[0]["role"] == "current"
+        assert ledger.revoke(rows[0]["fingerprint"]) is False
+        assert ledger.accepts(current), "the current secret vanished from the file"
+
+    def test_status_names_secrets_without_printing_them(self, tmp_path):
+        """What the console shows is a fingerprint, not credential material.
+
+        The role column is how an operator tells the line to keep from the lines
+        they can close: `current` is the one new payloads are built with, the rest
+        are retired and only still open the door for agents already deployed.
+        """
+        from pupyteer.server.core.enrollment import EnrollmentLedger, secret_fingerprint
+
+        ledger = EnrollmentLedger(tmp_path / "enrollment.key")
+        current = ledger.current()
+        rotated, _ = ledger.rotate()
+        rows = ledger.status()
+
+        assert [row["fingerprint"] for row in rows] == [
+            secret_fingerprint(rotated), secret_fingerprint(current)]
+        assert rows[0]["role"] == "current"
+        assert rows[1]["role"].startswith("retired")
+        assert all(len(row["fingerprint"]) == 16 for row in rows)
+        dumped = repr(rows)
+        assert current not in dumped and rotated not in dumped
+
+    def test_rotating_repeatedly_does_not_grow_the_accept_list_for_ever(self, tmp_path):
+        """Every forgotten line is a door, and the file outlives the memory.
+
+        `MAX_RETIRED` is the ceiling that keeps `enrollment show` honest: an
+        operator who rotates a few times a week cannot end up trusting forty
+        secrets while reporting eight.
+        """
+        from pupyteer.server.core.enrollment import MAX_RETIRED, EnrollmentLedger
+
+        ledger = EnrollmentLedger(tmp_path / "enrollment.key")
+        ledger.current()
+        for _ in range(MAX_RETIRED + 5):
+            ledger.rotate()
+        assert len(ledger.accepted()) == MAX_RETIRED + 1
+        assert ledger.accepts(ledger.current())
+
+    def test_a_comment_never_becomes_a_secret(self, tmp_path):
+        """The header describes the file; it does not enrol anyone.
+
+        A reader that treated a `#` line as a value — or that let the header label
+        the line two below it — would make the newest secret a payload can never
+        present, and the failure would surface as a listener refusing agents built
+        five minutes ago.
+        """
+        from pupyteer.server.core.enrollment import EnrollmentLedger
+
+        ledger = EnrollmentLedger(tmp_path / "enrollment.key")
+        ledger.current()
+        new, _old = ledger.rotate()
+
+        values = ledger.accepted()
+        assert values[0] == new
+        assert all(not value.startswith("#") for value in values)
+        assert all(len(value) == 64 for value in values), (
+            f"something that is not a secret is being presented as one: {values}")
 
     def test_a_beacon_token_admits_its_own_session_and_nothing_else(self):
         from pupyteer.server.core.enrollment import beacon_accepts

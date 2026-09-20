@@ -37,10 +37,10 @@ def test_the_self_test_notices_a_listener_that_will_not_enrol_its_agent(
     built by another team server meets in the field. The self-test has to catch
     it *and* name the fix, because "no session appeared" is not actionable.
     """
-    import pupyteer.server.transports.listener as listener_mod
+    import pupyteer.server.core.enrollment as enrollment_mod
 
-    monkeypatch.setattr(listener_mod, "secret_accepts",
-                        lambda expected, presented: False)
+    monkeypatch.setattr(enrollment_mod.EnrollmentLedger, "accepts",
+                        lambda self, presented: False)
 
     harness = CallbackTestHarness(timeout=20)
     assert harness.run() is False, "the self-test passed a listener that enrols nobody"
