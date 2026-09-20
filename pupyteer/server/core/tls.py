@@ -33,14 +33,23 @@ DEFAULT_KEY_FILE = "./data/tls/listener.key"
 ConfigGetter = Callable[[str], Any]
 
 
-def certificate_fingerprint(cert_file: str) -> str:
-    """SHA-256 of the certificate's DER encoding — the value an agent pins."""
+def fingerprint_from_pem(pem: bytes) -> str:
+    """SHA-256 of a PEM certificate's DER encoding — the value an agent pins.
+
+    Separate from ``certificate_fingerprint`` because a payload builder holds the
+    PEM as a string in memory, not as a file it can reopen, and both have to
+    produce the same bytes: a pin computed a second way is a pin nothing matches.
+    """
     from cryptography import x509
     from cryptography.hazmat.primitives.serialization import Encoding
 
-    pem = Path(cert_file).read_bytes()
     der = x509.load_pem_x509_certificate(pem).public_bytes(Encoding.DER)
     return hashlib.sha256(der).hexdigest()
+
+
+def certificate_fingerprint(cert_file: str) -> str:
+    """SHA-256 of the certificate's DER encoding — the value an agent pins."""
+    return fingerprint_from_pem(Path(cert_file).read_bytes())
 
 
 def _subject_alt_names(host_names):

@@ -348,6 +348,11 @@ section describes what the running code does, not what its modules could do.
   `handshakes_refused` in `transports list`, and the audit log records
   `handshake_refused` with the peer and the reason — at most one line a minute
   per peer, so a port sweep cannot use it to bury the rest of a log that rotates.
+  Both payload languages implement it: the Python agent wraps its socket in the
+  pinned context, and the C template drives Schannel and compares the peer
+  certificate's SHA-256 by hand, so a `.exe` built for one listener stops with
+  exit 3 rather than knocking at another for the rest of its life. A PE build
+  with TLS on and no certificate resolved to pin is refused at build time.
   A build made while TLS is off says so in its build log.
 - **Authenticated agent enrollment** — with `server.agent_auth` on (the default)
   the server keeps a generated secret at `server.agent_auth_file`; a `register`
