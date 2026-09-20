@@ -354,7 +354,8 @@ class PupyteerTUI:
                   f"TLS, pinned to SHA-256 {fingerprint[:16]}…")
         else:
             print(c("  [Channel]", theme.get("error")),
-                  "plaintext callbacks — set server.tls before working a target")
+                  "PLAINTEXT callbacks — server.tls is off, so anyone on the "
+                  "network reads every command and every result")
         # Encryption says nobody on the wire can read the sessions; it does not say
         # who is allowed to start one. That is what the enrollment secret is for.
         auth = server.get("agent_auth")

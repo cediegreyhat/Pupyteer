@@ -170,15 +170,8 @@ class TestHTTPTransport:
         self, tmp_path, listener_port
     ):
         http_port = _free_port()
-        config_path = tmp_path / "pupyteer.yaml"
-        config_path.write_text(yaml.safe_dump({
-            "server": {
-                "host": "127.0.0.1", "port": listener_port,
-                "http_port": http_port, "http_uri": "/index.html",
-                "agent_auth_file": str(tmp_path / _ENROLLMENT_FILE),
-            },
-            "operator": {"name": "lab-op"},
-        }), encoding="utf-8")
+        config_path = _write_server_config(
+            tmp_path, listener_port, http_port=http_port, http_uri="/index.html")
         _put_secret(tmp_path)
 
         engine = PupyteerEngine(str(config_path))
@@ -293,15 +286,8 @@ class TestEnrollment:
         port finds the door that was supposed to be closed.
         """
         http_port = _free_port()
-        config_path = tmp_path / "http-auth.yaml"
-        config_path.write_text(yaml.safe_dump({
-            "server": {
-                "host": "127.0.0.1", "port": listener_port,
-                "http_port": http_port, "http_uri": "/index.html",
-                "agent_auth_file": str(tmp_path / _ENROLLMENT_FILE),
-            },
-            "operator": {"name": "lab-op"},
-        }), encoding="utf-8")
+        config_path = _write_server_config(
+            tmp_path, listener_port, http_port=http_port, http_uri="/index.html")
         _put_secret(tmp_path)
 
         engine = PupyteerEngine(str(config_path))
@@ -423,6 +409,49 @@ class TestTLS:
             assert not engine.sessions.list_ids(), "plaintext probe created a session"
         finally:
             await engine.stop()
+
+    @pytest.mark.asyncio
+    async def test_a_plaintext_payload_is_counted_rather_than_ignored(
+        self, tmp_path, listener_port
+    ):
+        """The failure mode of an encrypted listener is silence.
+
+        An agent built while server.tls was off keeps dialling plaintext, so it
+        never becomes a session and never says anything anywhere the operator
+        looks. Counting the refused handshake is what separates a stranded
+        payload from a target that never ran, and it is the difference between
+        rebuilding and abandoning a host.
+        """
+        engine = PupyteerEngine(_write_tls_server_config(tmp_path, listener_port))
+        await engine.start()
+        try:
+            def probe():
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.settimeout(5)
+                    s.connect(("127.0.0.1", listener_port))
+                    s.sendall(b'{"type": "register", "hostname": "stranded"}\n')
+                    try:
+                        return s.recv(4096)
+                    except OSError:
+                        return b""
+
+            reply = await asyncio.to_thread(probe)
+            assert b"session_id" not in reply
+
+            rows = {t["name"]: t for t in engine.transports.list()}
+            stats = rows["agent_listener"]["stats"]
+            assert stats["handshakes_refused"] >= 1, (
+                "a refused handshake left no trace in the listener ledger")
+            assert stats["connections"] == 0, (
+                "a connection that never spoke TLS is not a connection to a session")
+            assert not engine.sessions.list_ids()
+
+            audited = engine.audit.query(event="handshake_refused")
+            assert audited, "the refusal was counted but never recorded"
+            assert "SSL" in audited[-1]["details"]["reason"]
+        finally:
+            await engine.stop()
+
 
     @pytest.mark.asyncio
     async def test_a_different_certificate_is_rejected(self, tmp_path, listener_port):
@@ -831,9 +860,16 @@ class TestModuleLibrary:
 
 
 def _write_server_config(tmp_path, port: int, **server_overrides) -> str:
+    """Config for the plaintext lab path.
+
+    These tests speak to the listener with a generated agent built without a pin,
+    so the server has to be plaintext too. That is an explicit deviation from the
+    shipped default — TLS is on unless a config says otherwise — and TestTLS is
+    what covers the default.
+    """
     config_path = tmp_path / "pupyteer.yaml"
     server = {
-        "host": "127.0.0.1", "port": port,
+        "host": "127.0.0.1", "port": port, "tls": False,
         "agent_auth_file": str(tmp_path / _ENROLLMENT_FILE),
     }
     server.update(server_overrides)

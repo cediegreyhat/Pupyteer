@@ -87,6 +87,11 @@ class _EngineThread:
             # Patch config before start
             self.engine.config.set("server.host", "127.0.0.1")
             self.engine.config.set("server.port", self._port)
+            # This file speaks to the listener with a hand-written plaintext
+            # socket, which is the point: it tests framing, not the channel. The
+            # server now encrypts unless told otherwise, so say so here rather
+            # than let every test below fail for a reason it does not test.
+            self.engine.config.set("server.tls", False)
             if self._auth_secret_file is not None:
                 self.engine.config.set(
                     "server.agent_auth_file", self._auth_secret_file)

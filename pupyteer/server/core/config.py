@@ -24,12 +24,18 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         # Off by default because port 8080 is routinely occupied on a team box.
         "http_port": 0,
         "http_uri": "/index.html",
-        # Off by default: the session protocol is JSON in the clear, so a listener
-        # on a network the operator does not own should not be trusted by
-        # omission. Enabling TLS makes the agent pin the listener's certificate,
-        # which is the only check either side can make on a self-signed team
-        # server reached by IP.
-        "tls": False,
+        # On by default: the session protocol is JSON, so without TLS everything an
+        # operator types and everything the target answers is readable to whoever
+        # owns the network, and a C2 that is plaintext unless you remember a flag is
+        # plaintext on the one engagement where it mattered. Enabling it makes the
+        # agent pin the listener's certificate, which is the only check either side
+        # can make on a self-signed team server reached by IP.
+        #
+        # `server.tls: false` is the opt-out, and it is a visible one: the build log
+        # says so and the listener reports it. Turning this on for a server that
+        # already has fielded payloads strands them — they speak plaintext to a port
+        # that now refuses it, which `transports list` shows as handshakes_refused.
+        "tls": True,
         "tls_cert": DEFAULT_CERT_FILE,
         "tls_key": DEFAULT_KEY_FILE,
         # Names in the certificate besides server.host. Set them before the

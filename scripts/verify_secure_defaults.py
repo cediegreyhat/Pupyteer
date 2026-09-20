@@ -204,7 +204,9 @@ def verify_ssl_defaults() -> List[str]:
             findings.append(f"{label} accepts any server certificate")
 
     if "TLS_ON = False" not in plain:
-        findings.append("TLS must be off until the server enables server.tls")
+        findings.append(
+            "a bare StubConfig must not assume a TLS listener it has no "
+            "certificate for; the server config decides, per build")
     if "TLS_ON = True" not in pinned:
         findings.append("StubConfig.tls does not reach the generated agent")
     # TLS without a pin is not a downgrade to plaintext, it is a dead payload;
@@ -219,11 +221,28 @@ def verify_ssl_defaults() -> List[str]:
         return findings
 
     server = DEFAULT_CONFIG.get("server", {})
-    if not isinstance(server.get("tls"), bool):
-        findings.append("server.tls should default to a boolean")
+    if server.get("tls") is not True:
+        findings.append(
+            "server.tls must default to true: a C2 that is plaintext unless one "
+            "flag is added is plaintext on the engagement where it mattered")
     for key in ("tls_cert", "tls_key"):
         if not server.get(key):
             findings.append(f"server.{key} has no default, so enabling TLS would fail to find a certificate")
+
+    # The shipped yaml is what a real install reads, and it wins over
+    # DEFAULT_CONFIG — so a false here quietly un-defaults TLS for everyone who
+    # copies this file, while every unit test still passes against the code.
+    defaults_yaml = Path(__file__).resolve().parent.parent / "pupyteer" / "config" / "defaults" / "pupyteer.yaml"
+    try:
+        import yaml as _yaml
+        shipped = _yaml.safe_load(defaults_yaml.read_text(encoding="utf-8")) or {}
+        shipped_tls = (shipped.get("server") or {}).get("tls")
+        if shipped_tls is not True:
+            findings.append(
+                f"{defaults_yaml.name} ships server.tls: {shipped_tls!r}; it "
+                f"overrides the secure default for every install that copies it")
+    except OSError as exc:
+        findings.append(f"Could not read the shipped defaults to verify TLS: {exc}")
 
     try:
         from pupyteer.agent.core.auth import AuthConfig

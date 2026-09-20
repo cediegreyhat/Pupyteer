@@ -71,16 +71,18 @@ server:
   port: 8443        # TCP callbacks
   http_port: 8080   # HTTP callbacks; 0 disables them
   http_uri: "/index.html"
-  tls: true         # serve both listeners over TLS; payloads pin the certificate
+  tls: true         # on by default; serve both listeners over TLS, payloads pin the certificate
   agent_auth: true  # require payloads to present this server's enrollment secret
 ```
 
-`tls: true` generates a self-signed pair at `server.tls_cert` / `server.tls_key`
-on the listener's first start and compiles that certificate into every payload
-built afterwards, so the agent trusts one certificate and nothing else. It is off
-by default because it changes what payloads can connect — turn it on before the
-server starts and before you build, and reuse the same key pair, since replacing
-it strands payloads already in the field.
+`tls` is on unless a config turns it off: the listener generates a self-signed
+pair at `server.tls_cert` / `server.tls_key` on its first start and compiles that
+certificate into every payload built afterwards, so the agent trusts one
+certificate and nothing else. The value is read when the listener binds, so
+changing it takes a restart. Set `tls: false` only when you have a reason to put
+commands and results on the wire in plaintext, and think before flipping it on a
+server that has already fielded payloads — the key pair belongs to the payloads
+built against it, so replacing or moving it strands every one of them.
 
 `agent_auth` (on by default) is the other half: TLS proves the listener to the
 agent, the enrollment secret proves the agent to the listener. On first use the
@@ -203,7 +205,7 @@ PUPYTEER
 | **Sessions** | list/info/interact/rename/kill/tag/search/route, chunked file upload & download, screen capture, audit trail |
 | **Tasks** | Priority queue (CRITICAL → BACKGROUND), async execution, tracking |
 | **Evasion** | XOR/AES/RC4 obfuscation, PE manipulation, anti-sandbox/debug/VM, Litterbox integration |
-| **Security** | audit trail with redaction, input validation, optional TLS on callbacks (see Security for what is not wired) |
+| **Security** | audit trail with redaction, input validation, TLS on callbacks by default (see Security for what is not wired) |
 | **Audit** | JSON-structured logs, operator attribution, redaction, rotation, query API |
 | **TUI** | ASCII banner, themes, autocomplete, history, resize handling, dashboard |
 
@@ -267,7 +269,7 @@ git-ignored.
 .venv/bin/python -m pytest pupyteer/tests/integration/ -v
 ```
 
-**Current test count: 834 tests passing** (`pytest pupyteer/tests`)
+**Current test count: 838 tests passing** (`pytest pupyteer/tests`)
 
 ---
 
@@ -282,14 +284,20 @@ section describes what the running code does, not what its modules could do.
 - **Audit logging** — operator actions recorded with attribution
 - **Credential redaction** — secrets are kept out of audit logs
 - **Input validation** — operator inputs checked before execution
-- **Transport TLS with certificate pinning** — set `server.tls: true` and both
-  listeners serve TLS from a generated self-signed pair
+- **Transport TLS with certificate pinning** — on by default (`server.tls`), so
+  both listeners serve TLS from a generated self-signed pair
   (`server.tls_cert`/`server.tls_key`). Payloads built while it is on compile that
   certificate in and trust *only* it: signature verification stays on, so a
   man-in-the-middle without your certificate is rejected, and you never need a CA
   certificate for a bare team-server IP. `--transport https` reaches the same
   listener over `https://`. A certificate already in use is never replaced under
-  those paths — regenerating it would strand every payload in the field.
+  those paths — regenerating it would strand every payload in the field. Because
+  the failure mode of an encrypted listener is silence, a payload that cannot
+  complete the handshake is not ignored: every one of them counts toward
+  `handshakes_refused` in `transports list`, and the audit log records
+  `handshake_refused` with the peer and the reason — at most one line a minute
+  per peer, so a port sweep cannot use it to bury the rest of a log that rotates.
+  A build made while TLS is off says so in its build log.
 - **Authenticated agent enrollment** — with `server.agent_auth` on (the default)
   the server keeps a generated secret at `server.agent_auth_file`; a `register`
   that does not present it is refused *before* any session exists, counted in the
@@ -304,11 +312,6 @@ section describes what the running code does, not what its modules could do.
 
 ### What does not work yet
 
-- **TLS is opt-in.** The default is still plaintext: over the TCP listener, and
-  the HTTP listener without TLS, messages are newline-delimited JSON — base64
-  over HTTP is encoding, not encryption. Turn on `server.tls` *before* building
-  payloads and before starting the server (the listener reads it when it binds),
-  and assume anything on the path can read your commands and results otherwise.
 - **Enrollment is one shared secret, not per-agent credentials.** Every payload
   this server builds carries the same string, so it identifies the team server,
   not the host: whoever recovers a dropped binary can enroll sessions as if they

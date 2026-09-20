@@ -61,17 +61,20 @@ class HTTPListener(AgentListener):
         self._uri: str = config.get("uri", "/index.html")
 
     async def start(self) -> None:
-        ssl_context = self._build_ssl_context()
+        # Held on the instance and applied per connection by _upgrade_tls, the
+        # same way the TCP listener does it, so a refused handshake is counted
+        # here rather than swallowed by the event loop.
+        self._ssl_context = self._build_ssl_context()
         self._server = await asyncio.start_server(
             self._handle_client, host=self._host, port=self._port,
-            ssl=ssl_context, limit=MAX_BODY_BYTES,
+            limit=MAX_BODY_BYTES,
         )
         addrs = ", ".join(str(s.getsockname()) for s in self._server.sockets)
-        scheme = "https" if ssl_context else "http"
+        scheme = "https" if self._ssl_context else "http"
         logger.info("HTTP agent listener listening on %s://%s%s", scheme, addrs, self._uri)
         self._audit.log_event("http_listener_started", {
             "host": self._host, "port": self._port, "uri": self._uri,
-            "tls": ssl_context is not None,
+            "tls": self._ssl_context is not None,
         })
 
     def _build_ssl_context(self) -> Optional[ssl.SSLContext]:
@@ -109,6 +112,9 @@ class HTTPListener(AgentListener):
     ) -> None:
         addr = writer.get_extra_info("peername") or ("unknown", 0)
         remote = f"{addr[0]}:{addr[1]}"
+        if not await self._upgrade_tls(reader, writer):
+            await self._drop(writer)
+            return
         self._stats["connections"] += 1
         try:
             status, body = await self._serve_request(reader, remote)

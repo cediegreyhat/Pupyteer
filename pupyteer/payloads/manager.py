@@ -441,9 +441,10 @@ class PayloadBuilder:
             build_dir.mkdir(exist_ok=True)
 
             tls_on, tls_cert_pem = self._tls_for_build()
-            if tls_on:
-                build_log.append(
-                    "Listener TLS: agent pins the listener certificate")
+            build_log.append(
+                "Listener TLS: agent pins the listener certificate" if tls_on else
+                "Listener TLS: OFF — server.tls is false, so every command and "
+                "every result this payload carries is plaintext on the wire")
             auth_secret = self._auth_secret_for_build()
             build_log.append(
                 "Enrollment: agent presents this server's shared secret"

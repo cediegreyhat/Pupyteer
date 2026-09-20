@@ -4,6 +4,7 @@ Tests the Transport ABC, HTTPTransport, HTTPSTransport, TCPTransport,
 and the TransportManager integration.
 """
 import asyncio
+import ssl
 import struct
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -661,6 +662,83 @@ class TestListenerTlsResolution:
             ensure_listener_cert(str(cert), str(key))
         assert "incomplete" in str(caught.value)
         assert cert.exists(), "the certificate fielded payloads pin must survive"
+
+
+class TestHandshakeRefusalReporting:
+    """A TLS listener's failure mode is silence, so refusals have to be loud —
+    without letting a port sweep turn that noise into an audit log that is all
+    noise. The count is exact; the log line is thinned per peer.
+    """
+
+    class _Refused:
+        """A connection whose peer sends something that is not a ClientHello."""
+
+        def __init__(self, peer):
+            self._peer = peer
+
+        def get_extra_info(self, name, default=None):
+            return self._peer
+
+        async def start_tls(self, context, *, ssl_handshake_timeout=None):
+            raise ssl.SSLError(1, "[SSL: WRONG_VERSION_NUMBER] wrong version number")
+
+    @staticmethod
+    def _listener(tmp_path):
+        from pupyteer.server.transports.listener import AgentListener
+
+        config = ConfigManager()
+        config.set("audit.log_file", str(tmp_path / "audit.json"))
+        audit = AuditLogger(config)
+        return AgentListener({"ssl_context": object()}, None, audit), audit
+
+    @pytest.mark.asyncio
+    async def test_a_flood_from_one_peer_is_counted_but_written_once(self, tmp_path):
+        listener, audit = self._listener(tmp_path)
+        peer = ("203.0.113.9", 5555)
+
+        for _ in range(25):
+            assert await listener._upgrade_tls(None, self._Refused(peer)) is False
+
+        assert listener._stats["handshakes_refused"] == 25
+        rows = audit.query(event="handshake_refused")
+        assert len(rows) == 1, (
+            "25 refusals from one host must not cost 25 audit entries: the log "
+            "rotates, so a passerby would choose what the operator keeps"
+        )
+        # The live counter is the exact total; the durable trace just has to say
+        # who was refused and why, or a stranded payload leaves nothing to read.
+        assert rows[0]["details"]["peer"].startswith("203.0.113.9")
+        assert "WRONG_VERSION_NUMBER" in rows[0]["details"]["reason"]
+
+    @pytest.mark.asyncio
+    async def test_a_peer_that_keeps_trying_gets_a_line_again_later(
+        self, tmp_path, monkeypatch
+    ):
+        """Thinning is not once-ever: the next window re-reports, with the tally."""
+        import pupyteer.server.transports.listener as listener_module
+
+        listener, audit = self._listener(tmp_path)
+        refused = self._Refused(("203.0.113.9", 5555))
+        clock = [1000.0]
+        monkeypatch.setattr(listener_module.time, "monotonic", lambda: clock[0])
+
+        await listener._upgrade_tls(None, refused)
+        for _ in range(3):
+            clock[0] += 1.0
+            await listener._upgrade_tls(None, refused)
+        assert len(audit.query(event="handshake_refused")) == 1
+
+        clock[0] += 240.0
+        await listener._upgrade_tls(None, refused)
+        again = audit.query(event="handshake_refused")
+        assert len(again) == 2, "the second window reported nothing"
+        # Both lines were written in the same wall-clock second, so query order
+        # proves nothing; pick the line by the total it reports.
+        later = next(e for e in again if e["details"]["count"] == 5)
+        assert later["details"]["suppressed"] == 3, (
+            "the refusals this line stands for have to be named, or the count "
+            "and the log disagree about what happened"
+        )
 
 
 if __name__ == "__main__":

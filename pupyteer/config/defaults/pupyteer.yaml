@@ -10,11 +10,15 @@ server:
   # payloads built with --transport http/https.
   http_port: 0
   http_uri: "/index.html"
-  # Callbacks over TLS. Off by default: the session protocol is JSON in the
-  # clear, so turn this on before working a target over a network you do not
-  # own. Payloads built while this is on pin the listener's own certificate,
+  # Callbacks over TLS, on by default: the session protocol is JSON, so without
+  # it everything typed and everything returned is readable to whoever owns the
+  # network. Payloads built while this is on pin the listener's own certificate,
   # which is the only check either side can make on a self-signed team server.
-  tls: false
+  # Set false to opt out deliberately — the build log and the listener both say
+  # the channel is plaintext. Note that payloads built while this was false
+  # cannot reach a listener that has it on; transports list counts those
+  # handshakes as refused.
+  tls: true
   tls_cert: "./data/tls/listener.crt"
   tls_key: "./data/tls/listener.key"
   # Names in the certificate besides server.host. Set them before the first

@@ -34,6 +34,10 @@ def config(tmp_path):
     # A build derives the enrollment secret from config, so point that file into
     # tmp_path: a test run must not generate a real team secret into the checkout.
     cfg.set("server.agent_auth_file", str(tmp_path / "enrollment.key"))
+    # The builds below are the plaintext path on purpose. TLS is the shipped
+    # default now, so a test that asserts an agent carries no pin has to turn it
+    # off and mean it, rather than inherit a default that used to be false.
+    cfg.set("server.tls", False)
     return cfg
 
 
@@ -599,6 +603,33 @@ class TestListenerTlsIsBakedIn:
         code = Path(meta.artifact_path).read_text(encoding="utf-8")
         assert "TLS_ON = False" in code
         assert "BEGIN CERTIFICATE" not in code
+        # Opting out is allowed; doing it quietly is not. This line is what the
+        # operator sees in the build log.
+        assert any("plaintext" in line.lower() for line in meta.build_log)
+
+    @pytest.mark.asyncio
+    async def test_a_build_that_says_nothing_about_tls_is_encrypted(
+        self, tmp_path, audit
+    ):
+        """The default has to be the secure one, not merely documented as such.
+
+        A config that never mentions TLS is what a fresh install runs, so this is
+        the one case where an operator cannot be blamed for not reading anything.
+        """
+        cfg = ConfigManager()
+        cfg.set("paths.payload_artifacts", str(tmp_path))
+        cfg.set("server.agent_auth_file", str(tmp_path / "enrollment.key"))
+        cfg.set("server.tls_cert", str(tmp_path / "default.crt"))
+        cfg.set("server.tls_key", str(tmp_path / "default.key"))
+
+        builder = PayloadBuilder(cfg, audit)
+        meta = await builder.build(
+            PayloadConfig(name="by-default", payload_type=PayloadType.SCRIPT),
+            builder.generate_payload_id())
+        code = Path(meta.artifact_path).read_text(encoding="utf-8")
+        assert "TLS_ON = True" in code
+        assert "BEGIN CERTIFICATE" in code
+        assert (tmp_path / "default.crt").exists()
 
 
 # ─── Enrollment Secret Tests ─────────────────────────────────────

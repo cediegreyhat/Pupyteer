@@ -28,7 +28,7 @@ import json
 import logging
 import time
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from pupyteer.server.core.enrollment import secret_accepts
 from pupyteer.server.core.logging import AuditLogger
@@ -41,6 +41,18 @@ logger = logging.getLogger("pupyteer.transports.listener")
 # and the session dies. Message framing is one JSON object per line, so the
 # ceiling has to be above the largest payload an operator can ask for.
 MAX_MESSAGE_BYTES = 32 * 1024 * 1024
+
+# How long a peer may take to finish a TLS handshake before the connection is
+# dropped. A host that cannot complete one is not going to start halfway through,
+# and every second it holds this socket is a second of queue on the listener.
+HANDSHAKE_TIMEOUT_SECONDS = 10.0
+
+# One line per refused handshake is what an operator needs the first time a
+# payload fails to call back; it is also an invitation to bury the entries that
+# matter, because the audit log rotates at a fixed size and drops the oldest.
+# So refusals are counted exactly and reported per peer at most this often.
+HANDSHAKE_REPORT_WINDOW_SECONDS = 60.0
+_HANDSHAKE_REPORT_PEERS = 4096
 
 
 class PendingCommand:
@@ -116,7 +128,16 @@ class AgentListener:
             # Counted separately from connections: "lots of connections, no
             # sessions" is what someone probing the listener looks like.
             "registrations_rejected": 0,
+            # Connections that never became a request line. On a TLS listener
+            # this is what a payload built while server.tls was off looks like:
+            # without it, a stranded implant and a powered-off host are the
+            # same number — zero — and nothing points at the rebuild.
+            "handshakes_refused": 0,
         }
+        # peer -> [last reported at, refusals counted since]. Dict order is the
+        # order they were last reported in, which is what lets the cap drop the
+        # stalest peer rather than a random one.
+        self._handshake_reports: Dict[str, List[float]] = {}
 
     # ------------------------------------------------------------------
     #  Lifecycle
@@ -125,12 +146,16 @@ class AgentListener:
     async def start(self) -> None:
         """Bind the TCP server and start accepting connections."""
         ssl_context = self._ssl_context
+        # The upgrade happens per connection in _upgrade_tls rather than by
+        # handing ssl= to start_server, so that a failed handshake is something
+        # this listener can see. asyncio reports those to the event loop's
+        # exception handler and closes the socket, which leaves the operator
+        # with a port that is "not getting any sessions".
         self._server = await asyncio.start_server(
             self._handle_client,
             host=self._host,
             port=self._port,
             limit=MAX_MESSAGE_BYTES,
-            ssl=ssl_context,
         )
         addrs = ", ".join(str(s.getsockname()) for s in self._server.sockets)
         logger.info("Agent listener listening on %s (%s)",
@@ -140,6 +165,65 @@ class AgentListener:
             "port": self._port,
             "tls": bool(ssl_context),
         })
+
+    async def _upgrade_tls(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> bool:
+        """Wrap this connection in TLS, or say why it could not be wrapped.
+
+        Returns False when the connection must be dropped: the peer did not
+        speak TLS to a TLS listener, or the handshake went wrong. Never returns
+        False on a listener that has no certificate — that one is plaintext by
+        configuration, and the caller proceeds.
+        """
+        if self._ssl_context is None:
+            return True
+        peer = writer.get_extra_info("peername") or ("unknown", 0)
+        peer_key = f"{peer[0]}:{peer[1]}"
+        try:
+            await writer.start_tls(
+                self._ssl_context, ssl_handshake_timeout=HANDSHAKE_TIMEOUT_SECONDS)
+            return True
+        except Exception as exc:
+            self._stats["handshakes_refused"] += 1
+            self._report_handshake_refusal(peer_key, f"{type(exc).__name__}: {exc}")
+            return False
+
+    def _report_handshake_refusal(self, peer_key: str, reason: str) -> None:
+        """Report a refused handshake, at most once a window per peer.
+
+        ``handshakes_refused`` is the exact live total and ``transports list`` is
+        where an operator reads it; this is the durable trace left beside it. It
+        is thinned per peer so that a port sweep cannot use this event to push
+        the entries that matter out of an audit file that rotates. Each line
+        names the peer and the reason, ``count`` is the listener-wide total when
+        it was written, and ``suppressed`` is what this peer did in between two
+        lines, which would otherwise be invisible.
+        """
+        now = time.monotonic()
+        record = self._handshake_reports.get(peer_key)
+        if record is None:
+            if len(self._handshake_reports) >= _HANDSHAKE_REPORT_PEERS:
+                self._handshake_reports.pop(next(iter(self._handshake_reports)))
+            self._handshake_reports[peer_key] = [now, 0.0]
+            suppressed = 0
+        elif now - record[0] >= HANDSHAKE_REPORT_WINDOW_SECONDS:
+            record[0] = now
+            suppressed = int(record[1])
+            record[1] = 0.0
+        else:
+            record[1] += 1
+            return
+
+        logger.warning("TLS handshake failed from %s: %s (%d more from this peer "
+                       "since the last line)", peer_key, reason[:200], suppressed)
+        self._audit.log_event(
+            "handshake_refused",
+            {"peer": peer_key, "reason": reason[:200],
+             "count": self._stats["handshakes_refused"],
+             "suppressed": suppressed},
+            result="error",
+        )
 
     async def stop(self) -> None:
         """Gracefully close the server and all active connections."""
@@ -184,6 +268,12 @@ class AgentListener:
         addr = writer.get_extra_info("peername") or ("unknown", 0)
         remote_str = f"{addr[0]}:{addr[1]}"
         session_id: Optional[str] = None
+
+        # Before anything is read, so a peer that cannot speak TLS to a TLS
+        # listener is refused as a handshake and not as malformed JSON.
+        if not await self._upgrade_tls(reader, writer):
+            await self._drop(writer)
+            return
 
         logger.debug("New agent connection from %s", remote_str)
         self._stats["connections"] += 1
@@ -263,6 +353,15 @@ class AgentListener:
                 await writer.wait_closed()
             except Exception:
                 pass
+
+    @staticmethod
+    async def _drop(writer: asyncio.StreamWriter) -> None:
+        """Close a connection without ceremony; it is already going away."""
+        try:
+            writer.close()
+            await writer.wait_closed()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     #  Message dispatch
