@@ -30,12 +30,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from pupyteer.server.core.config import DEFAULT_OPERATORS_FILE
 from pupyteer.server.core.rbac import Role
 from pupyteer.server.core.validation import validate_username
 
 logger = logging.getLogger("pupyteer.operators")
-
-DEFAULT_OPERATORS_FILE = "./data/keys/operators.json"
 
 # The file's shape, so a future change can tell an old store from a corrupt one.
 STORE_VERSION = 1

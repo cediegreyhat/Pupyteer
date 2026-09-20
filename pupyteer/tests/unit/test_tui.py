@@ -373,12 +373,25 @@ class TestPupyteerTUIRender:
         assert "HTTPS-Default" in captured.out
 
     def test_banner_warns_when_callbacks_are_plaintext(self, tui, capsys):
-        """A mock status with no fingerprint is the default; the operator should
-        not have to remember to check whether the channel is encrypted. The word
-        is shouted in the banner, so the match ignores case.
+        """`server.tls: false` is the one state that deserves the shout. The
+        operator should not have to remember to check whether the channel is
+        encrypted; the word is in the banner, so the match ignores case.
         """
+        tui._engine.get_status.return_value["config"]["tls_configured"] = False
         tui.render_banner()
         assert "plaintext" in capsys.readouterr().out.lower()
+
+    def test_banner_does_not_call_a_stopped_listener_plaintext(self, tui, capsys):
+        """No fingerprint yet means nothing is serving, which is not the same
+        claim. The banner is drawn before the engine starts, so reading the
+        absence of a certificate as "in the clear" fires on every honest TLS
+        server and teaches operators to discount the warning.
+        """
+        tui._engine.get_status.return_value["config"]["tls_configured"] = True
+        tui.render_banner()
+        out = capsys.readouterr().out
+        assert "plaintext" not in out.lower()
+        assert "Channel" in out
 
     def test_banner_shows_the_pinned_certificate(self, tui, capsys):
         tui._engine.get_status.return_value["config"]["listener_tls"] = "ab" * 32

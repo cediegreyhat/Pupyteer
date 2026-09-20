@@ -175,6 +175,13 @@ class AuthLayer:
             return session.role
         return None
 
+    def remaining(self, token: str) -> Optional[float]:
+        """Seconds a token has left before it stops being one."""
+        session = self._sessions.get(token)
+        if session is None or session.expired:
+            return None
+        return session.expires_at - time.time()
+
     def revoke(self, token: str) -> bool:
         """Revoke a session token."""
         if token in self._sessions:

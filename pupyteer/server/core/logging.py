@@ -64,6 +64,22 @@ class AuditLogger:
             compress=config.get("audit.compress", True),
         )
         self._emitter = AuditEmitter(self._store, default_operator=self._operator)
+        self._configured_operator = self._operator
+
+    def set_operator(self, name: Optional[str]) -> None:
+        """Attribute later entries to ``name``, or to the configured name for None.
+
+        Only the console that logged in calls this. A role or a name typed into
+        `config set` never reaches it, so attribution follows what proved who the
+        operator is rather than what the operator asked to be called.
+        """
+        self._operator = name or self._configured_operator
+        self._emitter.set_default_operator(self._operator)
+
+    @property
+    def operator(self) -> Optional[str]:
+        """Who entries are being attributed to right now."""
+        return self._operator
 
     def log_event(
         self,

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import getpass
 import logging
 import os
 import shlex
@@ -18,9 +19,16 @@ except ImportError:
 
 from pupyteer.server.core.config import ConfigManager
 from pupyteer.server.core.engine import PupyteerEngine
+from pupyteer.server.core.operators import MIN_PASSWORD_CHARS, WeakCredential
+from pupyteer.server.core.rbac import AccessDenied, Role
 from pupyteer.tui.themes import Theme, _Ansi, c, get_theme, available_themes
 
 logger = logging.getLogger("pupyteer.tui")
+
+#: Times the console asks for a credential before it gives up. The store locks a
+#: name after five misses on its own, so this only stops someone fumbling at a
+#: terminal that is not theirs.
+LOGIN_ATTEMPTS = 3
 
 
 # ─── Banner ────────────────────────────────────────────────────────────
@@ -219,6 +227,12 @@ class PupyteerTUI:
         self._status_bar = StatusBar(engine, self._theme)
         self._dashboard = SessionDashboard(engine, self._theme)
 
+        # What a login proved, not what the config says to be called. None means
+        # this console has not been through the gate for any verb that needs one.
+        self._token: Optional[str] = None
+        self._operator: Optional[str] = None
+        self._role: Optional[str] = None
+
         self._register_commands()
         self._setup_readline()
         self._setup_signal_handlers()
@@ -257,6 +271,13 @@ class PupyteerTUI:
         r.register("pipeline", self.cmd_pipeline, "Unified payload-to-evasion pipeline", "pipeline [run|build|test|auto|status|history]")
         r.register("theme", self.cmd_theme, "Change TUI theme", "theme [dark|list]")
         r.register("clear", self.cmd_clear, "Clear the screen")
+        # These three are the only way through the gate, so they have to be
+        # reachable with nobody logged in.
+        r.register("login", self.cmd_login, "Sign in as an operator", "login [name]")
+        r.register("logout", self.cmd_logout, "Sign out and revoke this token")
+        r.register("whoami", self.cmd_whoami, "Show who this console is acting as")
+        r.register("operator", self.cmd_operator, "Manage operator credentials",
+                   "operator [list|add <name> <role>|role <name> <role>|remove <name>]")
         r.register("exit", self.cmd_exit, "Exit Pupyteer")
         r.register("quit", self.cmd_exit, "Exit Pupyteer")
 
@@ -272,6 +293,7 @@ class PupyteerTUI:
         "theme": ["dark", "light", "list"],
         "evasion": ["status", "run", "list", "stats"],
         "pipeline": ["run", "build", "test", "auto", "status", "history"],
+        "operator": ["list", "add", "role", "remove"],
     }
 
     def _complete_names(self, command: str) -> List[str]:
@@ -336,6 +358,321 @@ class PupyteerTUI:
         self._dashboard = SessionDashboard(self._engine, self._theme)
 
     # ------------------------------------------------------------------ #
+    #  Operator gate                                                     #
+    # ------------------------------------------------------------------ #
+    #
+    # What this gates is the console, not the network. There is no remote API: a
+    # second process on this machine that can import PupyteerEngine can do what an
+    # operator can. So a login decides which verbs this keyboard may run and who the
+    # audit log blames for them, and claims nothing beyond that.
+
+    def _first_credential(self) -> None:
+        """Create one operator when the store holds none, and show it once.
+
+        An empty store is not a broken server, but it is a door with no handle:
+        nobody can get in to make the first account. Generating a password turns
+        that into a five-second setup instead of a documentation hunt, and printing
+        it once — never to the audit log, never to a file — is the same bargain the
+        enrollment secret makes.
+        """
+        auth = self._engine.auth
+        name = str(self._config.get("operator.name") or "").strip() or "admin"
+        try:
+            created = auth.bootstrap(name)
+        except WeakCredential as exc:
+            self.render_error(f"Cannot create the first operator: {exc}")
+            return
+        self.render_warning(
+            "No operator credential exists yet, so this server made one to let you "
+            "in. It is shown once and stored nowhere else:")
+        print(c(f"    operator: {created['username']}", self._theme.get("info")))
+        print(c(f"    password: {created['password']}\n", self._theme.get("info")))
+        self.render_warning(
+            f"Copy it now, then add your own with 'operator add <name>' and retire "
+            f"this one with 'operator remove {created['username']}'.")
+
+    async def _read(self, prompt: str, secret: bool = False) -> Optional[str]:
+        """Read one line off the terminal without freezing the engine.
+
+        The read runs in a worker thread because the event loop is what keeps live
+        sessions being served; waiting for a password on the loop would stall every
+        handler on this box for as long as someone takes to type it.
+        """
+        loop = asyncio.get_event_loop()
+        reader = getpass.getpass if secret else input
+        try:
+            line = await loop.run_in_executor(None, reader, prompt)
+        except Exception as exc:      # EOF, a closed stdin, a terminal that is not there
+            logger.debug("Prompt abandoned: %s", exc)
+            return None
+        return line if secret else (line or "").strip()
+
+    async def _sign_in(self, username: str, password: str) -> bool:
+        auth = self._engine.auth
+        token = auth.authenticate(username, password)
+        if token is None:
+            return False
+        self._token = token
+        self._operator = auth.get_operator(token)
+        self._role = auth.role_of(token)
+        self._engine.audit.set_operator(self._operator)
+        return True
+
+    def _sign_out(self) -> None:
+        if self._token:
+            self._engine.auth.revoke(self._token)
+        self._token = None
+        self._operator = None
+        self._role = None
+        self._engine.audit.set_operator(None)
+
+    async def prompt_login(self, why: str = "") -> bool:
+        """Ask for a credential, up to LOGIN_ATTEMPTS times."""
+        auth = self._engine.auth
+        if not auth.has_operators:
+            self.render_error(
+                "Nobody can sign in: no usable credential is stored in "
+                f"{auth.operators.path}.")
+            return False
+        if why:
+            self.render_info(why)
+        default = str(self._config.get("operator.name") or "").strip()
+        for _ in range(LOGIN_ATTEMPTS):
+            asked = await self._read(f"  operator [{default}]: ")
+            if asked is None:
+                self.render_error("No terminal to ask for a credential in.")
+                return False
+            username = asked.strip() or default
+            password = await self._read(f"  {username} password: ", secret=True)
+            if password is None:
+                return False
+            if await self._sign_in(username, password):
+                self.render_success(
+                    f"Signed in as {self._operator} ({self._role}).")
+                return True
+            self.render_error("Wrong name or password.")
+        return False
+
+    async def _gate_startup(self) -> bool:
+        """Whether this console may start the engine at all.
+
+        Refusing to start is part of the design: a team server that opens its
+        listeners for whoever ran the command has already accepted the connection
+        nobody authorised, and whatever calls back cannot be unseen.
+        """
+        auth = self._engine.auth
+        if not auth.require_auth:
+            self.render_warning(
+                "security.require_auth is off — no credential is asked for, "
+                "everyone at this console is admin, and the audit log attributes "
+                "everything to the configured name.")
+            return True
+        if not auth.has_operators:
+            self._first_credential()
+        return await self.prompt_login()
+
+    async def _authorize(self, command: str, args: List[str],
+                         _retried: bool = False) -> bool:
+        """Whether this line may run now, rendering the refusal when it may not.
+
+        Re-signing in place rather than exiting is what makes a long engagement
+        survivable: the token holds an hour and a live session does not care, so an
+        expired credential should cost a password and not the board.
+        """
+        auth = self._engine.auth
+        if not auth.require_auth:
+            return True
+        try:
+            self._engine.authz.authorize_command(self._token or "", command, args)
+            return True
+        except AccessDenied as exc:
+            if exc.permission == "valid_token" and not _retried:
+                expired = self._token is not None
+                self._sign_out()
+                if await self.prompt_login(
+                        "Your sign-in expired — this server and its live sessions "
+                        "keep running while you sign in again." if expired
+                        else "This console is not signed in."):
+                    return await self._authorize(command, args, _retried=True)
+                # Asked, and no credential came. Reporting the generic denial here
+                # reads as "your role may not", which is a different problem from
+                # the one the operator is looking at and would send them to the
+                # wrong file to fix.
+                self._refused_without_credential(command, args)
+                return False
+            self._refused(command, args, exc)
+            return False
+
+    def _refused_without_credential(self, command: str,
+                                    args: List[str]) -> None:
+        verb = " ".join([command] + list(args)[:1]).strip()
+        self.render_error(
+            f"Not signed in — '{verb}' needs a credential. Run 'login'.")
+        self._engine.audit.log_event(
+            "command_denied",
+            {"command": command, "permission": "valid_token",
+             "args_count": len(args)},
+            result="denied",
+        )
+
+    def _refused(self, command: str, args: List[str], exc: AccessDenied) -> None:
+        self.render_error(f"Refused: {exc}")
+        # A refusal is the entry an operator will later say they never typed, so it
+        # is recorded with the same care as the command itself.
+        self._engine.audit.log_event(
+            "command_denied",
+            {"command": command, "permission": exc.permission,
+             "args_count": len(args)},
+            result="denied",
+        )
+
+    # ------------------------------------------------------------------ #
+    #  Gate verbs                                                        #
+    # ------------------------------------------------------------------ #
+
+    async def cmd_login(self, args: List[str]) -> None:
+        if self._operator:
+            self.render_info(
+                f"Already signed in as {self._operator} ({self._role}); signing in "
+                "again replaces that credential.")
+        username = (args[0] if args
+                    else str(self._config.get("operator.name") or "").strip())
+        if not username:
+            self.render_warning("Usage: login <name>")
+            return
+        password = await self._read(f"  {username} password: ", secret=True)
+        if password is None:
+            return
+        if await self._sign_in(username, password):
+            self.render_success(f"Signed in as {self._operator} ({self._role}).")
+        else:
+            self.render_error("Wrong name or password.")
+
+    async def cmd_logout(self, args: List[str]) -> None:
+        if not self._token:
+            self.render_info("Not signed in.")
+            return
+        who = self._operator
+        self._sign_out()
+        self.render_success(f"Signed out {who}. That token is revoked.")
+
+    async def cmd_whoami(self, args: List[str]) -> None:
+        auth = self._engine.auth
+        if not auth.require_auth:
+            self.render_warning(
+                "Authentication is off, so this console is whoever holds the "
+                f"keyboard. Entries are attributed to "
+                f"'{self._engine.audit.operator}'.")
+            return
+        remaining = auth.remaining(self._token) if self._token else None
+        if remaining is None:
+            self.render_warning(
+                "Not signed in. Every verb that touches a session, a listener or "
+                "an artifact is refused until you are.")
+            return
+        print(c(f"  operator: {self._operator}", self._theme.get("info")))
+        print(c(f"  role:     {self._role}", self._theme.get("info")))
+        print(c(f"  expires:  in {int(remaining)}s", self._theme.get("info")))
+
+    async def cmd_operator(self, args: List[str]) -> None:
+        """`operator list|add|role|remove` — the credential file, from the console.
+
+        There is deliberately no password argument: argv is readable by any process
+        on the box and the console's own history file would keep it.
+        """
+        auth = self._engine.auth
+        usage = "operator [list|add <name> [role]|role <name> <role>|remove <name>]"
+        if not args:
+            self.render_warning(f"Usage: {usage}")
+            return
+        verb, rest = args[0], args[1:]
+        if verb == "list":
+            store = auth.operators
+            names = store.names()
+            if not names:
+                self.render_warning(f"No operators stored in {store.path}.")
+                return
+            self.render_table(["OPERATOR", "ROLE"],
+                              [[n, store.role_of(n).value] for n in names])
+            return
+        if verb == "add":
+            await self._operator_add(rest)
+            return
+        if verb == "role":
+            if len(rest) < 2:
+                self.render_warning("Usage: operator role <name> <role>")
+                return
+            role, problem = self._parse_role(rest[1])
+            if problem:
+                self.render_error(problem)
+                return
+            try:
+                record = auth.set_role(rest[0], role)
+            except ValueError as exc:
+                self.render_error(f"Refused: {exc}")
+                return
+            self.render_success(
+                f"{record.username} is now {record.role.value}. A token already "
+                "issued to them keeps the old role until it expires.")
+            return
+        if verb == "remove":
+            if not rest:
+                self.render_warning("Usage: operator remove <name>")
+                return
+            if not auth.remove_operator(rest[0]):
+                self.render_error(f"No operator named {rest[0]}.")
+                return
+            self.render_success(f"Removed {rest[0]} and ended their live sessions.")
+            return
+        self.render_error(f"Unknown operator command: {verb}\n  Usage: {usage}")
+
+    async def _operator_add(self, rest: List[str]) -> None:
+        if not rest:
+            self.render_warning("Usage: operator add <name> [role]")
+            return
+        role, problem = self._parse_role(rest[1] if len(rest) > 1 else "operator")
+        if problem:
+            self.render_error(problem)
+            return
+        name = rest[0]
+        first = await self._read(f"  new password for {name}: ", secret=True)
+        if first is None:
+            return
+        if len(first) < MIN_PASSWORD_CHARS:
+            self.render_error(
+                f"Refused: a credential needs at least {MIN_PASSWORD_CHARS} "
+                "characters.")
+            return
+        if await self._read("  repeat it: ", secret=True) != first:
+            self.render_error("Refused: the two entries did not match.")
+            return
+        try:
+            record = self._engine.auth.add_operator(name, first, role)
+        except ValueError as exc:
+            self.render_error(f"Refused: {exc}")
+            return
+        self.render_success(f"Stored {record.username} as {record.role.value}.")
+
+    @staticmethod
+    def _parse_role(value: str) -> tuple:
+        """Role from a typed word, and the reason it is not one.
+
+        `system` is not offered: it is what the engine's own internals are allowed
+        to do, and a console that could hand it out would be one mistyped verb away
+        from having no rules left.
+        """
+        word = str(value).strip().lower()
+        if word == Role.SYSTEM.value:
+            return None, f"{Role.SYSTEM.value!r} is the engine's own role, not one " \
+                         "an operator can be given"
+        try:
+            return Role(word), None
+        except ValueError:
+            offered = ", ".join(r.value for r in Role if r is not Role.SYSTEM)
+            return None, f"Unknown role {word!r}; choose from {offered}"
+
+
+    # ------------------------------------------------------------------ #
     #  Render                                                             #
     # ------------------------------------------------------------------ #
 
@@ -352,10 +689,19 @@ class PupyteerTUI:
         if fingerprint:
             print(c("  [Channel]", theme.get("success")),
                   f"TLS, pinned to SHA-256 {fingerprint[:16]}…")
-        else:
+        elif server.get("tls_configured") is False:
             print(c("  [Channel]", theme.get("error")),
                   "PLAINTEXT callbacks — server.tls is off, so anyone on the "
                   "network reads every command and every result")
+        else:
+            # The banner is drawn before the engine starts, and the console now
+            # starts it only after a sign-in. A missing fingerprint here means
+            # nothing is listening yet, not that the channel is in the clear;
+            # shouting PLAINTEXT at that would train operators to ignore the
+            # warning for the case where it is true.
+            print(c("  [Channel]", theme.get("warning")),
+                  "TLS configured, no listener serving yet — 'banner' after "
+                  "sign-in shows the pinned certificate")
         # Encryption says nobody on the wire can read the sessions; it does not say
         # who is allowed to start one. That is what the enrollment secret is for.
         auth = server.get("agent_auth")
@@ -365,7 +711,21 @@ class PupyteerTUI:
         elif auth:
             print(c("  [Enrollment]", theme.get("success")),
                   "registrations checked against this server's secret")
-        print(c(f"  [Operator]", theme.get("warning")), f"{server['operator']}")
+        # The third line a buyer of this banner reads is "who is doing this". A name
+        # in a config file is what the audit log falls back to, not proof of who is
+        # typing, so it is only ever shown as that.
+        engine_auth = self._engine.auth
+        if self._operator:
+            print(c("  [Operator]", theme.get("success")),
+                  f"{self._operator} as {self._role}")
+        elif engine_auth.require_auth:
+            print(c("  [Operator]", theme.get("warning")),
+                  "not signed in — verbs that touch a target are refused until you "
+                  "are")
+        else:
+            print(c("  [Operator]", theme.get("error")),
+                  f"console authentication is off; whoever holds this keyboard is "
+                  f"admin, blamed as {server['operator']!r}")
         print(c(f"  [Profile]", theme.get("accent")), f"{status['state']['loaded_profile'] or 'none'}")
         print(c(f"  [Agents]", theme.get("info")), f"{status['state']['active_sessions']}")
         print()
@@ -572,8 +932,25 @@ class PupyteerTUI:
         elif args[0] == "get" and len(args) > 1:
             print(f"  {args[1]} = {self._engine.config.get(args[1])}")
         elif args[0] == "set" and len(args) > 2:
+            if self._locked_at_runtime(args[1]):
+                self.render_error(
+                    f"Refused: {args[1]} is not a runtime preference. Set it in the "
+                    "config file before starting the server.")
+                self._engine.audit.log_event(
+                    "configuration_refused", {"key": args[1]}, result="denied")
+                return
             self._engine.config.set(args[1], args[2])
             print(f"  Set {args[1]} = {args[2]}")
+
+    #: Keys the console will not rewrite while it is running. `operator.name` is
+    #: who the audit log blames when nobody has signed in, and `security.*` is the
+    #: gate itself: a server whose console can switch off its own gate has no gate.
+    _LOCKED_KEYS = frozenset({"operator.name"})
+    _LOCKED_PREFIXES = ("security.",)
+
+    @classmethod
+    def _locked_at_runtime(cls, key: str) -> bool:
+        return key in cls._LOCKED_KEYS or key.startswith(cls._LOCKED_PREFIXES)
 
     async def cmd_logs(self, args: List[str]) -> None:
         log_path = self._engine.config.get("logging.file")
@@ -900,6 +1277,13 @@ class PupyteerTUI:
         self._running = True
         self.render_banner()
 
+        # Before the listeners, not after: signing in is what decides whether this
+        # machine starts serving at all. A failed login here leaves no port open.
+        if not await self._gate_startup():
+            self.render_error("Not starting: no operator signed in. No listener was "
+                              "opened and no payload has anywhere to call back to.")
+            return
+
         # Start engine
         try:
             await self._engine.start()
@@ -929,6 +1313,8 @@ class PupyteerTUI:
 
                 cmd = self._registry.get(cmd_name)
                 if cmd:
+                    if not await self._authorize(cmd_name, cmd_args):
+                        continue
                     try:
                         await cmd["handler"](cmd_args)
                     except Exception as e:

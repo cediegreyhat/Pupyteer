@@ -41,6 +41,15 @@ logging:
   format: "json"
   file: null  # or path to log file
 
+# The audit trail is the record an engagement is judged on, so where it goes and
+# how big it gets are configuration, not a surprise. It rotates by size or day,
+# whichever comes first, and the rotated files are gzipped beside it.
+audit:
+  log_file: "./logs/audit.json"
+  max_bytes: 10485760   # 10 MB
+  backup_count: 5
+  compress: true
+
 operator:
   name: "redteam-operator"
   theme: "dark"
@@ -55,12 +64,16 @@ tasks:
   max_concurrent: 5
 
 security:
+  # The console needs a credential before any verb that touches a session, a
+  # listener or an artifact. `false` makes whoever holds the keyboard an admin.
   require_auth: true
   token_ttl: 3600
   max_failed_logins: 5
-  # Development operators (replace with proper credential management)
-  operators:
-    admin: "changeme"
+  # A name unlocks by itself this long after the last miss.
+  lockout_seconds: 300
+  # Hashed credentials, written on first use and never here. With no such file a
+  # server run generates one operator password and prints it once.
+  operators_file: "./data/keys/operators.json"
 
 paths:
   payload_artifacts: "./payloads/artifacts"

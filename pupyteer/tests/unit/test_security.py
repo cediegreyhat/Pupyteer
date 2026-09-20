@@ -446,8 +446,19 @@ class TestSessionAuthorization:
         assert ctx.operator == "testuser"
 
     def test_authorize_invalid_token(self, session_auth):
-        with pytest.raises(AccessDenied):
-            session_auth.authorize_command("invalid-token", "help", [])
+        with pytest.raises(AccessDenied) as caught:
+            session_auth.authorize_command("invalid-token", "sessions", ["kill", "s1"])
+        assert caught.value.permission == "valid_token"
+
+    def test_a_public_verb_needs_no_token(self, session_auth):
+        """`help` and `whoami` are how an operator finds out they are locked out.
+
+        Demanding a credential to ask the gate a question would make the gate a
+        wall, which is what this test keeps from being "fixed" later.
+        """
+        ctx = session_auth.authorize_command("", "help", [])
+        assert ctx.authorized is True
+        assert ctx.operator == "unknown", "nobody proved anything, so nobody is named"
 
     def test_authorize_insufficient_permission(self, session_auth, auth):
         token = _login(auth, "viewer", Role.VIEWER)
@@ -675,9 +686,38 @@ class TestEnrollmentSecret:
 class TestSecureDefaults:
     def test_check_config_defaults(self):
         from scripts.verify_secure_defaults import check_config_defaults
-        result = check_config_defaults()
-        # Should return empty list since defaults are secure
-        assert isinstance(result, list)
+        findings = check_config_defaults()
+        assert findings == [], f"the shipped defaults fail their own gate: {findings}"
+
+    def test_a_plaintext_operator_credential_coming_back_is_found(self, monkeypatch):
+        """The gate has to be able to fail, or it is a print statement.
+
+        Nothing else in the suite would notice `security.operators: {admin:
+        changeme}` returning: the code default is empty and no test reads the
+        shipped file, so this check is the only thing standing between that line and
+        an install that logs in with a password nobody had to look up.
+        """
+        from scripts import verify_secure_defaults as gate
+        from pupyteer.server.core import config as config_module
+
+        monkeypatch.setitem(config_module.DEFAULT_CONFIG["security"], "operators",
+                            {"admin": "changeme"})
+        findings = gate.check_config_defaults()
+        assert any("security.operators" in f for f in findings), findings
+
+    def test_the_shipped_defaults_carry_no_credential_of_any_name(self):
+        import yaml
+        from pupyteer.server.core.operators import DEFAULT_OPERATORS_FILE
+        from pupyteer.server.core.config import DEFAULT_CONFIG
+
+        shipped = (Path(__file__).resolve().parents[2]
+                   / "config" / "defaults" / "pupyteer.yaml")
+        data = yaml.safe_load(shipped.read_text(encoding="utf-8")) or {}
+        security = data.get("security") or {}
+        assert "operators" not in security
+        assert security["operators_file"] == DEFAULT_OPERATORS_FILE, \
+            "the shipped file and the code default must name the same place"
+        assert DEFAULT_CONFIG["security"]["operators_file"] == DEFAULT_OPERATORS_FILE
 
     def test_check_file(self, tmp_path):
         from scripts.verify_secure_defaults import check_file

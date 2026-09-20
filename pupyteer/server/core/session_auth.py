@@ -169,6 +169,16 @@ class SessionAuthorization:
             "auto": Permission.EVASION_RUN,
             "*": Permission.PAYLOAD_BUILD,
         },
+        # Written out rather than left to the verb's own permission, because the
+        # tempting reading of `operator list` is "harmless": it prints every name
+        # the team has credentials for, which is a target list for whoever is
+        # already at a keyboard without one.
+        "operator": {
+            "list": Permission.OPERATOR_MANAGE,
+            "add": Permission.OPERATOR_MANAGE,
+            "role": Permission.OPERATOR_MANAGE,
+            "remove": Permission.OPERATOR_MANAGE,
+        },
     }
 
     #: What an unclassified verb resolves to. Not a permission anybody holds:
@@ -212,23 +222,33 @@ class SessionAuthorization:
         Raises:
             AccessDenied: If authorization fails.
         """
+        # The verb is resolved before the token is looked at, because a public verb
+        # has to stay reachable with nobody signed in: `help` and `whoami` are what
+        # an operator uses to find out that they are locked out, and a gate that
+        # demands a credential to ask the gate a question is a wall.
+        required_perm = self.resolve_permission(command, args)
         operator = self._auth.get_operator(token)
-        if operator is None:
-            # Token is invalid or expired
+        if operator is None and required_perm is not None:
+            # Token is invalid, expired, or simply not there yet — the console
+            # reads `valid_token` as "ask for a credential", and the distinction
+            # between those three is not one this check is allowed to make.
             ctx = CommandContext(
                 operator="unknown",
                 session_token=token[:8] + "..." if token else None,
                 command=command,
                 args=args,
                 authorized=False,
+                permission=required_perm,
             )
             self._command_log.append(ctx)
             raise AccessDenied("valid_token", "unknown")
         
-        required_perm = self.resolve_permission(command, args)
-        
+        # A public verb with nobody signed in still gets a name in the log, and
+        # "unknown" is the honest one: leaving it blank would make an anonymous
+        # `sessions list` indistinguishable from one whose attribution was lost.
+        who = operator or "unknown"
         ctx = CommandContext(
-            operator=operator,
+            operator=who,
             session_token=token[:8] + "..." if token else None,
             command=command,
             args=args,
@@ -239,7 +259,7 @@ class SessionAuthorization:
         if required_perm is None:
             ctx.authorized = True
             self._command_log.append(ctx)
-            logger.debug("Command '%s' authorized for '%s' (public)", command, operator)
+            logger.debug("Command '%s' allowed for '%s' (public)", command, who)
             return ctx
 
         # The token decides, not the name. Asking the role of `operator` instead

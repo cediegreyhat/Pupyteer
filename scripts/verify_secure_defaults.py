@@ -141,7 +141,36 @@ def check_config_defaults() -> List[str]:
         max_failed = DEFAULT_CONFIG.get('security', {}).get('max_failed_logins', 0)
         if max_failed <= 0 or max_failed > 10:
             findings.append(f"security.max_failed_logins ({max_failed}) should be between 1-10")
-        
+
+        # A lockout that never expires is not a lockout, it is a lock: five typos
+        # used to leave a team outside their own server with no way back.
+        lockout = DEFAULT_CONFIG.get('security', {}).get('lockout_seconds', 0)
+        if lockout <= 0 or lockout > 3600:
+            findings.append(f"security.lockout_seconds ({lockout}) is not a usable window")
+
+        # Credentials are not config values. A config is pasted into tickets,
+        # committed to a lab repo and backed up nightly, and the shipped default
+        # used to be `admin: changeme` — a password nobody has to look up to guess.
+        if DEFAULT_CONFIG.get('security', {}).get('operators'):
+            findings.append(
+                "security.operators holds credentials in the defaults; they belong "
+                "hashed in the file named by security.operators_file")
+        if not DEFAULT_CONFIG.get('security', {}).get('operators_file'):
+            findings.append("security.operators_file has no default location")
+
+        shipped = Path(__file__).resolve().parent.parent / "pupyteer" / "config" / "defaults" / "pupyteer.yaml"
+        try:
+            import yaml as _yaml
+            data = _yaml.safe_load(shipped.read_text(encoding="utf-8")) or {}
+            plain = (data.get("security") or {}).get("operators")
+            if plain:
+                findings.append(
+                    f"{shipped.name} ships {len(plain)} plaintext operator "
+                    "credential(s); it overrides the secure default for every "
+                    "install that copies it")
+        except OSError as exc:
+            findings.append(f"Could not read the shipped defaults: {exc}")
+
     except ImportError:
         findings.append("Could not import ConfigManager to verify defaults")
     

@@ -38,6 +38,8 @@ from typing import Any, Dict, Optional
 
 from pupyteer.server.core.auth import AuthLayer
 from pupyteer.server.core.config import ConfigManager
+from pupyteer.server.core.rbac import PermissionChecker
+from pupyteer.server.core.session_auth import SessionAuthorization
 from pupyteer.server.core.errors import (
     C2EngineError,
     ErrorCode,
@@ -120,6 +122,11 @@ class PupyteerEngine:
 
         # Authentication / authorization layer
         self._auth = AuthLayer(self._config, self._audit)
+        # The checker reads roles off the credential store, and the authoriser
+        # turns a token plus a verb into yes or no. Both belong to the engine so
+        # two consoles on one engine cannot disagree about what a token means.
+        self._rbac = PermissionChecker(self._auth, self._auth.operators)
+        self._authz = SessionAuthorization(self._auth, self._rbac)
 
         # Subsystem managers (wired in dependency order)
         self._profiles = ProfileManager(self._config, self._audit)
@@ -167,6 +174,14 @@ class PupyteerEngine:
     @property
     def auth(self) -> AuthLayer:
         return self._auth
+
+    @property
+    def authz(self) -> SessionAuthorization:
+        return self._authz
+
+    @property
+    def rbac(self) -> PermissionChecker:
+        return self._rbac
 
     @property
     def sessions(self) -> SessionManager:
@@ -401,6 +416,11 @@ class PupyteerEngine:
                 "listener_tls": getattr(
                     self._transports.listener_tls, "fingerprint", ""
                 ),
+                # What the config asks for, which is known before anything is
+                # listening. Without it the banner cannot tell "server.tls is off"
+                # from "nothing has started yet", and says the first when the
+                # operator's config says the second.
+                "tls_configured": bool(self._config.get("server.tls", True)),
                 # True when registrations must carry the enrollment secret,
                 # False when the listener accepts anyone, None before it starts.
                 "agent_auth": self._transports.listener_requires_auth,

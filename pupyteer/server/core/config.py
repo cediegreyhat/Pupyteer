@@ -15,6 +15,11 @@ from pupyteer.server.core.tls import DEFAULT_CERT_FILE, DEFAULT_KEY_FILE
 
 logger = logging.getLogger("pupyteer.config")
 
+#: Where operator credentials live. Deliberately not in this file: a config is
+#: copied, pasted into tickets and backed up, and a password in it becomes the
+#: property of everyone who reads any of those.
+DEFAULT_OPERATORS_FILE = "./data/keys/operators.json"
+
 DEFAULT_CONFIG: Dict[str, Any] = {
     "server": {
         "host": "0.0.0.0",
@@ -60,9 +65,16 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "default": "HTTPS-Standard",
     },
     "security": {
+        # The console asks for a credential before it will run a verb that touches
+        # a session, a listener or an artifact. Turning this off means whoever
+        # holds the keyboard is admin, and the audit log says so as "unknown".
         "require_auth": True,
         "token_ttl": 3600,
         "max_failed_logins": 5,
+        # How long a name stays locked after `max_failed_logins` misses. It used to
+        # be forever, so five typos locked a team out of their own server.
+        "lockout_seconds": 300,
+        "operators_file": DEFAULT_OPERATORS_FILE,
     },
     "paths": {
         "payload_artifacts": "./payloads/artifacts",

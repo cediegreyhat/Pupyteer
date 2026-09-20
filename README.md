@@ -34,6 +34,13 @@ pupyteer --debug
 
 `pupyteer` is the single installed entry point (`pupyteer.main:main`).
 
+The console asks for a credential before it opens any listener. The first run,
+with an empty credential file, generates one admin password, prints it once, and
+tells you to add your own with `operator add` — the same shape as the enrollment
+secret. `login` / `logout` / `whoami` work from the prompt, and a token that
+expires mid-session asks you back in without stopping the engine or dropping the
+sessions that are live.
+
 ### Generate a Payload
 
 Either from the console:
@@ -175,9 +182,9 @@ PUPYTEER
   │   ├── Module Registry      — pluggable modules with ABC interface
   │   ├── Payload Manager      — build, versioning, artifact lifecycle
   │   ├── Evasion Engine       — obfuscation + Litterbox analysis
-  │   ├── Auth Layer           — roles/JWT implemented, not yet wired
+  │   ├── Auth Layer           — console login, hashed credential file, tokens
   │   ├── Audit Logger         — structured JSON with redaction
-  │   └── RBAC                 — VIEWER/OPERATOR/ADMIN/SYSTEM
+  │   └── RBAC                 — VIEWER/OPERATOR/ADMIN/SYSTEM, default-deny verb table
   │
   ├── Agent (Stub)
   │   ├── Core agent loop
@@ -205,9 +212,9 @@ PUPYTEER
 | **Sessions** | list/info/interact/rename/kill/tag/search/route, chunked file upload & download, screen capture, audit trail |
 | **Tasks** | Priority queue (CRITICAL → BACKGROUND), async execution, tracking |
 | **Evasion** | XOR/AES/RC4 obfuscation, PE manipulation, anti-sandbox/debug/VM, Litterbox integration |
-| **Security** | audit trail with redaction, input validation, TLS on callbacks by default (see Security for what is not wired) |
-| **Audit** | JSON-structured logs, operator attribution, redaction, rotation, query API |
-| **TUI** | ASCII banner, themes, autocomplete, history, resize handling, dashboard |
+| **Security** | console login with roles and a default-deny verb table, audit trail with redaction, input validation, TLS on callbacks by default (see Security for what is not wired) |
+| **Audit** | JSON-structured logs, operator attribution bound to the sign-in, redaction, rotation, query API |
+| **TUI** | ASCII banner, themes, autocomplete, history, resize handling, dashboard, login and re-auth in place |
 
 ---
 
@@ -269,7 +276,7 @@ git-ignored.
 .venv/bin/python -m pytest pupyteer/tests/integration/ -v
 ```
 
-**Current test count: 838 tests passing** (`pytest pupyteer/tests`)
+**Current test count: 906 tests passing** (`pytest pupyteer/tests`)
 
 ---
 
@@ -281,7 +288,9 @@ section describes what the running code does, not what its modules could do.
 
 ### What works today
 
-- **Audit logging** — operator actions recorded with attribution
+- **Audit logging** — operator actions recorded with attribution, in
+  `audit.log_file` (`./logs/audit.json` by default), rotated at `audit.max_bytes`
+  or daily and kept for `audit.backup_count`
 - **Credential redaction** — secrets are kept out of audit logs
 - **Input validation** — operator inputs checked before execution
 - **Transport TLS with certificate pinning** — on by default (`server.tls`), so
@@ -309,6 +318,21 @@ section describes what the running code does, not what its modules could do.
   the port that was probed, not to whichever listener you happened to start first.
 - **Verification gates** — `scripts/verify_secure_defaults.py --strict` and
   `scripts/audit_deps.py` both exit non-zero on findings
+- **Operator login and role gate** — the console will not start the engine until a
+  credential is accepted, and every verb is checked against that sign-in at
+  dispatch. Credentials live in their own file (`security.operators_file`, mode
+  `0600`, salted `scrypt` hashes with the parameters stored per entry), never in
+  the config; the shipped `changeme` is gone from both, and
+  `verify_secure_defaults.py --strict` fails if a plaintext credential comes back.
+  Roles are `viewer` / `operator` / `admin`, resolved from a complete default-deny
+  table: a verb nobody wrote down resolves to `unclassified` and is refused rather
+  than becoming an open door, and a test fails if a registered verb is missing from
+  the table or touches a target while public. Authority follows the **token**, not
+  the name — the permission set is frozen at login, so rewriting `operator.name`
+  renames nothing that authorises (the console refuses that key and
+  `security.*` outright, and audits the attempt). A wrong name and a wrong
+  password cost the same time to an observer, and failed logins lock an account out
+  for `security.lockout_seconds`, which then decays rather than needing a restart.
 
 ### What does not work yet
 
@@ -319,12 +343,17 @@ section describes what the running code does, not what its modules could do.
   strands everything already in the field — there is no re-keying channel, because
   an agent that cannot register cannot receive a new secret. `server.agent_auth:
   false` removes the check entirely.
-- **There is no operator login in the running tool.** `server/core/auth.py` and
-  `agent/core/auth.py` implement roles, JWT and a challenge-response signer, and
-  `security.operators` in the default config carries an `admin` entry — but
-  nothing calls `authenticate()`, so no code path enforces any of it. The console
-  is local-only today, which is why this is not yet exposed; it is not a defence.
-  Do not treat the shipped credential as a real password.
+- **Login gates the console, not the network.** Whoever can reach a listener
+  still only gets what TLS and enrollment (`server.agent_auth`) allow, and `--headless`
+  runs the server with no console to sign in to at all. `agent/core/auth.py`'s
+  JWT/challenge-response code is still not wired into the agent-channel protocol,
+  so there is no per-operator authorisation of what reaches a session — the check
+  happens before the console dispatches a verb, and nowhere else. Signing in is
+  also not what protects the keyboard: anyone who can read the terminal while a
+  token is live, or who can write `data/keys/operators.json`, is operator. And an
+  `admin` can move `audit.log_file` in the config or delete the file — attribution
+  says who the console blames, it is not tamper-proofing against the person it
+  blames.
 - **There is no payload-level cipher.** `StubConfig.obfuscation_key` keys the
   string-table XOR used to obfuscate the script; it is not, and never was, an
   encryption layer for the channel. Confidentiality comes from TLS only.
