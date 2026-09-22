@@ -10,7 +10,8 @@ wrapped in TLS when the config supplies an ``ssl_context`` (server.tls).
 Message types:
     Agent → Server:
         {"type": "register", "hostname": "...", "os": "...", "arch": "...",
-         "username": "...", "agent_version": "...", "auth": "<enrollment secret>"}
+         "username": "...", "agent_version": "...", "auth": "<enrollment secret>",
+         "capabilities": ["exec", "fs_get", ...], "max_line": 65536}
         {"type": "checkin", "session_id": "...", "beacon": "<beacon token>"}
         {"type": "output", "session_id": "...", "command_id": "...",
          "output": "...", "beacon": "<beacon token>"}
@@ -36,6 +37,9 @@ from typing import Any, Dict, List, Optional
 
 from pupyteer.server.core.enrollment import beacon_accepts, new_beacon_token
 from pupyteer.server.core.logging import AuditLogger
+from pupyteer.server.sessions.capabilities import (
+    declared_capabilities, declared_max_line,
+)
 from pupyteer.server.sessions.manager import SessionInfo
 
 logger = logging.getLogger("pupyteer.transports.listener")
@@ -502,6 +506,14 @@ class AgentListener:
             username=msg.get("username", "unknown"),
             agent_version=msg.get("agent_version", "unknown"),
             remote_address=remote,
+            # What the payload says it carries, not what this build shipped: a
+            # session is created from this message and nothing else, so the only
+            # account of the binary on the target is the one the binary gives.
+            # A payload built before either field existed declares neither, and is
+            # left with shell commands and no structured tasking.
+            capabilities=declared_capabilities(msg.get("capabilities")),
+            max_line=(declared_max_line(msg.get("max_line"))
+                      if msg.get("max_line") else 0),
             # Handed out once, in the reply below, and never shown to an operator.
             # Everything after this line has to bring it back or it is a stranger
             # wearing a session id.
@@ -528,6 +540,9 @@ class AgentListener:
                 "arch": info.arch,
                 "username": info.username,
                 "remote_address": remote,
+                # What was deployed is a question the report asks eventually, and
+                # this is the only moment anyone records the payload's own answer.
+                "capabilities": list(info.capabilities),
             },
             session=registered_id,
         )
@@ -589,6 +604,13 @@ class AgentListener:
 
         commands = []
         for cmd in pending:
+            # Queued only. A command the queue already answered — a refusal the
+            # implant could not have carried — has no business going down the
+            # wire, and handing it out here would overwrite the answer with
+            # "delivered" and leave the operator waiting on output that was
+            # written before the request ever existed.
+            if cmd.get("status") != "queued":
+                continue
             commands.append({
                 "command_id": cmd["command_id"],
                 "command": cmd["command"],

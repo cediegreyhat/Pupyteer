@@ -22,7 +22,7 @@ from pupyteer.server.modules.registry import (
     ModuleState,
     ModuleHealth,
 )
-from pupyteer.server.sessions import transfer
+from pupyteer.server.sessions import capabilities, transfer
 
 
 # ─── Fixtures ────────────────────────────────────────────────────────
@@ -399,6 +399,13 @@ class TestModuleExecution:
         queued: list = []
 
         class _Stub:
+            async def get(self, session_id: str):
+                # A real session answers this, and the transfer loop asks it how
+                # long a line the agent reads before sizing a chunk. 0 is the
+                # undeclared answer, which is the conservative one.
+                return type("Session", (), {"session_id": session_id,
+                                            "max_line": 0})()
+
             async def interact(self, session_id: str, command: str) -> str:
                 command_id = f"cmd-{len(queued)}"
                 queued.append({"command_id": command_id, "command": command,
@@ -524,6 +531,13 @@ class TestModuleExecution:
         class _DiskFull:
             def __init__(self) -> None:
                 self.calls = 0
+
+            async def get(self, session_id: str):
+                # The stub that declares a line this long is the Python agent, and
+                # it is what lets the module keep its own chunk size, so the
+                # transfer spans two chunks and the second one fails.
+                return type("Session", (), {"session_id": session_id,
+                                            "max_line": capabilities.MAX_LINE_CAP})()
 
             async def interact(self, session_id: str, command: str) -> str:
                 self.calls += 1
@@ -979,6 +993,194 @@ class TestAntiForensicsDisabled:
         registry.discover()
         failed = {h["name"] for h in registry.list_health() if h["state"] == "failed"}
         assert "file:antiforensics" in failed
+
+
+# ─── Implant Action Modules (ping / privesc / screenshot / migrate) ───
+
+
+class TestImplantActionModules:
+    """Modules that wrap structured agent actions already implemented in the stub.
+
+    These use a fake session manager that answers by the action the module
+    dispatched, so a test can assert both the task sent and how the reply is
+    parsed. As with the file modules, a refusal or a malformed reply must surface
+    as an error, never as an empty success.
+    """
+
+    @staticmethod
+    def _session(session_id: str = "sess-1") -> Any:
+        return type(
+            "Session", (),
+            {"session_id": session_id, "hostname": "test-host", "os": "linux",
+             "arch": "x64", "username": "root", "remote_address": "127.0.0.1:1",
+             "connected_at": 0, "last_checkin": 0},
+        )()
+
+    @staticmethod
+    def _agent(replies: Dict[str, Any]) -> Any:
+        """Answer each dispatched structured task by its ``action``.
+
+        ``replies`` maps an action name to the object the agent returns; the
+        queued raw commands are recorded so a test can check what was sent.
+        """
+        queued: list = []
+
+        class _Stub:
+            async def get(self, session_id: str):
+                return type("Session", (), {"session_id": session_id,
+                                            "max_line": 0})()
+
+            async def interact(self, session_id: str, command: str) -> str:
+                command_id = f"cmd-{len(queued)}"
+                queued.append({"command_id": command_id, "command": command,
+                               "status": "queued", "result": None})
+                return command_id
+
+            async def get_pending_commands(self, session_id: str) -> list:
+                for entry in queued:
+                    if entry["status"] != "queued":
+                        continue
+                    task = json.loads(entry["command"])
+                    reply = replies.get(task.get("action"), {"error": "unhandled"})
+                    entry["status"] = "completed"
+                    entry["result"] = json.dumps(reply)
+                return queued
+
+        stub = _Stub()
+        stub.queued = queued
+        return stub
+
+    @staticmethod
+    def _sent_task(agent: Any) -> Dict[str, Any]:
+        return json.loads(agent.queued[0]["command"])
+
+    # -- ping --
+
+    @pytest.mark.asyncio
+    async def test_ping_reports_the_agent_id(self, registry):
+        registry.discover()
+        agent = self._agent({"ping": {"pong": True, "id": "abc123"}})
+        result = await registry.execute(
+            "ping", self._session(), {}, session_manager=agent)
+        assert result["status"] == "ok"
+        assert result["agent_id"] == "abc123"
+        assert result["responsive"] is True
+        assert self._sent_task(agent)["action"] == "ping"
+
+    @pytest.mark.asyncio
+    async def test_ping_without_an_agent_is_an_error(self, registry):
+        registry.discover()
+        result = await registry.execute("ping", self._session(), {})
+        assert result["status"] == "error"
+        assert "nothing was sent" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_ping_rejects_a_reply_that_is_not_a_pong(self, registry):
+        registry.discover()
+        agent = self._agent({"ping": {"id": "abc"}})
+        result = await registry.execute(
+            "ping", self._session(), {}, session_manager=agent)
+        assert result["status"] == "error"
+
+    # -- privesc --
+
+    @pytest.mark.asyncio
+    async def test_privesc_suggest_returns_structured_findings(self, registry):
+        registry.discover()
+        payload = {"check": {"euid": 1000, "suid_binaries": ["/usr/bin/find"]},
+                   "suggestions": ["GTFOBin: /usr/bin/find"]}
+        agent = self._agent({"privesc_suggest": payload})
+        result = await registry.execute(
+            "privesc", self._session(), {}, session_manager=agent)
+        assert result["status"] == "ok"
+        assert result["suggestions"] == ["GTFOBin: /usr/bin/find"]
+        assert self._sent_task(agent)["action"] == "privesc_suggest"
+
+    @pytest.mark.asyncio
+    async def test_privesc_check_mode_dispatches_the_check(self, registry):
+        registry.discover()
+        agent = self._agent({"privesc_check": {"euid": 0, "is_admin": True}})
+        result = await registry.execute(
+            "privesc", self._session(), {"mode": "check"}, session_manager=agent)
+        assert result["status"] == "ok"
+        assert result["check"]["is_admin"] is True
+        assert self._sent_task(agent)["action"] == "privesc_check"
+
+    @pytest.mark.asyncio
+    async def test_privesc_rejects_an_unknown_mode(self, registry):
+        registry.discover()
+        result = await registry.execute(
+            "privesc", self._session(), {"mode": "exploit"})
+        assert result["status"] == "error"
+        assert "mode" in result["error"].lower()
+
+    # -- screenshot --
+
+    @pytest.mark.asyncio
+    async def test_screenshot_writes_the_image_to_disk(self, registry, tmp_path):
+        registry.discover()
+        raw = b"\x89PNG fake image bytes"
+        payload = {"format": "png", "bytes": len(raw),
+                   "data": base64.b64encode(raw).decode()}
+        agent = self._agent({"screenshot": payload})
+        dest = tmp_path / "shot.png"
+        result = await registry.execute(
+            "screenshot", self._session(), {"local_path": str(dest)},
+            session_manager=agent)
+        assert result["status"] == "ok"
+        assert result["bytes_written"] == len(raw)
+        assert dest.read_bytes() == raw
+        assert self._sent_task(agent)["action"] == "screenshot"
+
+    @pytest.mark.asyncio
+    async def test_screenshot_surfaces_an_agent_error(self, registry):
+        registry.discover()
+        agent = self._agent({"screenshot": {"error": "no working screenshot tool"}})
+        result = await registry.execute(
+            "screenshot", self._session(), {}, session_manager=agent)
+        assert result["status"] == "error"
+        assert "screenshot tool" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_screenshot_rejects_data_that_is_not_base64(self, registry, tmp_path):
+        registry.discover()
+        agent = self._agent({"screenshot": {"format": "png", "data": "!!!notb64!!!"}})
+        result = await registry.execute(
+            "screenshot", self._session(),
+            {"local_path": str(tmp_path / "x.png")}, session_manager=agent)
+        assert result["status"] == "error"
+        assert "base64" in result["error"]
+
+    # -- migrate --
+
+    @pytest.mark.asyncio
+    async def test_migrate_dispatches_target_and_technique(self, registry):
+        registry.discover()
+        agent = self._agent({"migrate": {"ok": True, "pid": 4321}})
+        result = await registry.execute(
+            "migrate", self._session(),
+            {"target": "4321", "technique": "reflective"}, session_manager=agent)
+        assert result["status"] == "ok"
+        task = self._sent_task(agent)
+        assert task["action"] == "migrate"
+        assert task["target"] == "4321"
+        assert task["technique"] == "reflective"
+
+    @pytest.mark.asyncio
+    async def test_migrate_requires_a_target(self, registry):
+        registry.discover()
+        result = await registry.execute("migrate", self._session(), {})
+        assert result["status"] == "error"
+        assert "target" in result["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_migrate_reports_a_refused_migration(self, registry):
+        registry.discover()
+        agent = self._agent({"migrate": {"ok": False, "error": "OpenProcess failed"}})
+        result = await registry.execute(
+            "migrate", self._session(), {"target": "1"}, session_manager=agent)
+        assert result["status"] == "error"
+        assert "OpenProcess" in result["error"]
 
 
 if __name__ == "__main__":

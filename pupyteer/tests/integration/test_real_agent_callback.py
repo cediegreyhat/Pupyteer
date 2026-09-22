@@ -1060,6 +1060,30 @@ class TestCommandVocabulary:
         assert agent._parse_command("sysinfo") == {"action": "sysinfo"}
         assert agent._parse_command("ps") == {"action": "processes"}
 
+    def test_every_typed_verb_is_a_word_the_agent_understands(self, tmp_path):
+        """The server's verb table and this parser have to say the same words.
+
+        The queue classifies a typed line with `TYPED_VERBS` and refuses only
+        what the implant did not declare. So a word in that table which this
+        parser does not turn into the module it names is never refused: it is
+        delivered, handed to a shell that has not heard of it, and the shell's
+        complaint comes back as an answer about the target — which is the exact
+        failure the capability gate was built to prevent. `processes` sat there
+        for one revision of this table before the test caught up with it.
+        """
+        from pupyteer.server.sessions import capabilities
+
+        loaded = _load_agent_module(_generate_agent(
+            tmp_path, "verbs", port=1, sleep=1, jitter=0,
+            modules={"exec": True, "recon": True, "fs": True,
+                     "privesc": True, "screenshot": True},
+            migration=True))
+        answered = {verb: loaded._parse_command(verb).get("action")
+                    for verb in capabilities.TYPED_VERBS}
+        lost = {verb: act for verb, act in answered.items()
+                if act != capabilities.TYPED_VERBS[verb]}
+        assert not lost, f"typed verbs that reach the shell, not the module: {lost}"
+
     def test_arguments_reach_module_actions(self, agent):
         assert agent._parse_command("fs_list /etc") == {"action": "fs_list", "path": "/etc"}
 

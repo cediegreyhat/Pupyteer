@@ -19,6 +19,9 @@ from typing import Dict, List, Optional, Any
 
 from pupyteer.server.core.config import ConfigManager
 from pupyteer.server.core.logging import AuditLogger
+from pupyteer.server.sessions.capabilities import (
+    SHELL, refusal, required_capability,
+)
 
 logger = logging.getLogger("pupyteer.sessions")
 
@@ -53,6 +56,15 @@ class SessionInfo:
     #: it is *this* one. Empty means no beacon from this session can be verified,
     #: so a session conjured anywhere other than the listener is inert.
     beacon_token: str = ""
+    #: What the payload said it can do, at registration. Enforced by the command
+    #: queue rather than trusted for display: a tasking this list does not cover
+    #: is answered here instead of being sent to a shell that would invent a
+    #: reply. Empty means an agent built before the claim existed, which is
+    #: trusted with shell text and nothing structured.
+    capabilities: List[str] = field(default_factory=list)
+    #: The longest line this agent reads in one piece, so a chunk is sized to
+    #: something that survives the trip. 0 means undeclared.
+    max_line: int = 0
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -307,17 +319,45 @@ class SessionManager:
         import uuid
         command_id = str(uuid.uuid4())[:12]
 
+        # The implant decides what it can be asked to do, and the queue holds it
+        # to that. A tasking outside its declaration is answered here rather than
+        # sent: on the wire it would come back as whatever a shell says about a
+        # word it has never seen, and an operator cannot tell that output from a
+        # result. Refused commands therefore complete without ever being delivered.
+        want = required_capability(command)
+        refused = want != SHELL and want not in session.capabilities
+
+        now = time.time()
         cmd_entry = {
             "command_id": command_id,
             "command": command,
-            "queued_at": time.time(),
-            "status": "queued",
-            "result": None,
+            "queued_at": now,
+            "status": "completed" if refused else "queued",
+            "result": refusal(want, session.capabilities) if refused else None,
         }
+        if refused:
+            cmd_entry["completed_at"] = now
+            cmd_entry["refused"] = want
 
         if session_id not in self._command_queue:
             self._command_queue[session_id] = []
         self._command_queue[session_id].append(cmd_entry)
+
+        if refused:
+            # `task_status` stays as it was: the session is not busy, and marking
+            # it executing would hide the command that is.
+            self._audit.log_event(
+                "session_command_unsupported",
+                {"session_id": session_id, "command_id": command_id,
+                 "command": command, "capability": want,
+                 "declared": list(session.capabilities)},
+                session=session_id,
+            )
+            logger.info(
+                "Command %s refused for session %s: %s",
+                command_id, session_id, cmd_entry["result"],
+            )
+            return command_id
 
         # Update task status
         session.task_status = "executing"

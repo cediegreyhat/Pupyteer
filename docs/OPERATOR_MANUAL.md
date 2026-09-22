@@ -204,8 +204,20 @@ pupyteer > sessions info a1b2c3d4e5f6
     tags: ['dc', 'file']
     task_status: idle
     remote_address: 192.168.1.100:54321
+    capabilities: ['exec', 'ping', 'sysinfo', 'processes', 'network', 'fs_list', 'fs_get', 'fs_put', 'shutdown']
+    max_line: 65536
     uptime_seconds: 5149.0
 ```
+
+`capabilities` is what that payload said it can do when it registered, and the
+command queue holds it to that list: tasking a session with something it did not
+declare is refused on the team server, prints the implant's own claim, and never
+reaches the host. A session that reports
+`(none declared — shell commands only)` was built before the field existed, so it
+takes shell commands and no structured tasking, and `max_line` reports the buffer
+transfers are sized against instead of a number the agent gave. Neither blank is a
+bug — both answer the question "what did I drop on this host", which is what
+decides whether the fix is a new payload or a different session.
 
 ### Searching Sessions
 
@@ -245,7 +257,12 @@ pupyteer > sessions kill a1b2c3d4e5f6
   Session a1b2c3d4e5f6 killed.
 ```
 
-Killing a session terminates the agent connection and removes it from tracking. The audit log records the operator, session ID, and reason.
+Killing a session orders the agent to stop and removes it from tracking. The order
+is an `exit` on the normal command queue, so it reaches the implant on its next
+check-in; both payloads act on it and exit the process, and the session is dropped
+after the grace period either way. The audit log records the operator, session ID,
+and reason. A word the payload does not know is not an order, so a session built
+before the verb was answered keeps beaming after `sessions kill` — rebuild it.
 
 ### Session Lifecycle
 
@@ -622,6 +639,7 @@ Every significant operator action emits a structured JSON audit entry:
 | `session_timeout` | Agent timed out (no checkin) |
 | `session_tagged` | Tags added to session |
 | `session_renamed` | Session hostname changed |
+| `session_command_unsupported` | Tasking refused: the implant never declared that capability, so nothing was sent and nothing ran |
 | `task_created` | Task queued |
 | `task_completed` | Task finished successfully |
 | `task_failed` | Task encountered an error |
@@ -679,6 +697,26 @@ pupyteer > logs 50          # Show last 50 log lines
 - Type `help` for the full command list
 - Check for typos (commands are case-sensitive)
 - TAB completion shows available commands
+
+### Tasking Refused
+
+**Symptom:** `refused: this implant declared ..., and not '<capability>'`
+
+- Nothing was sent to the host, so there is no target output waiting. The payload
+  never claimed that verb at registration and `sessions info <id>` prints the claim
+  it did make.
+- Shell text is never refused — both payloads can hand a string to a command
+  interpreter. Structured tasking (screenshots, file transfer, privilege checks)
+  needs a payload that carries it, so `payloads build` one that does or use a
+  session that already declared it.
+- A payload built before registration carried the field shows
+  `(none declared — shell commands only)` and cannot take structured tasking at
+  all; rebuild it from this server.
+- Verbs that need an argument are the Python agent's vocabulary, not the `.exe`'s.
+  Typing `fs_get C:\reports\q3.xlsx` at a Windows payload passes the gate because
+  that implant did declare `fs_get`, and then reaches cmd.exe, which has not heard
+  of it. `sessions download` / `sessions upload` build the structured task the
+  implant answers, so use those for a `.exe` session.
 
 ### Authentication Lockout
 

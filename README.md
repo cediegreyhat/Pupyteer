@@ -221,12 +221,16 @@ temp directory; there is no third-party dependency to ship.
 The module library reaches the same implant through the same command channel, so
 `use <module>`, `set <OPTION> <value>` and `sessions route <session_id> <module>`
 run it against a live session — `file_list`, `download`, `upload` and `discovery`
-dispatch `fs_list`/`fs_get`/`fs_put`/`exec` tasks and report what the agent
-answered. A module that cannot reach an agent returns an error naming that fact
+dispatch `fs_list`/`fs_get`/`fs_put`/`exec` tasks, and `ping`, `privesc`,
+`screenshot` and `migrate` wrap the structured actions the agent already answers,
+returning parsed results you can run as background jobs or across every session.
+A module that cannot reach an agent returns an error naming that fact
 rather than an empty success, a transfer that fails part-way reports how many
 bytes did arrive, and a session that will not accept a command at all is reported
 that way immediately instead of after the full wait — a gone implant is not a slow
-one, and the difference decides whether you wait or move on.
+one, and the difference decides whether you wait or move on. An action the payload
+was not built to carry (say `screenshot` without `--screenshot`) is refused with
+that reason, never answered with a result the target did not produce.
 
 ---
 
@@ -424,6 +428,33 @@ section describes what the running code does, not what its modules could do.
   before this still registers and is then refused on every beacon, so it never runs
   a command and re-registers instead — `beacons_refused` climbing while nothing
   arrives is that payload, and it needs rebuilding from this server.
+- **Implants declare what they can be asked to do** — `register` carries
+  `capabilities` and `max_line` as well as the hostname, and the command queue holds
+  the session to that list. It exists because the two agents are not the same size:
+  the Python stub has handlers for transfer, recon, privilege checks and screens, and
+  the Windows `.exe` is a few thousand lines of C whose command execution meant
+  `cmd.exe /c "<the string>"`. A structured tasking no implant can perform used to go
+  down the queue anyway and come back as whatever a shell said about a word it had
+  never seen — and an operator reading `screenshot is not recognized as an internal
+  or external command` believes the *target* said it. That is the thing being fixed:
+  not a refusal for its own sake but a wrong answer that is actionable, that decides
+  the next tasking and lands in a report attributed to a host that ran nothing. A
+  refused command never leaves the server: it completes in the queue with a refusal
+  that names the implant's own claim and says nothing ran, `sessions info` prints that
+  claim (or says `none declared — shell commands only`), and
+  `session_command_unsupported` goes to the audit trail. Two rules keep it usable.
+  Shell text is always allowed, because handing a string to a command interpreter is
+  the one thing both agents genuinely agree on, and the payloads already in the field
+  predate the fields: they declare nothing and are trusted with shell and nothing
+  structured, which is a thing to say out loud rather than discover through base64
+  that never arrives. `max_line` is the same conversation on the transfer side — the
+  implant reads with a buffer of its own, so a chunk is sized to something that
+  survives the trip instead of being dropped at the socket, which is how a download
+  comes back short with a check mark next to it. The other half of the promise is
+  kept in the payloads: the Windows `.exe` now answers the verbs it announces —
+  `ping`, `sysinfo`, `processes`, `fs_list`, `exit` — instead of handing them to
+  cmd.exe, and the Python stub knows every word the server's verb table lets
+  through, which a test checks by parsing the table rather than by trusting it.
 - **Verification gates** — `scripts/verify_secure_defaults.py --strict` and
   `scripts/audit_deps.py` both exit non-zero on findings
 - **Operator login and role gate** — the console will not start the engine until a
@@ -472,6 +503,17 @@ section describes what the running code does, not what its modules could do.
 - **There is no payload-level cipher.** `StubConfig.obfuscation_key` keys the
   string-table XOR used to obfuscate the script; it is not, and never was, an
   encryption layer for the channel. Confidentiality comes from TLS only.
+- **A capability claim is the payload's own word, not a verified fact.** Nothing
+  checks it against the binary, because a session is created from its `register`
+  message and carries no payload id to look a claim up on. So the gate is about
+  reporting and not about authority: an implant that overstates what it carries
+  still gets the tasking queued and can answer it with whatever it likes, exactly
+  as it could before this existed. What it cannot do now is fail in the one
+  direction that fooled an operator — claiming nothing about a verb and having a
+  shell invent the answer. Adding a verb to the agent therefore means adding it to
+  `KNOWN_CAPABILITIES` as well; a name outside that vocabulary is ignored at
+  registration rather than stored, which also means a payload cannot grant itself
+  a permission by inventing a word for it.
 
 Treat network-level access control on the team server as part of the deployment.
 

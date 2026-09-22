@@ -332,9 +332,13 @@ summary = await session_mgr.summary()
 # {"total": 2, "by_os": {"Windows": 1, "Linux": 1}, "by_state": {"connected": 2}, "active": 2}
 ```
 
-**SessionInfo Fields:** `session_id`, `hostname`, `os`, `arch`, `username`, `state`, `connected_at`, `last_checkin`, `profile`, `agent_version`, `tags`, `task_status`, `remote_address`, `metadata`.
+**SessionInfo Fields:** `session_id`, `hostname`, `os`, `arch`, `username`, `state`, `connected_at`, `last_checkin`, `profile`, `agent_version`, `tags`, `task_status`, `remote_address`, `capabilities`, `max_line`, `metadata`.
 
 **Session States:** `CONNECTED`, `DISCONNECTED`, `TIMEOUT`, `ERROR`, `KILLED`.
+
+**Capability gate.** `capabilities` and `max_line` come from the agent's `register` message, not from the server's build records — a session carries no payload id, so the payload's own claim is the only account of what is on the target. `interact()` resolves each command line to the one capability it needs (`sessions/capabilities.py`: a structured task needs its `action`, a recognised verb needs that verb's capability, anything else needs `exec`) and refuses what the session did not claim. A refusal completes in the queue with the refusal text as its result and is never handed out on a check-in, so the operator reads a refusal that names the implant's claim instead of cmd.exe's complaint about a word it had never seen. Shell text is not gated: both agents execute it. `max_line` sizes transfer chunks — see `sessions/transfer.py:chunk_budget()`, which caps a chunk at what fits one line of that agent's own reading buffer after base64 and framing.
+
+A claim is only worth enforcing if the payload that made it answers the word, so three tables have to agree: `TYPED_VERBS`, the generated stub's `_parse_command`, and `bare_verb_action()` in `pe_template.c`. `test_every_typed_verb_is_a_word_the_agent_understands` checks the first two by parsing every verb in the server's table; the C side is checked against a live implant in `test_pe_payload_declares_the_tasks_it_answers`. The C payload routes a line that holds *nothing but* a recognised verb — `ping`, `sysinfo`, `network`, `ps`/`processes`, `fs_list`, `exit`/`shutdown` — to its own handler; anything with an argument after it is the shell's, because `ping host.example` is the host's ping program and the operator means that one. That is also what makes `sessions kill` work on a Windows implant: the order is a queued `exit`, and a payload that handed the word to cmd.exe exited its own child process and kept beaming at a session the server had already written off.
 
 **Background Monitor:** Runs every 30 seconds. Sessions exceeding `session.timeout_seconds` since last check-in are marked `TIMEOUT`.
 
@@ -479,16 +483,46 @@ compatible = registry.list_compatible("windows", "x64")
 1. `pupyteer/server/modules/builtin/`
 2. Paths from `config["modules.paths"]`
 
-Each `.py` file is loaded via `importlib.util.spec_from_file_location`. The registry finds the first `PupyModule` subclass in each file.
+Each `.py` is loaded via `importlib.util.spec_from_file_location`. The registry
+registers **every** `PupyModule` subclass it finds in the file, not just the
+first, so one file can contribute several modules. A file that raises on import
+is skipped and recorded as a failed module so the console can warn about it.
 
 ### Built-in Modules
 
-| Module | Category | Description |
-|--------|----------|-------------|
-| `sysinfo` | RECON | Collect system info (hostname, OS, arch, user) |
-| `ps` | RECON | Enumerate running processes |
-| `netinfo` | RECON | Collect network interfaces, routes, connections |
-| `exec` | EXECUTION | Execute shell commands on target |
+Modules in `pupyteer/server/modules/builtin/`:
+
+| Module | Category | File | Description |
+|--------|----------|------|-------------|
+| `sysinfo` | RECON | `recon.py` | Collect system info (hostname, OS, arch, user) |
+| `ps` | RECON | `recon.py` | Enumerate running processes |
+| `netinfo` | RECON | `recon.py` | Collect network interfaces, routes, connections |
+| `discovery` | RED_TEAM | `recon.py` | Run discovery commands (whoami, ipconfig, ...) |
+| `credential_collect` | RED_TEAM | `recon.py` | Report credential locations (**simulation only**) |
+| `lateral_sim` | RED_TEAM | `recon.py` | Enumerate lateral paths (**simulation only**) |
+| `assess` | RED_TEAM | `recon.py` | Run security-assessment checks |
+| `exec` | EXECUTION | `recon.py` | Execute shell commands on target |
+| `upload` | FILE_OPS | `recon.py` | Upload a file to the target (chunked) |
+| `download` | FILE_OPS | `recon.py` | Download a file from the target (chunked) |
+| `file_list` | FILE_OPS | `recon.py` | List files and directories on the target |
+| `ping` | RECON | `implant_actions.py` | Liveness check — confirm the agent replies |
+| `screenshot` | RECON | `implant_actions.py` | Capture the target screen to a local PNG |
+| `privesc` | RED_TEAM | `implant_actions.py` | Enumerate privilege-escalation posture |
+| `migrate` | RED_TEAM | `implant_actions.py` | Migrate the agent into another process |
+| `evasion_test` | EVASION | `evasion.py` | Run detection/evasion test checks |
+| `evasion_config` | EVASION | `evasion.py` | Inspect evasion configuration |
+
+`implant_actions.py` modules wrap structured agent actions the Python stub
+already implements and that `sessions.capabilities` gates by declared capability.
+A payload built without the matching feature (e.g. `modules.screenshot`) gets a
+clear refusal rather than a fabricated result.
+
+The five anti-forensics modules in `antiforensics.py` (`log_clear`,
+`timestamp_match`, `artifact_wipe`, `prefetch_delete`, `recycle_clear`) are
+**intentionally not registered**: they destroy evidence on a host, carry no test
+coverage, and reference a `ModuleCategory` member that is deliberately left
+undefined. See `tests/unit/test_modules.py` — the disabled state is pinned as a
+reviewed invariant, not an import bug.
 
 ---
 

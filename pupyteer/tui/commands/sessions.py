@@ -21,6 +21,7 @@ import logging
 import time
 from typing import Any, Dict, List, Optional
 
+from pupyteer.server.sessions.capabilities import DEFAULT_MAX_LINE
 from pupyteer.server.sessions.manager import SessionState
 from pupyteer.server.sessions import transfer
 
@@ -387,6 +388,13 @@ async def sessions_info(tui: Any, args: List[str]) -> Dict[str, Any]:
         return {"status": "error", "error": f"Session not found: {session_id}"}
 
     d = session.to_dict()
+    # A blank field here is the answer to "what did I drop on this host", and
+    # reads like a bug rather than like a payload that could not say. Both
+    # defaults below are what the server then does with the session.
+    if not d.get("capabilities"):
+        d["capabilities"] = ["(none declared — shell commands only)"]
+    if not d.get("max_line"):
+        d["max_line"] = f"(undeclared — assumed {DEFAULT_MAX_LINE} bytes)"
     theme = tui._theme
     print(f"\n  Session Details:")
     for key, val in d.items():

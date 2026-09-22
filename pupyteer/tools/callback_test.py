@@ -333,7 +333,12 @@ class CallbackTestHarness:
 
         #: A command the listener has not finished with. Returning one of these
         #: would end the wait early and report the queue as a result.
-        in_flight = ("queued", "executing", "pending")
+        #: `delivered` belongs here as much as `queued` does: the listener marks a
+        #: command delivered as it hands it out, which is the moment the agent has
+        #: the command and not the moment it has answered. Leaving it out makes the
+        #: self-test depend on how fast a host replies — a slow one is reported as
+        #: `command ended as 'delivered': None` on a callback path that works.
+        in_flight = ("queued", "delivered", "executing", "pending")
 
         def peek():
             history = engine.call(
