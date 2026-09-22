@@ -94,6 +94,11 @@ class HTTPListener(AgentListener):
     async def stop(self) -> None:
         if self._server is not None:
             self._server.close()
+        # Cancel in-flight request handlers before wait_closed(): on Python 3.12+
+        # wait_closed() blocks until every connection task ends, so a request
+        # stalled inside _read_request would otherwise hang teardown.
+        await self._cancel_handler_tasks()
+        if self._server is not None:
             await self._server.wait_closed()
             self._server = None
         logger.info("HTTP agent listener stopped on %s:%d", self._host, self._port)
@@ -112,27 +117,29 @@ class HTTPListener(AgentListener):
     ) -> None:
         addr = writer.get_extra_info("peername") or ("unknown", 0)
         remote = f"{addr[0]}:{addr[1]}"
+        # Tracked before the first read so stop() cancels a request that stalls in
+        # _read_request rather than orphaning the task and socket.
+        self._track_current_handler()
         if not await self._upgrade_tls(reader, writer):
             await self._drop(writer)
             return
         self._stats["connections"] += 1
         try:
-            status, body = await self._serve_request(reader, remote)
-        except (ConnectionError, asyncio.IncompleteReadError, OSError):
-            writer.close()
-            return
-        try:
-            writer.write(self._render_response(status, body))
-            await writer.drain()
-            self._stats["bytes_sent"] += len(body)
-        except (ConnectionError, OSError):
-            pass
-        finally:
             try:
-                writer.close()
-                await writer.wait_closed()
-            except Exception:
+                status, body = await self._serve_request(reader, remote)
+            except (ConnectionError, asyncio.IncompleteReadError,
+                    asyncio.TimeoutError, OSError):
+                # A stalled/slowloris read (TimeoutError from the idle deadline) or
+                # a client that hung up: drop the connection, nothing to answer.
+                return
+            try:
+                writer.write(self._render_response(status, body))
+                await writer.drain()
+                self._stats["bytes_sent"] += len(body)
+            except (ConnectionError, OSError):
                 pass
+        finally:
+            await self._drop(writer)
 
     async def _serve_request(
         self, reader: asyncio.StreamReader, remote: str
@@ -168,10 +175,16 @@ class HTTPListener(AgentListener):
     async def _read_request(
         self, reader: asyncio.StreamReader
     ) -> Optional[Tuple[str, str, bytes]]:
-        """Parse the request line, headers and body, with hard size ceilings."""
+        """Parse the request line, headers and body, with hard size ceilings.
+
+        Each read is bounded by the idle timeout so a peer that opens the socket
+        and dribbles a header (slowloris) cannot hold the handler forever; a
+        timeout propagates out of _serve_request and the connection is dropped.
+        """
         head = b""
         while b"\n\n" not in head and b"\r\n\r\n" not in head:
-            chunk = await reader.readline()
+            chunk = await asyncio.wait_for(
+                reader.readline(), timeout=self._idle_timeout)
             if not chunk:
                 return None
             head += chunk
@@ -195,7 +208,9 @@ class HTTPListener(AgentListener):
         if length < 0 or length > MAX_BODY_BYTES:
             return None
 
-        body = await reader.readexactly(length) if length else b""
+        body = (await asyncio.wait_for(
+            reader.readexactly(length), timeout=self._idle_timeout)
+            if length else b"")
         if len(body) < length:
             return None
         return match.group("method"), match.group("path"), body

@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from pupyteer.tui.app import PupyteerTUI, TabCompleter
 from pupyteer.tui.commands import payloads as payloads_cmds
 from pupyteer.tui.commands import evasion as evasion_cmds
+from pupyteer.tui.commands import jobs as jobs_cmds
 from pupyteer.tui.commands import sessions as sessions_cmds
 
 
@@ -509,3 +510,155 @@ class TestSessionsRouteDispatch:
     async def test_usage_lists_route(self, live_tui, capsys):
         await live_tui.cmd_sessions(["frobnicate"])
         assert "route <id> <module>" in capsys.readouterr().out
+
+
+# ─── Background jobs are real ─────────────────────────────────────────
+
+
+class TestBackgroundJobs:
+    """`jobs` reads the engine's ModuleExecutor, and `sessions route
+    --background` launches a job that actually runs there.
+
+    Before this the jobs board was wired to the dead TaskManager (nothing ever
+    called `tasks.create()`), so `jobs list` was a permanently-empty table that
+    looked like it worked. These pin the executor to the operator surface and
+    prove a background job runs end to end without disturbing the foreground
+    path.
+    """
+
+    def _executor(self, session):
+        """A real in-process ModuleExecutor over a registry with one always-OK
+        module and a session manager that returns `session`.
+        """
+        from pupyteer.server.core.config import ConfigManager
+        from pupyteer.server.core.logging import AuditLogger
+        from pupyteer.server.modules.registry import (
+            ModuleRegistry, PupyModule, ModuleCategory)
+        from pupyteer.server.modules.executor import ModuleExecutor
+
+        class _AlwaysOk(PupyModule):
+            name = "always_ok"
+            version = "1.0.0"
+            description = "test module that always succeeds"
+            author = "test"
+            category = ModuleCategory.RECON
+
+            async def execute(self, sess, args):
+                return {"status": "ok", "session": args.get("SESSION")}
+
+        class _Sessions:
+            async def get(self, session_id):
+                return session
+
+        config = ConfigManager()
+        audit = AuditLogger(config)
+        registry = ModuleRegistry(config, audit)
+        registry._modules["always_ok"] = _AlwaysOk
+        executor = ModuleExecutor(
+            registry=registry, session_manager=_Sessions(), audit_logger=audit)
+        return executor
+
+    @staticmethod
+    def _connected_session():
+        return SimpleNamespace(
+            session_id="sess-1", hostname="web01", os="windows", arch="x64",
+            username="svc", state=SimpleNamespace(value="connected"))
+
+    # ── jobs list/info/kill read from and act on the executor ──
+
+    @pytest.mark.asyncio
+    async def test_jobs_list_reads_the_module_executor(self, tui, engine):
+        engine.modules.list_jobs = AsyncMock(return_value=[
+            {"job_id": "abc123def456", "module_name": "sysinfo",
+             "status": "completed", "session_id": "sess-1",
+             "created_at": "2026-01-01T00:00:00+00:00"},
+        ])
+        result = await jobs_cmds.jobs_list(tui, [])
+        assert result["status"] == "ok"
+        assert result["count"] == 1
+        assert result["jobs"][0]["job_id"] == "abc123def456"
+        engine.modules.list_jobs.assert_awaited_once()
+        # The dead task board must no longer back the jobs surface.
+        engine.tasks.list_all.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_jobs_kill_cancels_executor_job(self, tui, engine):
+        engine.modules.cancel_job = AsyncMock(return_value=True)
+        result = await jobs_cmds.jobs_kill(tui, ["abc123"])
+        assert result["status"] == "ok"
+        engine.modules.cancel_job.assert_awaited_once_with("abc123")
+
+    @pytest.mark.asyncio
+    async def test_jobs_kill_is_honest_about_a_job_it_cannot_cancel(self, tui, engine):
+        engine.modules.cancel_job = AsyncMock(return_value=False)
+        result = await jobs_cmds.jobs_kill(tui, ["gone"])
+        assert result["status"] == "error"
+        assert "not found or already finished" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_jobs_info_reads_executor_job(self, tui, engine):
+        engine.modules.get_job = AsyncMock(return_value={
+            "job_id": "abc123", "module_name": "sysinfo", "status": "completed",
+            "session_id": "sess-1", "result": {"status": "ok"}, "error": None})
+        result = await jobs_cmds.jobs_info(tui, ["abc123"])
+        assert result["status"] == "ok"
+        assert result["job"]["status"] == "completed"
+        engine.modules.get_job.assert_awaited_once_with("abc123")
+
+    # ── sessions route --background runs a real job to completion ──
+
+    @pytest.mark.asyncio
+    async def test_route_background_reaches_completed_and_is_listed(self, tui, engine):
+        session = self._connected_session()
+        executor = self._executor(session)
+        engine.modules = executor
+        engine.sessions = executor.sessions
+        # Foreground dispatch must not be touched by a background request.
+        engine.module_registry.execute = AsyncMock(
+            side_effect=AssertionError("background used the foreground path"))
+
+        result = await sessions_cmds.sessions_route(
+            tui, ["sess-1", "always_ok", "--background"])
+
+        assert result["status"] == "ok"
+        job_id = result["job_id"]
+        assert job_id
+
+        final = await executor.wait_for_job(job_id, timeout=5)
+        assert final is not None
+        assert final["status"] == "completed"
+        assert final["result"]["status"] == "ok"
+        assert final["result"]["session"] == "sess-1"
+
+        listed = await executor.list_jobs()
+        assert any(j["job_id"] == job_id for j in listed)
+        engine.module_registry.execute.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_route_background_merges_key_value_args(self, tui, engine):
+        session = self._connected_session()
+        executor = self._executor(session)
+        engine.modules = executor
+        engine.sessions = executor.sessions
+
+        result = await sessions_cmds.sessions_route(
+            tui, ["sess-1", "always_ok", "timeout=3", "--background"])
+        job_id = result["job_id"]
+        job = await executor.get_job(job_id)
+        assert job["args"]["timeout"] == "3"
+        assert job["args"]["SESSION"] == "sess-1"
+
+    @pytest.mark.asyncio
+    async def test_route_without_flag_stays_foreground(self, tui, engine):
+        session = self._connected_session()
+        engine.sessions.get = AsyncMock(return_value=session)
+        engine.module_registry.execute = AsyncMock(
+            return_value={"status": "ok", "output": "hi"})
+        engine.modules = MagicMock()
+        engine.modules.execute_job = AsyncMock()
+
+        result = await sessions_cmds.sessions_route(tui, ["sess-1", "sysinfo"])
+
+        assert result["status"] == "ok"
+        engine.module_registry.execute.assert_awaited_once()
+        engine.modules.execute_job.assert_not_called()

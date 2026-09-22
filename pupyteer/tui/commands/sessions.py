@@ -12,7 +12,8 @@ Provides MSF-style session interaction:
 - sessions rename <id> <name> — Relabel a session for operators
 - sessions tag <id> <tag> — Tag a session
 - sessions search <query> — Search sessions
-- sessions route <id> <module> — Run module on session
+- sessions route <id> <module> [KEY=VALUE ...] [--background] — Run module on
+  session, inline (foreground) or as a tracked background job
 """
 from __future__ import annotations
 
@@ -476,19 +477,71 @@ async def sessions_search(tui: Any, args: List[str]) -> Dict[str, Any]:
     return {"status": "ok", "query": query, "count": len(matches), "sessions": [s.to_dict() for s in matches]}
 
 
+async def _route_background(
+    tui: Any,
+    session_id: str,
+    module_name: str,
+    base_args: Dict[str, Any],
+    extra_tokens: List[str],
+) -> Dict[str, Any]:
+    """Launch a module run as a tracked job on the engine's ``ModuleExecutor``.
+
+    The executor dispatches through the same registry the foreground path uses
+    and owns the job record, so ``jobs list``/``jobs info`` report its real
+    status and ``jobs kill`` can actually cancel it.
+    """
+    module_args = dict(base_args)
+    for token in extra_tokens:
+        key, sep, value = token.partition("=")
+        if sep and key.strip():
+            module_args[key.strip()] = value
+
+    executor = tui._engine.modules
+    try:
+        job_id = await executor.execute_job(module_name, session_id, module_args)
+    except Exception as exc:
+        tui.render_error(f"Could not start background job: {exc}")
+        return {"status": "error", "error": f"Could not start background job: {exc}"}
+
+    tui.render_success(
+        f"Background job {job_id} started for module '{module_name}' "
+        f"on session {session_id}. Track it with 'jobs list' / 'jobs info {job_id}'.")
+    return {
+        "status": "ok",
+        "job_id": job_id,
+        "session_id": session_id,
+        "module": module_name,
+        "background": True,
+        "data": {
+            "job_id": job_id,
+            "module": module_name,
+            "session": session_id,
+            "state": "pending — poll 'jobs list'",
+        },
+    }
+
+
 async def sessions_route(tui: Any, args: List[str]) -> Dict[str, Any]:
     """Run a module on a session.
 
-    Usage: sessions route <id> <module>
+    Usage: sessions route <id> <module> [KEY=VALUE ...] [--background]
 
-    Dispatches the specified module against the given session.
+    Dispatches the specified module against the given session. Without
+    ``--background`` the module runs inline and its answer is rendered here,
+    exactly as before. With ``--background`` the run is handed to the engine's
+    ``ModuleExecutor`` as a tracked job that returns immediately; ``jobs list``
+    then shows its real status and ``jobs kill`` can cancel it.
     """
-    if len(args) < 2:
-        tui.render_error("Usage: sessions route <id> <module>")
+    background = "--background" in args
+    positional = [a for a in args if a != "--background"]
+
+    if len(positional) < 2:
+        tui.render_error(
+            "Usage: sessions route <id> <module> [KEY=VALUE ...] [--background]")
         return {"status": "error", "error": "Usage: sessions route <id> <module>"}
 
-    session_id = args[0]
-    module_name = args[1]
+    session_id = positional[0]
+    module_name = positional[1]
 
     session = await tui._engine.sessions.get(session_id)
     if not session:
@@ -505,6 +558,10 @@ async def sessions_route(tui: Any, args: List[str]) -> Dict[str, Any]:
         "SESSION_ARCH": session.arch,
         "SESSION_USER": session.username,
     }
+
+    if background:
+        return await _route_background(
+            tui, session_id, module_name, args_dict, positional[2:])
 
     result = await registry.execute(
         module_name, session, args_dict,

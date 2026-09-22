@@ -34,8 +34,9 @@ class LitterboxClient:
 
     Usage:
         client = LitterboxClient("http://192.168.100.85:1337")
-        info = await client.upload("payload.exe")
-        print(info["sha256"], info["risk_assessment"])
+        report = await client.upload("payload.exe")   # raw response envelope
+        info = report["file_info"]
+        print(info["sha256"], info.get("detection_risk"))
         files = await client.list_files()
     """
 
@@ -76,8 +77,12 @@ class LitterboxClient:
     ) -> Dict[str, Any]:
         """Upload a file to Litterbox.
 
-        Returns file_info dict with metadata (md5, sha256, size, etc.).
-        Note: actual analysis results are only available via the web UI.
+        Returns the raw Litterbox response envelope. File metadata (md5,
+        sha256, size, detection_risk, ...) lives under the ``file_info`` key.
+        The HTTP API returns metadata and a risk score only; per-engine
+        detection verdicts are exposed solely through the Litterbox web UI, so
+        ``detections_available`` is reported honestly (True only when the
+        response actually carries scanner/detection records).
         """
         path = Path(artifact_path)
         if not path.exists():
@@ -113,13 +118,39 @@ class LitterboxClient:
             if "error" in result:
                 raise LitterboxError(f"Litterbox error: {result['error']}")
 
-            file_info = result.get("file_info", {})
-            logger.info("Upload complete: %s (md5=%s, size=%d, risk=%s)",
-                        path.name,
-                        file_info.get("md5", "?")[:16],
-                        file_info.get("size", 0),
-                        file_info.get("detection_risk", "unknown"))
-            return file_info
+            if not isinstance(result, dict):
+                raise LitterboxError(
+                    f"Unexpected Litterbox response type: {type(result).__name__}"
+                )
+
+            # Normalise: guarantee a 'file_info' key so callers can rely on it.
+            file_info = result.get("file_info")
+            if not isinstance(file_info, dict):
+                # Some deployments return metadata flat; treat the whole body
+                # as file_info but keep the envelope shape honest.
+                file_info = {
+                    k: v for k, v in result.items()
+                    if k in ("md5", "sha1", "sha256", "size", "filename",
+                             "detection_risk", "risk_assessment", "scan_status")
+                }
+                result["file_info"] = file_info
+
+            # Report honestly whether the API actually returned per-engine
+            # detection records (it normally does NOT — analysis is web-UI only).
+            detections = result.get("detections", result.get("results"))
+            result["detections_available"] = bool(
+                isinstance(detections, list) and len(detections) > 0
+            )
+
+            logger.info(
+                "Upload complete: %s (md5=%s, size=%s, risk=%s, detections_available=%s)",
+                path.name,
+                str(file_info.get("md5", "?"))[:16],
+                file_info.get("size", 0),
+                file_info.get("detection_risk", "unknown"),
+                result["detections_available"],
+            )
+            return result
 
     async def upload_bytes(
         self,

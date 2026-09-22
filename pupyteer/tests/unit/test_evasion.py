@@ -26,7 +26,10 @@ from pupyteer.server.evasion.models import (
 )
 from pupyteer.server.core.config import ConfigManager
 from pupyteer.server.core.logging import AuditLogger
-from pupyteer.server.evasion.manager import EvasionTestManager
+from pupyteer.server.evasion.manager import (
+    EvasionTestManager,
+    LITTERBOX_DETECTION_UNAVAILABLE,
+)
 
 
 def test_compute_hash_deterministic():
@@ -277,6 +280,155 @@ async def test_manager_history_persistence():
     Path(hist_path).unlink(missing_ok=True)
 
     print("PASS: test_manager_history_persistence")
+
+
+# ─── Litterbox response-shape reconciliation ───────────────────────────────
+#
+# The Litterbox HTTP API returns file metadata (and a risk score) only; it
+# does NOT expose per-engine scanner verdicts over the API. The manager must
+# therefore (a) read file_info from the correct place in the response envelope
+# and (b) report detection status honestly as *unavailable* rather than
+# implying a clean "0 detections" result. These tests cover the actual
+# metadata-only shape, the honest-empty case, and a hypothetical
+# detections-present shape (so the fix must not weaken real detection handling).
+
+def _litterbox_manager() -> EvasionTestManager:
+    """Manager used only to exercise the pure result-mapping method."""
+    config = ConfigManager()
+    config.set("evasion.test_mode", True)
+    config.set("evasion.history_path", tempfile.mktemp(suffix=".json"))
+    return EvasionTestManager(config, AuditLogger(config))
+
+
+def test_litterbox_map_metadata_only_is_honest_not_clean():
+    """Metadata-only response => detection status is 'unavailable', NOT the
+    historical always-'undetected' lie, and it does not inflate the
+    undetected count."""
+    mgr = _litterbox_manager()
+    result = EvasionTestResult(test_id="lb-meta")
+    # Envelope exactly as returned by LitterboxClient.upload(): file_info only.
+    report = {
+        "file_info": {
+            "sha256": "a" * 64,
+            "md5": "b" * 32,
+            "size": 4096,
+            "detection_risk": "high",
+        },
+        "detections_available": False,
+    }
+    out = mgr._map_litterbox_report(report, result)
+
+    assert out.detection_overall == LITTERBOX_DETECTION_UNAVAILABLE
+    assert out.detection_overall != DetectionResult.UNDETECTED.value, (
+        "metadata-only result must not be reported as clean/undetected"
+    )
+    # The fake "0 detections" success path must be gone: nothing counts as
+    # undetected when the source never reported per-engine results.
+    assert out.undetected_count == 0
+    assert out.detected_count == 0
+    # Honest audit trail: the record says detection data was not available.
+    assert out.metadata["litterbox"]["detections_available"] is False
+    assert out.metadata["litterbox"]["sha256"] == "a" * 64
+    assert "unavailable" in out.notes.lower()
+    print("PASS: test_litterbox_map_metadata_only_is_honest_not_clean")
+
+
+def test_litterbox_map_reads_file_info_from_envelope_not_double_nested():
+    """Regression: the manager used to read report['file_info'] while the
+    client returned the already-unwrapped file_info, so the job id came back
+    empty. The client now returns the envelope; the job id must be populated."""
+    mgr = _litterbox_manager()
+    result = EvasionTestResult(test_id="lb-env")
+    report = {"file_info": {"sha256": "deadbeef" * 8, "detection_risk": "low"}}
+    out = mgr._map_litterbox_report(report, result)
+    assert out.metadata["litterbox"]["sha256"].startswith("deadbeef")
+    print("PASS: test_litterbox_map_reads_file_info_from_envelope_not_double_nested")
+
+
+def test_litterbox_map_with_real_detections_is_not_weakened():
+    """If a Litterbox deployment does return per-engine results, we must still
+    map them (detected/undetected) instead of reporting 'unavailable'."""
+    mgr = _litterbox_manager()
+    result = EvasionTestResult(test_id="lb-det")
+    report = {
+        "file_info": {"sha256": "c" * 64},
+        "detections": [
+            {"engine": "yara", "detected": True, "signature": "Win.Trojan.Test"},
+            {"engine": "amsi", "detected": False},
+        ],
+        "detections_available": True,
+    }
+    out = mgr._map_litterbox_report(report, result)
+    assert out.detection_overall == DetectionResult.DETECTED.value
+    assert out.detected_count == 1
+    assert out.undetected_count == 1
+    controls = {c.control for c in out.control_results}
+    assert {"yara", "amsi"} <= controls
+    print("PASS: test_litterbox_map_with_real_detections_is_not_weakened")
+
+
+class _FakeResponse:
+    def __init__(self, payload, status_code=200):
+        self._payload = payload
+        self.status_code = status_code
+        self.text = ""
+
+    def json(self):
+        return self._payload
+
+
+class _FakeAsyncClient:
+    """Minimal stand-in for httpx.AsyncClient used by LitterboxClient.upload."""
+
+    last_post_response = None
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def post(self, url, **kwargs):
+        return _FakeResponse(type(self).last_post_response)
+
+    async def get(self, url, **kwargs):  # pragma: no cover - unused here
+        return _FakeResponse({})
+
+
+@pytest.mark.asyncio
+async def test_litterbox_client_returns_envelope_and_flags_no_detections(tmp_path):
+    """The real upload path must return the raw envelope (so callers can read
+    report['file_info']) and honestly flag that no detections are available."""
+    from pupyteer.server.evasion import litterbox_client as lc
+
+    artifact = tmp_path / "payload.bin"
+    artifact.write_bytes(b"MZ" + b"\x00" * 32)
+
+    # Metadata-only response — mirrors the documented Litterbox API shape.
+    _FakeAsyncClient.last_post_response = {
+        "file_info": {
+            "md5": "1" * 32,
+            "sha256": "2" * 64,
+            "size": 34,
+            "detection_risk": "medium",
+        }
+    }
+    original = lc.httpx.AsyncClient
+    lc.httpx.AsyncClient = _FakeAsyncClient
+    try:
+        client = lc.LitterboxClient("http://localhost:1337")
+        report = await client.upload(str(artifact))
+    finally:
+        lc.httpx.AsyncClient = original
+
+    assert isinstance(report, dict)
+    assert report.get("file_info", {}).get("sha256") == "2" * 64
+    # Honest flag: metadata-only provider => no detections available.
+    assert report["detections_available"] is False
+    print("PASS: test_litterbox_client_returns_envelope_and_flags_no_detections")
 
 
 def main():

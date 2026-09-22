@@ -274,6 +274,95 @@ class TestCompilationIsReal:
             PayloadConfig(name="x", platform=PayloadPlatform.LINUX, compiler="mingw")))
 
 
+class TestMinGWPeBuildReachesBuilder:
+    """compiler=mingw used to raise `name 'StubConfig' is not defined` before it
+    ever reached the PE builder, because StubConfig was only imported in the
+    sibling stageless branch. That came back as a generic "MinGW PE build error"
+    with the real cause buried — a build that never started looking like a build
+    that failed. These pin that the mingw path now constructs its StubConfig and
+    calls PEBuilder for real."""
+
+    @pytest.mark.asyncio
+    async def test_mingw_branch_reaches_pe_builder(self, config, audit, monkeypatch):
+        from pupyteer.agent.core.stub import StubConfig
+        from pupyteer.payloads import pe_builder as pe_mod
+        from pupyteer.payloads.pe_builder import PEBuildResult
+
+        received: dict = {}
+
+        class _FakePEBuilder:
+            def __init__(self, config, audit):
+                pass
+
+            async def build(self, stub_cfg, output_path):
+                # Reaching this line at all means StubConfig resolved in the
+                # mingw branch; a real toolchain is not needed to prove that.
+                received["stub_cfg"] = stub_cfg
+                output_path.write_bytes(b"MZfakepe")
+                return PEBuildResult(
+                    artifact_path=str(output_path), status="built",
+                    hash_sha256="0" * 64, size_bytes=output_path.stat().st_size,
+                )
+
+        monkeypatch.setattr(pe_mod, "PEBuilder", _FakePEBuilder)
+
+        builder = PayloadBuilder(config, audit)
+        cfg = PayloadConfig(
+            name="mingw-pe", platform=PayloadPlatform.WINDOWS,
+            payload_type=PayloadType.EXECUTABLE, compiler="mingw",
+            host="10.0.0.5", port=4444, sleep=11, jitter=3,
+        )
+        meta = await builder.build(cfg, builder.generate_payload_id())
+
+        assert isinstance(received.get("stub_cfg"), StubConfig), (
+            "mingw branch never reached PEBuilder with a StubConfig"
+        )
+        # Build settings must arrive at the PE builder, not just any StubConfig.
+        assert received["stub_cfg"].host == "10.0.0.5"
+        assert received["stub_cfg"].port == 4444
+        assert received["stub_cfg"].sleep == 11
+        assert received["stub_cfg"].jitter == 3
+        assert meta.status == PayloadStatus.VERIFIED.value, " ".join(meta.build_log)
+        assert meta.artifact_path.endswith(".exe")
+        assert any("PE built via MinGW" in line for line in meta.build_log)
+
+
+class TestUnimplementedPayloadTypesRejected:
+    """library/apk/oneliner have no code path that produces them. A library build
+    with pyinstaller froze an exe and returned it named as a DLL — an artifact
+    that lies about what it is. Refusing them at validation is the honest outcome
+    (the same posture as the delivery=stage refusal)."""
+
+    @pytest.mark.parametrize("ptype", [
+        PayloadType.LIBRARY, PayloadType.APK, PayloadType.ONELINER,
+    ])
+    def test_validate_rejects_unimplemented_types(self, config, audit, ptype):
+        builder = PayloadBuilder(config, audit)
+        errors = builder.validate_config(PayloadConfig(name="x", payload_type=ptype))
+        assert any("not implemented" in e.lower() for e in errors), errors
+
+    @pytest.mark.parametrize("ptype", [
+        PayloadType.EXECUTABLE, PayloadType.SCRIPT,
+    ])
+    def test_validate_accepts_supported_types(self, config, audit, ptype):
+        builder = PayloadBuilder(config, audit)
+        errors = builder.validate_config(
+            PayloadConfig(name="x", payload_type=ptype, compiler="script"))
+        assert not any("payload_type" in e.lower() for e in errors), errors
+
+    @pytest.mark.asyncio
+    async def test_manager_raises_instead_of_emitting_mislabeled_artifact(
+        self, config, audit
+    ):
+        pm = PayloadManager(config, audit)
+        with pytest.raises(ValueError) as exc:
+            await pm.build(
+                PayloadConfig(name="dll-lie", payload_type=PayloadType.LIBRARY))
+        assert "not implemented" in str(exc.value).lower()
+        # Nothing was stored: no mislabelled artifact ever reached the index.
+        assert pm.list_all() == []
+
+
 # ─── Versioning Tests ────────────────────────────────────────────
 
 

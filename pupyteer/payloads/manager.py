@@ -37,11 +37,18 @@ class PayloadArch(str, Enum):
 
 
 class PayloadType(str, Enum):
+    """Artifact kind a build can produce.
+
+    Only EXECUTABLE (a native exe/bin, or a Windows PE via MinGW) and SCRIPT
+    (the standalone generated ``.py`` agent) have a build path. LIBRARY, APK and
+    ONELINER are accepted by the schema but the builder has no code path that
+    produces them, so validate_config refuses them — see SUPPORTED_PAYLOAD_TYPES.
+    """
     EXECUTABLE = "executable"
-    LIBRARY = "library"
+    LIBRARY = "library"      # not produced: no DLL build path
     SCRIPT = "script"
-    APK = "apk"
-    ONELINER = "oneliner"
+    APK = "apk"              # not produced: no Android package build path
+    ONELINER = "oneliner"    # not produced: no one-liner builder
 
 
 class PayloadStatus(str, Enum):
@@ -60,8 +67,8 @@ class PayloadStatus(str, Enum):
 class PayloadDelivery(str, Enum):
     """Delivery method for payload execution.
 
-    - STAGE: Small stub downloads full agent from HTTP/HTTPS, writes to disk,
-      and executes. Minimizes initial payload size.
+    - STAGE: Not implemented. The server has no stage endpoint for a stager to
+      call home to, so validate_config refuses this value before any build runs.
     - STAGELESS: Full agent binary delivered in one-shot. Current default behavior.
     """
     STAGE = "stage"
@@ -83,6 +90,12 @@ VALID_TRANSPORTS = {"tcp", "http", "https", "dns", "websocket"}
 SERVED_TRANSPORTS = {"tcp", "http", "https"}
 VALID_COMPILERS = {"pyinstaller", "nuitka", "mingw", "script"}
 VALID_PAYLOAD_TYPES = {t.value for t in PayloadType}
+# The payload types build() can actually turn into an artifact. A build is only
+# honest if what it hands back is what was asked for: a library request froze an
+# exe and returned it named .dll, an apk/oneliner request produced neither an
+# installable package nor a one-liner. Those have no code path, so refuse them at
+# validation rather than emit a mislabelled artifact the operator trusts.
+SUPPORTED_PAYLOAD_TYPES = {PayloadType.EXECUTABLE.value, PayloadType.SCRIPT.value}
 
 
 @dataclass
@@ -297,6 +310,14 @@ class PayloadBuilder:
         # Payload type validation
         if payload_config.payload_type.value not in VALID_PAYLOAD_TYPES:
             errors.append(f"Invalid payload type: {payload_config.payload_type.value}")
+        elif payload_config.payload_type.value not in SUPPORTED_PAYLOAD_TYPES:
+            # No build path produces this artifact; returning a mislabelled file
+            # would be a silent lie, so refuse the way delivery=stage is refused.
+            errors.append(
+                f"payload_type={payload_config.payload_type.value} is not "
+                f"implemented: the builder only produces "
+                f"{sorted(SUPPORTED_PAYLOAD_TYPES)}. Use one of those."
+            )
 
         # Profile validation (non-empty)
         if not payload_config.profile:
@@ -453,60 +474,17 @@ class PayloadBuilder:
 
             artifact_path = build_dir / f"{payload_config.name}_{payload_config.platform.value}_{payload_config.arch.value}"
 
-            # Handle STAGE delivery — generate small C stager stub
-            if payload_config.delivery == PayloadDelivery.STAGE:
-                # Build a small C downloader that fetches the full agent
-                stager_code = self._generate_stager(payload_config)
-                stager_src_path = build_dir / f"{payload_config.name}_stager.c"
-                stager_src_path.write_text(stager_code, encoding="utf-8")
-                build_log.append(f"Stager C source written: {stager_src_path}")
-                # For STAGE, the artifact is the C source (compile to exe externally)
-                artifact_path = stager_src_path
-                build_log.append(
-                    f"Delivery=STAGE — small stager downloads full agent from C2"
-                )
-            else:
-                # STAGELESS — full agent binary
-                if (payload_config.platform == PayloadPlatform.WINDOWS
-                        and payload_config.compiler == "mingw"):
-                    # MinGW cross-compilation path — real PE binary
-                    try:
-                        from pupyteer.payloads.pe_builder import PEBuilder
-                        pe_build = PEBuilder(self._config, self._audit)
-                        stub_cfg = StubConfig(
-                            name=payload_config.name,
-                            transport=payload_config.transport,
-                            host=payload_config.host,
-                            port=payload_config.port,
-                            profile=payload_config.profile,
-                            sleep=payload_config.sleep,
-                            jitter=payload_config.jitter,
-                            persistence=payload_config.persistence,
-                            modules=payload_config.stub_modules(),
-                            platform=payload_config.platform.value,
-                            arch=payload_config.arch.value,
-                            tls=tls_on,
-                            tls_cert_pem=tls_cert_pem,
-                            auth_secret=auth_secret,
-                        )
-                        pe_result = await pe_build.build(stub_cfg, artifact_path.with_suffix('.exe'))
-                        if pe_result.status == "built":
-                            artifact_path = Path(pe_result.artifact_path)
-                            build_log.append(
-                                f"PE built via MinGW: {pe_result.size_bytes}B, "
-                                f"SHA256={pe_result.hash_sha256[:16]}..."
-                            )
-                        else:
-                            raise RuntimeError(
-                                f"MinGW PE build failed: {pe_result.error_message}"
-                            )
-                    except Exception as pe_err:
-                        logger.error("MinGW PE build error: %s", pe_err)
-                        raise RuntimeError(f"MinGW PE build error: {pe_err}") from pe_err
-                else:
-                    # Build actual agent stub (Jinja2-templated, config-injected)
-                    from pupyteer.agent.core.stub import AgentStubGenerator, StubConfig
-                    stub_gen = AgentStubGenerator()
+            # STAGELESS — full agent binary. delivery=stage is refused by
+            # validate_config before build() runs, so there is no stager path
+            # here: an unimplemented stage would build a downloader with nothing
+            # to fetch and report it verified.
+            if (payload_config.platform == PayloadPlatform.WINDOWS
+                    and payload_config.compiler == "mingw"):
+                # MinGW cross-compilation path — real PE binary
+                try:
+                    from pupyteer.agent.core.stub import StubConfig
+                    from pupyteer.payloads.pe_builder import PEBuilder
+                    pe_build = PEBuilder(self._config, self._audit)
                     stub_cfg = StubConfig(
                         name=payload_config.name,
                         transport=payload_config.transport,
@@ -523,21 +501,55 @@ class PayloadBuilder:
                         tls_cert_pem=tls_cert_pem,
                         auth_secret=auth_secret,
                     )
-                    agent_code = stub_gen.generate(stub_cfg)
-                    src_path = artifact_path.parent / f"{artifact_path.name}.py"
-                    src_path.write_text(agent_code, encoding='utf-8')
-                    build_log.append(
-                        f"Stub generated: {payload_config.transport} -> "
-                        f"{payload_config.host}:{payload_config.port}")
-                    if (payload_config.payload_type == PayloadType.SCRIPT
-                            or payload_config.compiler == "script"):
-                        artifact_path = src_path
+                    pe_result = await pe_build.build(stub_cfg, artifact_path.with_suffix('.exe'))
+                    if pe_result.status == "built":
+                        artifact_path = Path(pe_result.artifact_path)
+                        build_log.append(
+                            f"PE built via MinGW: {pe_result.size_bytes}B, "
+                            f"SHA256={pe_result.hash_sha256[:16]}..."
+                        )
                     else:
-                        # No placeholder artifact on failure. A build that writes a
-                        # marker file and reports VERIFIED tells the operator there
-                        # is a payload to deploy when there is nothing of the sort.
-                        artifact_path = self._compile_binary(
-                            stub_gen, stub_cfg, src_path, artifact_path, build_log)
+                        raise RuntimeError(
+                            f"MinGW PE build failed: {pe_result.error_message}"
+                        )
+                except Exception as pe_err:
+                    logger.error("MinGW PE build error: %s", pe_err)
+                    raise RuntimeError(f"MinGW PE build error: {pe_err}") from pe_err
+            else:
+                # Build actual agent stub (Jinja2-templated, config-injected)
+                from pupyteer.agent.core.stub import AgentStubGenerator, StubConfig
+                stub_gen = AgentStubGenerator()
+                stub_cfg = StubConfig(
+                    name=payload_config.name,
+                    transport=payload_config.transport,
+                    host=payload_config.host,
+                    port=payload_config.port,
+                    profile=payload_config.profile,
+                    sleep=payload_config.sleep,
+                    jitter=payload_config.jitter,
+                    persistence=payload_config.persistence,
+                    modules=payload_config.stub_modules(),
+                    platform=payload_config.platform.value,
+                    arch=payload_config.arch.value,
+                    tls=tls_on,
+                    tls_cert_pem=tls_cert_pem,
+                    auth_secret=auth_secret,
+                )
+                agent_code = stub_gen.generate(stub_cfg)
+                src_path = artifact_path.parent / f"{artifact_path.name}.py"
+                src_path.write_text(agent_code, encoding='utf-8')
+                build_log.append(
+                    f"Stub generated: {payload_config.transport} -> "
+                    f"{payload_config.host}:{payload_config.port}")
+                if (payload_config.payload_type == PayloadType.SCRIPT
+                        or payload_config.compiler == "script"):
+                    artifact_path = src_path
+                else:
+                    # No placeholder artifact on failure. A build that writes a
+                    # marker file and reports VERIFIED tells the operator there
+                    # is a payload to deploy when there is nothing of the sort.
+                    artifact_path = self._compile_binary(
+                        stub_gen, stub_cfg, src_path, artifact_path, build_log)
 
             # Compute hashes
             hashes = self.compute_hashes(str(artifact_path))

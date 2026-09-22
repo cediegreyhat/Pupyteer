@@ -741,5 +741,159 @@ class TestHandshakeRefusalReporting:
         )
 
 
+# ---------------------------------------------------------------------------
+# Tests: honest listener status (the engine's TransportManager in manager.py)
+# ---------------------------------------------------------------------------
+
+# The engine wires listeners through transports/manager.py's TransportManager,
+# which is a different class from the registry-based one re-exported by
+# transports/__init__.py (imported above as TransportManager). Alias it so the
+# listener-status tests exercise the manager that actually binds.
+from pupyteer.server.transports.manager import (
+    TransportManager as ListenerTransportManager,
+)
+from pupyteer.server.transports.manager import Transport as StubTransport
+
+
+class _ProtocolProfiles:
+    """Stand-in exposing the transport config the listener manager reads."""
+
+    def __init__(self, transport):
+        self._transport = transport
+
+    def get_active_transport_config(self):
+        return dict(self._transport)
+
+    def active(self):
+        return None
+
+
+def _listener_config(tmp_path):
+    config = ConfigManager()
+    config.set("audit.log_file", str(tmp_path / "audit.json"))
+    config.set("server.host", "127.0.0.1")
+    # Plaintext: a stalled-read or stop-cancel test wants a real socket with no
+    # certificate generation on the path.
+    config.set("server.tls", False)
+    return config, AuditLogger(config)
+
+
+class TestHonestListenerStatus:
+    """A transport the server cannot bind must never be reported as listening."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("protocol", ["dns", "websocket", "ws", "wss", "doh"])
+    async def test_unsupported_protocol_refused_never_listening(
+            self, tmp_path, protocol):
+        config, audit = _listener_config(tmp_path)
+        profiles = _ProtocolProfiles(
+            {"protocol": protocol, "host": "127.0.0.1", "port": 0})
+        mgr = ListenerTransportManager(config, profiles, audit)
+        await mgr.initialize()
+        await mgr.start_listener(MagicMock())
+
+        assert mgr.listener is None, "nothing should have been bound"
+        states = {row["state"] for row in mgr.list()}
+        assert "listening" not in states, "an unbindable protocol claimed listening"
+        assert "unavailable" in states, "the refusal must be reported honestly"
+        # No listener, so nothing is checking registrations — stays None.
+        assert mgr.enrollment is None
+        assert mgr.listener_requires_auth is None
+
+    @pytest.mark.asyncio
+    async def test_refusal_is_audited(self, tmp_path):
+        config, audit = _listener_config(tmp_path)
+        profiles = _ProtocolProfiles(
+            {"protocol": "dns", "host": "127.0.0.1", "port": 0})
+        mgr = ListenerTransportManager(config, profiles, audit)
+        await mgr.initialize()
+        await mgr.start_listener(MagicMock())
+        rows = audit.query(event="listener_refused")
+        assert rows, "a refused protocol has to leave an audit trail"
+        assert rows[0]["details"]["protocol"] == "dns"
+
+    @pytest.mark.asyncio
+    async def test_initialize_creates_no_listening_stub(self, tmp_path):
+        """The old no-op placeholder rows are gone: init alone binds nothing."""
+        config, audit = _listener_config(tmp_path)
+        profiles = _ProtocolProfiles(
+            {"protocol": "dns", "host": "127.0.0.1", "port": 0})
+        mgr = ListenerTransportManager(config, profiles, audit)
+        await mgr.initialize()
+        assert all(r["state"] != "listening" for r in mgr.list())
+
+    def test_placeholder_transport_does_not_claim_listening(self):
+        transport = StubTransport("dns", {})
+        assert transport.state != "listening"
+        asyncio.run(transport.initialize())
+        assert transport.state == "initialized", (
+            "a configured record is not a bound socket")
+
+
+# ---------------------------------------------------------------------------
+# Tests: idle read timeout + handler-task cleanup
+# ---------------------------------------------------------------------------
+
+
+class TestIdleReadTimeout:
+    """A stalled peer must not hold a task and socket open forever."""
+
+    def _listener(self, tmp_path, idle_timeout):
+        from pupyteer.server.transports.listener import AgentListener
+
+        _, audit = _listener_config(tmp_path)
+        return AgentListener(
+            {"host": "127.0.0.1", "port": 0, "idle_timeout": idle_timeout},
+            MagicMock(), audit)
+
+    @pytest.mark.asyncio
+    async def test_stalled_read_is_dropped_on_timeout(self, tmp_path):
+        listener = self._listener(tmp_path, 0.2)
+        await listener.start()
+        port = listener._server.sockets[0].getsockname()[1]
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        try:
+            # Open a connection and dribble a partial line, never a newline — the
+            # slowloris shape. The idle deadline has to close it, not a full read.
+            writer.write(b'{"type": "reg')
+            await writer.drain()
+            data = await asyncio.wait_for(reader.read(1), timeout=3.0)
+            assert data == b"", "stalled connection was not closed by idle timeout"
+        finally:
+            writer.close()
+            await listener.stop()
+
+
+class TestStopCancelsHandlers:
+    """stop() must cancel handlers that never registered a session."""
+
+    @pytest.mark.asyncio
+    async def test_stop_cancels_a_pre_registration_handler(self, tmp_path):
+        from pupyteer.server.transports.listener import AgentListener
+
+        _, audit = _listener_config(tmp_path)
+        # A long idle timeout: the only way this handler ends quickly is stop().
+        listener = AgentListener(
+            {"host": "127.0.0.1", "port": 0, "idle_timeout": 60.0},
+            MagicMock(), audit)
+        await listener.start()
+        port = listener._server.sockets[0].getsockname()[1]
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        try:
+            await asyncio.sleep(0.1)  # let the server park the handler on readline()
+            assert listener._handler_tasks, "the running handler was not tracked"
+
+            started = time.monotonic()
+            await asyncio.wait_for(listener.stop(), timeout=3.0)
+            elapsed = time.monotonic() - started
+            assert elapsed < 2.0, f"stop did not cancel the blocked handler ({elapsed:.1f}s)"
+            assert not listener._handler_tasks, "handler task set not cleared"
+
+            data = await asyncio.wait_for(reader.read(1), timeout=3.0)
+            assert data == b"", "socket not closed under the cancelled handler"
+        finally:
+            writer.close()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

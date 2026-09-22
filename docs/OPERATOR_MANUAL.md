@@ -523,7 +523,9 @@ class Transport:
     async def close(self) -> None
 ```
 
-Built-in transport types include: `https`, `http`, `dns`, `websocket`, `tcp_cleartext`, `udp_secure`.
+Server listeners bind for three protocols: `tcp` (newline-delimited JSON, the core transport), `http` and `https` (the same messages carried one per HTTP POST, `https` terminating TLS). Selecting any of them in the active profile starts the matching listener; a protocol with no server listener is reported as `unavailable`, never as `listening`.
+
+`websocket` and `dns` are agent-side transports only — the payload can dial out over them, but the server binds no listener for them and a profile that names one is refused rather than shown as a live transport.
 
 ---
 

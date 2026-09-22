@@ -78,31 +78,62 @@ Pupyteer is designed for authorized red-team operations. Its security model assu
 ```
 Operator → TUI → AuthLayer.authenticate(username, password)
                         │
-                        ├─ Check lockout (failed attempts < max)
-                        ├─ Lookup stored hash
-                        ├─ Compare with constant-time comparison
+                        ├─ Check lockout (misses within the sliding window < max)
+                        ├─ Load hashed record from operators_file (salted scrypt)
+                        ├─ Constant-time verify (hmac.compare_digest)
                         ├─ Generate token (secrets.token_hex(32))
                         ├─ Store session (operator, token, expires_at)
                         └─ Return token
 ```
 
+An unknown username and a wrong password return the same answer and cost the same
+scrypt work (`OperatorStore.verify` runs a throwaway KDF on a lookup miss), so the
+response is not a user-enumeration oracle.
+
 ### Password Storage
 
-Passwords are hashed with SHA-256 before storage:
+Passwords are never stored in the config and never in plaintext. Each credential
+lives in the JSON file named by `security.operators_file` (default
+`./data/keys/operators.json`, written mode `0600`), hashed with **salted scrypt**
+(`pupyteer/server/core/operators.py:hash_password`):
 
 ```python
-hashlib.sha256(password.encode()).hexdigest()
+hashlib.scrypt(
+    password.encode("utf-8"),
+    salt=secrets.token_bytes(16),   # per-credential random salt
+    n=2**15,                        # 32768 cost parameter
+    r=8,
+    p=1,
+    dklen=32,
+    maxmem=1 << 26,
+)
 ```
 
-**Production Recommendation:** Replace SHA-256 with bcrypt or Argon2. Integrate with an identity provider (LDAP, OAuth, SAML) for multi-user deployments.
+The `kdf` name, the hex `salt`, the full `params` (`n`/`r`/`p`) and the hex digest
+are all written next to each other. The parameters are stored rather than assumed
+at read time so a hash is verified with exactly the `n` it was made with; a record
+whose `kdf` is not `scrypt` is refused (no silent match, no crash).
+
+`OperatorStore.add` rejects any password shorter than `MIN_PASSWORD_CHARS` (12).
+
+**Note:** this replaced the earlier design that hashed with unsalted SHA-256 in the
+config; a config file is pasted into tickets and backed up, so it is no longer a
+credential store. Integrate with an identity provider (LDAP, OAuth, SAML) if you
+need central, multi-user credential management.
 
 ### Rate Limiting
 
-After `security.max_failed_logins` (default: 5) consecutive failures, the account is locked. The lockout persists for the lifetime of the process.
+A wrong password is counted against the username only for a rolling window. After
+`security.max_failed_logins` (default: 5) misses *within the last
+`security.lockout_seconds` (default: 300) seconds*, further logins for that name
+are refused until the oldest miss ages out. The lockout therefore expires on its
+own (about five minutes after the last failure) — it is no longer a
+process-lifetime lock that only a hand-edit of the credential file could clear.
 
 ```yaml
 security:
-  max_failed_logins: 5
+  max_failed_logins: 5   # misses allowed within the window
+  lockout_seconds: 300   # a name self-unlocks this long after the last miss
 ```
 
 ### Token-Based Authorization
@@ -135,27 +166,35 @@ Default permissions for new operators: `{"read", "execute"}`.
 
 ```yaml
 security:
-  require_auth: true        # Authentication required
-  token_ttl: 3600           # Token expires after 1 hour
-  max_failed_logins: 5      # Lockout after 5 failed attempts
-  operators:
-    admin: "changeme"       # DEFAULT — CHANGE IMMEDIATELY
+  require_auth: true                 # Authentication required
+  token_ttl: 3600                    # Token expires after 1 hour
+  max_failed_logins: 5               # Misses within the lockout window
+  lockout_seconds: 300               # Rolling, self-expiring lockout window
+  operators_file: "./data/keys/operators.json"  # salted-scrypt hashes, mode 0600
 ```
+
+There is **no** default operator and **no** `changeme` password anywhere: the
+config holds no credentials at all. A server with no `operators.json` is closed,
+not open — see `scripts/verify_secure_defaults.py`, which fails any config that
+still puts operator passwords under `security.operators`.
 
 ### Hardening Recommendations
 
-#### 1. Change Default Credentials
+#### 1. Bootstrap the First Credential
 
-**Before any operational use:**
+**Before any operational use**, create an operator. With no credential file
+present, the console generates one strong password and prints it exactly once
+(`OperatorStore.bootstrap`); the only copy kept afterwards is the scrypt hash in
+`operators.json`:
 
 ```bash
-# Generate a strong password
-openssl rand -base64 32
+# A random, high-entropy password Pupyteer prints once and then only hashes:
+python3 -c "from pupyteer.server.core.operators import OperatorStore; \
+print(OperatorStore.generate_password())"
 
-# Hash it
-python3 -c "import hashlib; print(hashlib.sha256(b'your-password').hexdigest())"
-
-# Update config
+# Or let the console bootstrap it for you on an empty store, which also writes
+# the salted scrypt hash to operators_file (0600). Never hand-edit a hash into a
+# config file — there is no longer a code path that reads passwords from config.
 ```
 
 #### 2. Use Strong Passwords
@@ -321,9 +360,8 @@ sudo iptables -A INPUT -p tcp --dport 8443 -m connlimit --connlimit-above 10 -j 
 
 | Environment | Credential Store |
 |-------------|------------------|
-| Development | Config file (hashed) |
-| Testing | Environment variables |
-| Production | External identity provider |
+| Development / Testing / Production (default) | Salted-scrypt hashes in `operators_file` (JSON, mode 0600) — never in config |
+| Multi-user / enterprise | External identity provider (LDAP, OAuth, SAML), if integrated |
 
 ### External Identity Provider Integration
 

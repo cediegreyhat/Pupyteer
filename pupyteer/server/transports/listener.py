@@ -55,6 +55,17 @@ MAX_MESSAGE_BYTES = 32 * 1024 * 1024
 # and every second it holds this socket is a second of queue on the listener.
 HANDSHAKE_TIMEOUT_SECONDS = 10.0
 
+# How long an established connection may stay silent — no complete message line —
+# before it is torn down. Without it a stalled or slowloris peer that opens a
+# socket and dribbles bytes without ever finishing a line holds an asyncio task
+# and a socket open forever. A ``readline()`` with no deadline is exactly that
+# hang. The default is generous enough that a normally beaconing agent never
+# trips it (a dropped connection simply re-registers, the recovery already coded
+# for in _handle_checkin), while still bounding a hostile idle. Overridable per
+# listener through ``config["idle_timeout"]`` (seconds), which is what the tests
+# use to exercise the path quickly.
+IDLE_READ_TIMEOUT_SECONDS = 300.0
+
 # One line per refusal is what an operator needs the first time a payload fails to
 # call back; it is also an invitation to bury the entries that matter, because the
 # audit log rotates at a fixed size and drops the oldest. So refusals of every kind
@@ -126,8 +137,20 @@ class AgentListener:
         self._session_manager = session_manager
         self._audit = audit_logger
 
+        # Maximum silence tolerated per read on an established connection; see
+        # IDLE_READ_TIMEOUT_SECONDS. Overridable so a stalled-read test does not
+        # have to wait five minutes.
+        self._idle_timeout = float(
+            config.get("idle_timeout", IDLE_READ_TIMEOUT_SECONDS))
+
         self._server: Optional[asyncio.base_events.Server] = None
         self._connections: Dict[str, ConnectionState] = {}  # session_id → state
+        # Every in-flight _handle_client coroutine, tracked so stop() can cancel
+        # them — including the ones that never registered a session and so are
+        # not in _connections (a stalled handshake or a slowloris read). asyncio
+        # runs the start_server callback as a task and keeps no reference, so
+        # without tracking these the socket is left orphaned on teardown.
+        self._handler_tasks: set = set()
         self._lock = asyncio.Lock()
         self._stats: Dict[str, int] = {
             "connections": 0,
@@ -296,9 +319,51 @@ class AgentListener:
         )
         return {"type": "error", "message": "beacon_auth_failed"}
 
+    def _track_current_handler(self) -> None:
+        """Register the running _handle_client task so stop() can cancel it.
+
+        Called at the very top of each connection handler, before the socket is
+        read or a session is registered, so a peer that never gets that far is
+        still accounted for. Completed handlers drop themselves via the callback.
+        """
+        task = asyncio.current_task()
+        if task is not None:
+            self._handler_tasks.add(task)
+            task.add_done_callback(self._handler_tasks.discard)
+
+    async def _cancel_handler_tasks(self) -> None:
+        """Cancel every in-flight connection handler and wait for it to unwind.
+
+        Closing _connections only reaches sockets that registered a session; the
+        handlers still inside a handshake or a stalled first read are cancelled
+        here so teardown does not orphan them.
+        """
+        tasks = [t for t in self._handler_tasks if not t.done()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._handler_tasks.clear()
+
     async def stop(self) -> None:
         """Gracefully close the server and all active connections."""
-        # Close every active connection first
+        # Stop accepting new connections first; close() does not wait.
+        if self._server is not None:
+            self._server.close()
+
+        # Cancel in-flight handlers BEFORE waiting for the server to finish. On
+        # Python 3.12+ ``Server.wait_closed()`` blocks until every active
+        # connection task ends, so a handler parked on a stalled read would hang
+        # teardown forever — and a handler that never registered a session is
+        # absent from _connections, so closing those alone leaves it orphaned.
+        # This is the cleanup that missing wait_closed() behaviour made fatal.
+        await self._cancel_handler_tasks()
+
+        if self._server is not None:
+            await self._server.wait_closed()
+            self._server = None
+
+        # Close any connection writers still held by registered sessions.
         async with self._lock:
             for sid, conn in list(self._connections.items()):
                 try:
@@ -307,11 +372,6 @@ class AgentListener:
                 except Exception:
                     pass
             self._connections.clear()
-
-        if self._server is not None:
-            self._server.close()
-            await self._server.wait_closed()
-            self._server = None
 
         logger.info("Agent listener stopped on %s:%d", self._host, self._port)
         self._audit.log_event("listener_stopped", {
@@ -340,6 +400,10 @@ class AgentListener:
         remote_str = f"{addr[0]}:{addr[1]}"
         session_id: Optional[str] = None
 
+        # Accounted for before the first read, so a peer that never completes a
+        # handshake or a first line is still cancelled cleanly on stop().
+        self._track_current_handler()
+
         # Before anything is read, so a peer that cannot speak TLS to a TLS
         # listener is refused as a handshake and not as malformed JSON.
         if not await self._upgrade_tls(reader, writer):
@@ -352,7 +416,16 @@ class AgentListener:
         try:
             while True:
                 try:
-                    line = await reader.readline()
+                    # A deadline on the read so a stalled or slowloris peer that
+                    # never finishes a line cannot hold this task and socket open
+                    # forever. EOF and a completed line both fall through.
+                    line = await asyncio.wait_for(
+                        reader.readline(), timeout=self._idle_timeout)
+                except asyncio.TimeoutError:
+                    logger.info(
+                        "Dropping idle connection from %s: no complete message in "
+                        "%.0fs", remote_str, self._idle_timeout)
+                    break
                 except (ConnectionError, OSError):
                     break
 

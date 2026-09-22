@@ -36,6 +36,14 @@ from pupyteer.server.evasion.models import (
 
 logger = logging.getLogger("pupyteer.evasion")
 
+# The Litterbox HTTP API returns file *metadata* (hashes, size, risk score)
+# but does NOT expose per-engine scanner verdicts — full YARA/CheckPlz/EDR
+# analysis is only visible in the Litterbox web UI. When a submission yields
+# only metadata we must NOT imply "0 detections"; we report the detection
+# status honestly as unavailable from this source. This is a distinct value
+# from DetectionResult.* so callers cannot mistake it for a clean result.
+LITTERBOX_DETECTION_UNAVAILABLE = "unavailable"
+
 
 class VirusTotalComposioClient:
     """VirusTotal via Composio CLI (authenticated, no API key management).
@@ -311,7 +319,12 @@ class EvasionTestManager:
                 analysis_type="static_edr_dynamic",
             )
 
-            result.litterbox_job_id = report.get("file_info", {}).get("sha256", "")[:16]
+            # LitterboxClient returns the raw response envelope; the job id
+            # (sha256) lives under file_info. Read it from the correct place.
+            file_info = {}
+            if isinstance(report, dict):
+                file_info = report.get("file_info", {}) or {}
+            result.litterbox_job_id = str(file_info.get("sha256", ""))[:16]
             result = self._map_litterbox_report(report, result)
 
         except LitterboxError as e:
@@ -429,23 +442,47 @@ class EvasionTestManager:
         result.control_results.extend(vt_result.control_results)
         result.metadata["virustotal"] = vt_result.metadata.get("virustotal", {})
 
-        # Overall verdict: both must pass
-        lb_pass = result.metadata.get("litterbox", {}).get("detection_overall") == "undetected"
+        # Overall verdict: both must pass. A metadata-only Litterbox response
+        # reports detection status as unavailable — that must NOT be mistaken
+        # for a clean ("FUD") pass just because the previous bug always said
+        # "undetected".
+        lb_state = result.metadata.get("litterbox", {}).get("detection_overall")
+        lb_pass = lb_state == DetectionResult.UNDETECTED.value  # only if detections returned clean
+        lb_detected = lb_state == DetectionResult.DETECTED.value
+        lb_unavailable = lb_state == LITTERBOX_DETECTION_UNAVAILABLE
         vt_positives = result.metadata.get("virustotal", {}).get("positives", 0)
-        vt_pass = vt_positives <= (self._vt_client._max_positives if self._vt_client else 5)
+        max_pos = self._vt_client._max_positives if self._vt_client else 5
+        vt_pass = vt_positives <= max_pos
+
+        lb_unavail_suffix = (
+            " (Litterbox detection unavailable from API — confirm FUD in web UI)"
+            if lb_unavailable
+            else ""
+        )
 
         if lb_pass and vt_pass:
             result.detection_overall = DetectionResult.UNDETECTED.value
             result.notes = "PASS: FUD on Litterbox + VT within threshold"
         elif lb_pass:
             result.detection_overall = DetectionResult.PARTIAL.value
-            result.notes = f"PARTIAL: Litterbox FUD but VT detections={vt_positives} (>{self._vt_client._max_positives if self._vt_client else 5})"
-        elif vt_pass:
+            result.notes = f"PARTIAL: Litterbox FUD but VT detections={vt_positives} (>{max_pos})"
+        elif vt_pass and lb_detected:
             result.detection_overall = DetectionResult.PARTIAL.value
             result.notes = "PARTIAL: VT within threshold but Litterbox detected"
+        elif vt_pass:
+            # VT is fine but Litterbox could not confirm FUD (metadata only).
+            result.detection_overall = DetectionResult.PARTIAL.value
+            result.notes = (
+                "PARTIAL: VT within threshold but Litterbox did not confirm FUD"
+                + lb_unavail_suffix
+            )
         else:
             result.detection_overall = DetectionResult.DETECTED.value
-            result.notes = "FAIL: detected on both Litterbox and VT"
+            result.notes = (
+                "FAIL: detected on both Litterbox and VT"
+                if lb_detected
+                else "FAIL: VT detections above threshold" + lb_unavail_suffix
+            )
 
         result.execution_result = "success"
         return result
@@ -484,27 +521,91 @@ class EvasionTestManager:
         report: Dict[str, Any],
         result: EvasionTestResult,
     ) -> EvasionTestResult:
-        """Map a Litterbox report to our internal result format."""
-        detections = report.get("detections", report.get("results", []))
-        overall = report.get("overall_detection", report.get("verdict", "undetected"))
+        """Map a Litterbox response to our internal result format.
 
-        if isinstance(overall, str):
-            result.detection_overall = overall.lower()
-        elif isinstance(overall, (int, float)):
-            result.detection_overall = DetectionResult.UNDETECTED.value if overall == 0 else DetectionResult.DETECTED.value
+        The Litterbox HTTP API is metadata + risk-score only: it does NOT
+        return per-engine scanner verdicts (those live in the web UI). When a
+        response carries no detection records we report the detection status
+        honestly as :data:`LITTERBOX_DETECTION_UNAVAILABLE` instead of implying
+        a clean "undetected" result. Per-engine records are still honoured if a
+        deployment does expose them.
+        """
+        if not isinstance(report, dict):
+            report = {}
 
-        for det in detections:
-            if not isinstance(det, dict):
-                continue
-            control_name = det.get("engine", det.get("control", "unknown"))
-            detected = det.get("detected", False)
+        file_info = report.get("file_info") or {}
+        # Tolerate a bare file_info dict passed in by an older caller.
+        if not isinstance(file_info, dict):
+            file_info = {}
+        if not file_info and ("sha256" in report or "md5" in report):
+            file_info = report
+
+        detections = report.get("detections", report.get("results"))
+        has_detections = isinstance(detections, list) and len(detections) > 0
+        risk = file_info.get("detection_risk", file_info.get("risk_assessment"))
+
+        # Persist metadata for audit/UI regardless of detection availability.
+        meta = result.metadata.setdefault("litterbox", {})
+        meta.update(
+            {
+                "sha256": file_info.get("sha256", ""),
+                "md5": file_info.get("md5", ""),
+                "size": file_info.get("size", 0),
+                "detection_risk": risk,
+                "detections_available": has_detections,
+            }
+        )
+
+        if has_detections:
+            # A deployment that DOES expose scanner results.
+            detected_count = 0
+            for det in detections:
+                if not isinstance(det, dict):
+                    continue
+                control_name = det.get("engine", det.get("control", "unknown"))
+                detected = bool(det.get("detected", False))
+                if detected:
+                    detected_count += 1
+                result.control_results.append(
+                    ControlResult(
+                        control=control_name,
+                        detection=(
+                            DetectionResult.DETECTED.value
+                            if detected
+                            else DetectionResult.UNDETECTED.value
+                        ),
+                        notes=det.get("signature", det.get("details", "")),
+                        signatures_triggered=det.get("signatures", []),
+                    )
+                )
+            result.detection_overall = (
+                DetectionResult.DETECTED.value
+                if detected_count
+                else DetectionResult.UNDETECTED.value
+            )
+            result.execution_result = "success"
+            result.notes = (
+                f"Litterbox: {detected_count}/{len(detections)} engines detected"
+                + (f" (risk={risk})" if risk is not None else "")
+            )
+        else:
+            # Metadata-only provider: never claim zero detections.
+            result.detection_overall = LITTERBOX_DETECTION_UNAVAILABLE
+            result.execution_result = "success"
             result.control_results.append(
                 ControlResult(
-                    control=control_name,
-                    detection=DetectionResult.DETECTED.value if detected else DetectionResult.UNDETECTED.value,
-                    notes=det.get("signature", det.get("details", "")),
-                    signatures_triggered=det.get("signatures", []),
+                    control="litterbox",
+                    detection=LITTERBOX_DETECTION_UNAVAILABLE,
+                    notes=(
+                        "Litterbox returned file metadata only; per-engine "
+                        "detection verdicts are not exposed via the API "
+                        "(view the analysis in the Litterbox web UI)."
+                    ),
                 )
+            )
+            result.notes = (
+                "Litterbox detection verdict unavailable from this source "
+                f"(metadata only; risk score={risk if risk is not None else 'n/a'})"
             )
 
         telemetry = report.get("telemetry", [])
