@@ -4,20 +4,39 @@
 Checks installed packages against a known-vulnerabilities list
 and flags outdated or insecure dependencies.
 
+Two independent coverage tiers, deliberately kept honest about each other:
+
+  * BUILT-IN LOCAL LIST (always on). A hand-maintained, bounded, non-exhaustive
+    snapshot of known vulnerabilities (``KNOWN_VULNS``) that stops around 2021.
+    A clean local result means only "no match in this local list"; it is NOT a
+    claim that no vulnerabilities exist. The report says this explicitly.
+
+  * LIVE ADVISORY CHECK (opt-in via ``--live``). Shells out to ``pip-audit``
+    (which queries the OSV / PyPA advisory feed). If pip-audit or the network
+    is unavailable the live check is reported as NOT PERFORMED -- never as a
+    silent clean pass. Offline default behaviour is unchanged.
+
 Usage:
     python scripts/audit_deps.py
     python scripts/audit_deps.py --requirements requirements.txt
-    python scripts/audit_deps.py --strict  (exit non-zero on findings)
+    python scripts/audit_deps.py --strict        (exit non-zero on findings)
+    python scripts/audit_deps.py --live          (also run pip-audit, if present)
 """
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+
+# The local list below is a hand-curated, BOUNDED snapshot. It is not refreshed
+# automatically and is not a substitute for an advisory feed. Surfacing the date
+# keeps the report honest about its own coverage.
+LOCAL_LIST_AS_OF = "2021"
 
 # Known vulnerable package versions (CVE database subset)
 # Format: package_name -> [(affected_version_range, CVE, severity)]
@@ -77,11 +96,24 @@ KNOWN_VULNS: Dict[str, List[Tuple[str, str, str]]] = {
     ],
 }
 
-# Packages that should have pinned versions (no loose version specifiers)
-SENSITIVE_PACKAGES = {
-    "pycryptodome", "pyopenssl", "rsa", "ecdsa", "paramiko",
-    "tornado", "requests", "pyyaml", "msgpack", "m2crypto",
-}
+# Pin hygiene is judged against the packages *actually declared in
+# requirements.txt* rather than a hand-maintained subset, so newly added runtime
+# deps (for example ``cryptography`` and ``httpx``) are covered automatically and
+# lower-bound-only pins are reported consistently for every dependency.
+#
+# classify_pin(spec) -> "unpinned" | "exact" | "range"
+#   "unpinned": no version specifier at all (a hard finding -- non-reproducible).
+#   "exact":    pinned to one version with ``==`` (acceptable).
+#   "range":    only a lower/upper/range bound such as ``>=41.0`` (advisory -- it
+#               does not freeze the resolved version for supply-chain integrity).
+def classify_pin(spec: str) -> str:
+    """Classify a requirements.txt version specifier for pin hygiene."""
+    spec = (spec or "").strip()
+    if spec == "*":
+        return "unpinned"
+    if spec.startswith("=="):
+        return "exact"
+    return "range"
 
 
 def parse_version(version_str: str) -> Optional[Tuple[int, ...]]:
@@ -173,15 +205,84 @@ def parse_requirements(path: str) -> Dict[str, str]:
     return reqs
 
 
+def run_live_audit(
+    requirements_path: Optional[str],
+) -> Tuple[bool, str, List[str]]:
+    """Best-effort LIVE advisory check via ``pip-audit`` (OSV / PyPA feed).
+
+    Returns ``(available, detail, vuln_findings)``:
+
+      * ``available`` is False when the check could NOT be performed (pip-audit
+        missing, launch failure, timeout, or no parseable advisory output). In
+        that case the caller MUST NOT report a clean pass.
+      * ``available`` is True only when an advisory source was actually
+        consulted; ``vuln_findings`` then reflects its real result (possibly
+        empty, which is a genuine "no advisory hits" -- not an absence of data).
+
+    Never fabricates a result and never treats "unavailable" as "clean".
+    """
+    if importlib.util.find_spec("pip_audit") is None:
+        return (
+            False,
+            "pip-audit is not installed in this interpreter "
+            "(install it to enable the live advisory check)",
+            [],
+        )
+
+    cmd = [sys.executable, "-m", "pip_audit", "--format", "json"]
+    # Scope to the declared requirements when we have them; otherwise pip-audit
+    # audits the current environment.
+    if requirements_path and Path(requirements_path).is_file():
+        cmd += ["-r", requirements_path]
+
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    except FileNotFoundError:
+        return (False, "pip-audit could not be launched", [])
+    except subprocess.TimeoutExpired:
+        return (False, "pip-audit timed out (advisory feed or network unreachable)", [])
+    except OSError as exc:
+        return (False, f"pip-audit could not run: {exc}", [])
+
+    # Only trust the feed when pip-audit emitted parseable JSON. An error path
+    # (missing network, resolution failure) prints to stderr and yields no JSON,
+    # which we surface as "not performed", never as a clean result.
+    try:
+        data: Dict[str, Any] = json.loads(proc.stdout)
+    except (json.JSONDecodeError, TypeError):
+        tail = (proc.stderr or proc.stdout or "").strip().splitlines()
+        reason = tail[-1] if tail else f"no output (exit code {proc.returncode})"
+        return (
+            False,
+            f"pip-audit produced no parseable advisory result: {reason}",
+            [],
+        )
+
+    vulns: List[str] = []
+    for dep in data.get("dependencies", []) or []:
+        name = str(dep.get("name", "?")).lower()
+        version = str(dep.get("version", "?"))
+        for v in dep.get("vulns", []) or []:
+            vid = v.get("id") or (v.get("aliases") or ["?"])[0]
+            fix = v.get("fix_versions") or []
+            fix_txt = ("fixed in " + ", ".join(str(f) for f in fix)) if fix \
+                else "no fixed version listed"
+            vulns.append(f"[HIGH] {name}=={version} advisory {vid} ({fix_txt})")
+
+    return (True, f"pip-audit consulted successfully (exit code {proc.returncode})", vulns)
+
+
 def audit_dependencies(
     requirements_path: Optional[str] = None,
     strict: bool = False,
+    live: bool = False,
 ) -> int:
-    """Run dependency audit. Returns number of findings."""
+    """Run dependency audit. Returns number of gate findings (0 unless strict)."""
     installed = get_installed_packages()
-    findings: List[str] = []
+    findings: List[str] = []          # gate findings -> drive the strict exit code
+    advisories: List[str] = []        # pin-hygiene notes -> reported, never gate
 
-    # Check known vulnerabilities
+    # 1. Known vulnerabilities (LOCAL, bounded, non-exhaustive list).
     for pkg, vulns in KNOWN_VULNS.items():
         if pkg not in installed:
             continue
@@ -193,29 +294,80 @@ def audit_dependencies(
                     f"(affected: {spec})"
                 )
 
-    # Check for unpinned sensitive packages
+    # 2. Version-pin hygiene, judged against every package in requirements.txt.
     if requirements_path:
         reqs = parse_requirements(requirements_path)
-        for pkg in SENSITIVE_PACKAGES:
-            if pkg in reqs:
-                spec = reqs[pkg]
-                if spec == "*":
-                    findings.append(
-                        f"[MEDIUM] {pkg} is unpinned in requirements.txt "
-                        f"(should pin to exact version)"
-                    )
+        for pkg in sorted(reqs):
+            spec = reqs[pkg]
+            kind = classify_pin(spec)
+            if kind == "unpinned":
+                # No version at all is a reproducibility/supply-chain finding.
+                findings.append(
+                    f"[MEDIUM] {pkg} is listed in requirements.txt with no version "
+                    f"specifier (not pinned at all)"
+                )
+            elif kind == "range":
+                # Lower/upper/range-only: reported consistently as an advisory so a
+                # reader sees that these are not exact pins, without failing the
+                # security gate that --strict is meant to enforce.
+                advisories.append(
+                    f"{pkg} is only bound by {spec} in requirements.txt "
+                    f"(not pinned to an exact version)"
+                )
 
-    # Print report
+    # 3. Optional LIVE advisory check.
+    live_available: Optional[bool] = None
+    live_detail = ""
+    if live:
+        live_available, live_detail, live_vulns = run_live_audit(requirements_path)
+        if live_available:
+            findings.extend(live_vulns)
+        else:
+            # A requested live check that could not run is itself a non-clean signal.
+            findings.append(
+                f"[MEDIUM] LIVE advisory check could NOT be performed "
+                f"({live_detail}); this is NOT a clean result"
+            )
+
+    # ── Report ─────────────────────────────────────────────────────────
     print("=" * 70)
     print("Pupyteer Dependency Audit Report")
     print("=" * 70)
 
-    if not findings:
-        print("\nNo known vulnerabilities found. ✓")
-        print(f"Packages checked: {len(installed)}")
-        return 0
+    print("\nCOVERAGE OF THE BUILT-IN CHECK")
+    print("  The local list below is a HAND-MAINTAINED, BOUNDED and NON-EXHAUSTIVE")
+    print(f"  snapshot of known vulnerabilities (hand-maintained, curated ~{LOCAL_LIST_AS_OF}).")
+    print("  It is NOT a current advisory feed. A clean local result means only")
+    print("  \"no match in this local list\" -- it does NOT mean no vulnerabilities")
+    print("  exist. Re-run with --live to consult a real advisory source.")
+    print(f"  Local list checked against {len(installed)} installed package(s).")
 
-    # Group by severity
+    if live:
+        print("\nLIVE ADVISORY CHECK (--live)")
+        if live_available:
+            print("  Source consulted: pip-audit (OSV / PyPA advisory feed).")
+        else:
+            print("  STATUS: COULD NOT BE PERFORMED -- this is NOT a clean result.")
+        print(f"  Detail: {live_detail}")
+
+    if advisories:
+        print(f"\n{len(advisories)} pin-hygiene note(s) "
+              f"(not security findings; do not affect the gate):")
+        for note in advisories:
+            print(f"  [NOTE] {note}")
+
+    if not findings:
+        print("\nRESULT: No matches in the local known-vulnerability list.")
+        print("  This is a bounded local check, NOT a full advisory scan; it does")
+        if live and live_available:
+            print("  not prove the absence of vulnerabilities. (The --live advisory")
+            print("  check was performed for the packages listed above.)")
+        else:
+            print("  not prove the absence of vulnerabilities. For a live advisory")
+            print("  scan, run with --live.")
+        return _finish(strict, len(findings))
+
+    # Gate findings exist: sort by severity and print them.
     severity_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
     findings.sort(key=lambda f: severity_order.get(f.split(']')[0][1:], 99))
 
@@ -235,9 +387,14 @@ def audit_dependencies(
     print(f"Total findings: {len(findings)}")
     print(f"Packages checked: {len(installed)}")
 
-    if strict:
+    return _finish(strict, len(findings))
+
+
+def _finish(strict: bool, finding_count: int) -> int:
+    """Apply the --strict contract: non-zero on findings, otherwise zero."""
+    if strict and finding_count:
         print("\nStrict mode: exiting with non-zero code due to findings.")
-        return len(findings)
+        return finding_count
     return 0
 
 
@@ -261,11 +418,19 @@ def main():
         action="store_true",
         help="Exit non-zero on findings",
     )
+    parser.add_argument(
+        "--live", "-l",
+        action="store_true",
+        help="Also run a LIVE advisory check via pip-audit (OSV/PyPA). Degrades "
+             "to an honest 'not performed' warning if pip-audit/network is absent; "
+             "never a silent clean pass.",
+    )
     args = parser.parse_args()
 
     exit_code = audit_dependencies(
         requirements_path=args.requirements,
         strict=args.strict,
+        live=args.live,
     )
     sys.exit(exit_code)
 

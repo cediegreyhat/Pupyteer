@@ -122,6 +122,12 @@ class PayloadConfig:
     # persistence. An agent built without it answers `screenshot` with
     # "unknown action" rather than pretending.
     screenshot: bool = False
+    # Process migration is compiled in by default, matching every payload built to
+    # date: it changes no on-target behaviour unless tasked, so leaving it on
+    # preserves current payloads. An operator can still pass migration=False for a
+    # smaller artifact that declares no `migrate` capability and answers a migrate
+    # tasking with "unknown action" rather than pretending.
+    migration: bool = True
     extra: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -494,6 +500,7 @@ class PayloadBuilder:
                         sleep=payload_config.sleep,
                         jitter=payload_config.jitter,
                         persistence=payload_config.persistence,
+                        migration=payload_config.migration,
                         modules=payload_config.stub_modules(),
                         platform=payload_config.platform.value,
                         arch=payload_config.arch.value,
@@ -528,6 +535,7 @@ class PayloadBuilder:
                     sleep=payload_config.sleep,
                     jitter=payload_config.jitter,
                     persistence=payload_config.persistence,
+                    migration=payload_config.migration,
                     modules=payload_config.stub_modules(),
                     platform=payload_config.platform.value,
                     arch=payload_config.arch.value,

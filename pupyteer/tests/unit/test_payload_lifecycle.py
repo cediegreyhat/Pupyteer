@@ -201,6 +201,29 @@ class TestBuildSettingsReachTheStub:
             "capture code is present but no action reaches it"
         )
 
+    @pytest.mark.asyncio
+    async def test_migration_toggle_reaches_the_artifact(self, config, audit):
+        """Migration is compiled in by default, but an operator can turn it off."""
+        pm = PayloadManager(config, audit)
+        default = await pm.build(PayloadConfig(
+            name="migratory", payload_type=PayloadType.SCRIPT, profile="TCP-Raw"))
+        code = Path(default.artifact_path).read_text(encoding="utf-8")
+        assert "def migrate(" in code, "default payload lost its migration handler"
+        assert 'action == "migrate"' in code, (
+            "handler is present but no action reaches it"
+        )
+
+        off = await pm.build(PayloadConfig(
+            name="rooted", payload_type=PayloadType.SCRIPT, profile="TCP-Raw",
+            migration=False))
+        code = Path(off.artifact_path).read_text(encoding="utf-8")
+        assert "def migrate(" not in code, (
+            "migration=False still compiled in the process-migration handler"
+        )
+        assert 'action == "migrate"' not in code, (
+            "a migrate tasking would still be routed to a missing handler"
+        )
+
 
 class TestCompilationIsReal:
     """An artifact that only has an executable's extension is not one.
