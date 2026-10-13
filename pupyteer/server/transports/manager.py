@@ -106,20 +106,31 @@ class TransportManager:
             "listener": self._listener is not None,
         })
 
-    async def start_listener(self, session_manager: Any) -> None:
+    async def start_listener(self, session_manager: Any, agent_keys: Any = None) -> None:
         """Start the real TCP agent listener.
 
         Called by the engine after all subsystems are initialized.
+        *agent_keys* is the AgentKeyRegistry used to verify agent
+        registrations (per-agent Ed25519). Passed through to the listener.
         """
         if self._listener is not None:
             return  # already started
         host = self._config.get("server.host", "0.0.0.0")
         port = self._config.get("server.port", 8443)
         from pupyteer.server.transports.listener import AgentListener
+        listener_cfg = {"host": host, "port": port}
+        # Optional RC4 transport key so the listener interoperates with the
+        # compiled PE agent, which RC4-frames both directions with AGENT_RC4KEY.
+        # Unset -> plaintext wire (Python stub + tests). See listener.py and the
+        # WIRE FORMAT comment atop pupyteer/agent/core/pe_template.c.
+        rc4_key = self._config.get("transports.rc4_key", None)
+        if rc4_key:
+            listener_cfg["rc4_key"] = rc4_key
         self._listener = AgentListener(
-            config={"host": host, "port": port},
+            config=listener_cfg,
             session_manager=session_manager,
             audit_logger=self._audit,
+            agent_keys=agent_keys,
         )
         await self._listener.start()
         logger.info("Agent listener started on %s:%d", host, port)

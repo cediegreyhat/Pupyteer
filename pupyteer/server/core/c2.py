@@ -350,12 +350,18 @@ class C2Engine:
             pass
 
         try:
-            results["transports"] = len(self._transports.list()) >= 0
+            # Transports are healthy if at least one is actively listening.
+            active = [t for t in self._transports.list() if t.get("running", t.get("active", False))]
+            results["transports"] = len(active) > 0
         except Exception:
             pass
 
         try:
-            results["sessions"] = self._sessions.count() >= 0
+            # Sessions subsystem is healthy if it can report a count and is
+            # not wedged (a stalled manager returns -1 via a sentinel, but a
+            # real count is always >= 0 — assert it answers at all).
+            _ = self._sessions.count()
+            results["sessions"] = True
         except Exception:
             pass
 

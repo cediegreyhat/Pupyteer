@@ -220,14 +220,30 @@ class PayloadBuilder:
     - Optional signing workflow
     """
 
-    def __init__(self, config: ConfigManager, audit: AuditLogger):
+    def __init__(self, config: ConfigManager, audit: AuditLogger, agent_keys: Any = None):
         self._config = config
         self._audit = audit
+        # Optional AgentKeyRegistry — when set, each built agent is minted a
+        # per-agent Ed25519 identity embedded in the stub so the listener can
+        # authenticate it. When None, stubs build without an identity and will
+        # only connect to a legacy unsigned listener.
+        self._agent_keys = agent_keys
         self._artifact_dir = Path(config.get("paths.payload_artifacts", "./payloads/artifacts"))
         self._artifact_dir.mkdir(parents=True, exist_ok=True)
         self._signer = PayloadSigner(config, audit)
         self._log_dir = self._artifact_dir / "logs"
         self._log_dir.mkdir(exist_ok=True)
+
+    def _mint_agent_identity(self) -> Optional[Dict[str, str]]:
+        """Generate a per-agent Ed25519 identity for embedding in a stub.
+
+        Returns {"agent_id","priv_pem"} to place in StubConfig.extra, or None
+        when no registry is configured.
+        """
+        if self._agent_keys is None:
+            return None
+        pair = self._agent_keys.generate()
+        return {"agent_id": pair.agent_id, "priv_pem": pair.priv_pem}
 
     def validate_config(self, payload_config: PayloadConfig) -> List[str]:
         """Validate payload configuration with comprehensive sanity checks."""
@@ -436,6 +452,7 @@ class PayloadBuilder:
                     try:
                         from pupyteer.agent.core.stub import AgentStubGenerator, StubConfig
                         stub_gen = AgentStubGenerator()
+                        identity = self._mint_agent_identity()
                         stub_cfg = StubConfig(
                             name=payload_config.name,
                             transport=payload_config.transport,
@@ -444,6 +461,7 @@ class PayloadBuilder:
                             profile=payload_config.profile,
                             platform=payload_config.platform.value,
                             arch=payload_config.arch.value,
+                            extra={"agent_identity": identity} if identity else {},
                         )
                         agent_code = stub_gen.generate(stub_cfg)
                         if payload_config.payload_type == PayloadType.SCRIPT:
@@ -674,10 +692,10 @@ class PayloadManager:
     - Optional signing
     """
 
-    def __init__(self, config: ConfigManager, audit: AuditLogger):
+    def __init__(self, config: ConfigManager, audit: AuditLogger, agent_keys: Any = None):
         self._config = config
         self._audit = audit
-        self._builder = PayloadBuilder(config, audit)
+        self._builder = PayloadBuilder(config, audit, agent_keys=agent_keys)
         self._store = PayloadStore(config, audit)
 
     async def build(

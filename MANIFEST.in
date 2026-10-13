@@ -1,0 +1,22 @@
+# Pupyteer — sdist inclusion rules
+# Ship docs, license, deps, and every runtime data artifact the wheel also
+# carries via package_data. Exclude build/cache artifacts.
+
+include README.md
+include LICENSE
+include requirements.txt
+
+# Runtime data: C agent template, YAML defaults, default C2 profiles
+recursive-include pupyteer/agent *.c *.h
+recursive-include pupyteer/config *.yaml *.yml
+recursive-include pupyteer/server/profiles/default_profiles *.profile
+recursive-include pupyteer/external *
+
+# Never ship caches, VCS, or build output
+global-exclude *.py[cod] __pycache__
+prune pupyteer/graphify-out
+prune .git
+prune .venv
+prune dist
+prune build
+prune *.egg-info

@@ -37,6 +37,7 @@ from enum import Enum
 from typing import Any, Dict, Optional
 
 from pupyteer.server.core.auth import AuthLayer
+from pupyteer.server.core.agent_keys import AgentKeyRegistry
 from pupyteer.server.core.config import ConfigManager
 from pupyteer.server.core.errors import (
     C2EngineError,
@@ -121,6 +122,13 @@ class PupyteerEngine:
         # Authentication / authorization layer
         self._auth = AuthLayer(self._config, self._audit)
 
+        # Per-agent asymmetric identity registry (Ed25519). The listener
+        # verifies registrations against it; the payload builder mints new
+        # keys through it. Replaces the old shared-secret JWT model.
+        self._agent_keys = AgentKeyRegistry()
+        if self._config.get("security.agent_keys_file"):
+            self._load_agent_keys(self._config.get("security.agent_keys_file"))
+
         # Subsystem managers (wired in dependency order)
         self._profiles = ProfileManager(self._config, self._audit)
         self._transports = TransportManager(self._config, self._profiles, self._audit)
@@ -136,13 +144,31 @@ class PupyteerEngine:
         )
         self._tasks = TaskManager(self._config, self._sessions, self._audit)
         self._evasion = EvasionTestManager(self._config, self._audit)
-        self._payloads = PayloadManager(self._config, self._audit)
+        self._payloads = PayloadManager(self._config, self._audit, agent_keys=self._agent_keys)
         # Unified payload-to-evasion pipeline
         self._pipeline = PipelineManager(self)
 
         # Legacy state for backward compatibility
         self.state = EngineState()
         self._logger = logging.getLogger("pupyteer.engine")
+
+    def _load_agent_keys(self, path: str) -> None:
+        """Load trusted agent public keys from a JSON file, if present.
+
+        Best-effort: a missing or malformed file is logged, never fatal —
+        freshly minted keys still auto-trust at generation time.
+        """
+        import json
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            if isinstance(data, dict):
+                self._agent_keys.load_from_dict(data)
+                self._logger.info("Loaded %d agent key(s) from %s", len(data), path)
+        except FileNotFoundError:
+            pass
+        except Exception as exc:
+            self._logger.warning("Failed to load agent keys from %s: %s", path, exc)
 
     # ── Properties ──────────────────────────────────────────────────
 
@@ -167,6 +193,11 @@ class PupyteerEngine:
     @property
     def auth(self) -> AuthLayer:
         return self._auth
+
+    @property
+    def agent_keys(self) -> AgentKeyRegistry:
+        """Registry of trusted per-agent public keys."""
+        return self._agent_keys
 
     @property
     def sessions(self) -> SessionManager:
@@ -269,9 +300,9 @@ class PupyteerEngine:
                 subsystem="sessions",
                 operation="init",
             )
-            # Wire session manager into the TCP listener so agent callbacks
-            # can create sessions
-            await self._transports.start_listener(self._sessions)
+            # Wire session manager + agent key registry into the TCP listener
+            # so agent callbacks can create sessions and verify registrations
+            await self._transports.start_listener(self._sessions, self._agent_keys)
             # Discover and register modules
             mod_count = self._module_registry.discover()
             self._logger.info("Discovered %d modules", mod_count)

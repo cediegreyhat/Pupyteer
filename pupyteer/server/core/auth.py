@@ -15,6 +15,53 @@ from pupyteer.server.core.logging import AuditLogger
 
 logger = logging.getLogger("pupyteer.auth")
 
+# Password hashing parameters. PBKDF2-HMAC-SHA256 with a per-operator random
+# salt. Iterations chosen for a balance of security and CPU on modest hosts;
+# the count is stored with the hash so it can be raised later without breaking
+# existing credentials.
+_PBKDF2_ALGO = "pbkdf2_sha256"
+_PBKDF2_ITERS = 240_000
+_SALT_BYTES = 16
+
+
+def hash_password(password: str, *, iters: int = _PBKDF2_ITERS) -> str:
+    """Return a self-describing salted PBKDF2 hash.
+
+    Format: ``pbkdf2_sha256$<iters>$<salt_hex>$<hash_hex>``.
+    The algorithm and iteration count are embedded so verification stays
+    correct even if defaults change later.
+    """
+    salt = os.urandom(_SALT_BYTES)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iters)
+    return f"{_PBKDF2_ALGO}${iters}${salt.hex()}${dk.hex()}"
+
+
+def verify_password(password: str, stored: str) -> bool:
+    """Constant-time verify *password* against a stored hash.
+
+    Accepts the new ``pbkdf2_sha256$...`` format. Legacy bare sha256 hex
+    hashes (from the old cleartext-config model) are still accepted so
+    existing deployments don't lock out — but a warning is emitted because
+    those are unsalted and weak.
+    """
+    if not stored:
+        return False
+    if stored.startswith(f"{_PBKDF2_ALGO}$"):
+        try:
+            _, iters_s, salt_hex, hash_hex = stored.split("$", 3)
+            iters = int(iters_s)
+            salt = bytes.fromhex(salt_hex)
+            expected = bytes.fromhex(hash_hex)
+        except (ValueError, TypeError):
+            return False
+        dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iters)
+        return hmac.compare_digest(dk, expected)
+    # Legacy unsalted sha256 — accept but warn (migrate by re-adding operator).
+    if len(stored) == 64 and all(c in "0123456789abcdef" for c in stored.lower()):
+        legacy = hashlib.sha256(password.encode()).hexdigest()
+        return hmac.compare_digest(legacy.lower(), stored.lower())
+    return False
+
 
 @dataclass
 class OperatorSession:
@@ -45,15 +92,37 @@ class AuthLayer:
         self._max_failed: int = config.get("security.max_failed_logins", 5)
         self._sessions: Dict[str, OperatorSession] = {}
         self._failed_attempts: Dict[str, int] = {}
-        self._credentials: Dict[str, str] = {}  # username -> sha256 hash
+        self._credentials: Dict[str, str] = {}  # username -> pbkdf2 hash
         self._load_credentials()
 
     def _load_credentials(self) -> None:
-        """Load operator credentials from config (for development)."""
+        """Load operator credential hashes from config.
+
+        Accepts either pre-hashed values (``pbkdf2_sha256$...`` or legacy
+        sha256 hex) in ``security.operator_hashes``, OR cleartext passwords in
+        ``security.operators`` which are hashed in-memory at load (never
+        persisted cleartext). Cleartext config is discouraged — prefer
+        ``operator_hashes`` or a secrets manager.
+        """
+        hashes = self._config.get("security.operator_hashes", {})
+        if isinstance(hashes, dict):
+            for user, stored in hashes.items():
+                if isinstance(stored, str) and stored:
+                    self._credentials[user] = stored
+
         operators = self._config.get("security.operators", {})
         if isinstance(operators, dict):
             for user, password in operators.items():
-                self._credentials[user] = hashlib.sha256(password.encode()).hexdigest()
+                if not isinstance(password, str) or not password:
+                    continue
+                # If the value already looks like a hash, keep it; else hash it.
+                if password.startswith(f"{_PBKDF2_ALGO}$") or (
+                    len(password) == 64
+                    and all(c in "0123456789abcdef" for c in password.lower())
+                ):
+                    self._credentials[user] = password
+                else:
+                    self._credentials[user] = hash_password(password)
 
     # ------------------------------------------------------------------ #
     #  Public API                                                         #
@@ -80,8 +149,7 @@ class AuthLayer:
             )
             return None
 
-        provided = hashlib.sha256(password.encode()).hexdigest()
-        if not hmac.compare_digest(expected_hash, provided):
+        if not verify_password(password, expected_hash):
             self._failed_attempts[username] = self._failed_attempts.get(username, 0) + 1
             self._audit.log_event(
                 "auth_failed",
@@ -140,8 +208,8 @@ class AuthLayer:
         return dict(self._sessions)
 
     def add_operator(self, username: str, password: str, permissions: Optional[Set[str]] = None) -> None:
-        """Add a new operator credential."""
-        self._credentials[username] = hashlib.sha256(password.encode()).hexdigest()
+        """Add a new operator credential (stored as a salted PBKDF2 hash)."""
+        self._credentials[username] = hash_password(password)
         self._audit.log_event(
             "auth_operator_added", {"username": username, "permissions": list(permissions or {"read", "execute"})}
         )

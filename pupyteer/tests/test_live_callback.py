@@ -149,19 +149,46 @@ def _recv_json(sock: socket.socket) -> Optional[Dict[str, Any]]:
 
 
 def _register_agent(
-    host: str, port: int, hostname: str = "test-agent"
+    host: str, port: int, hostname: str = "test-agent", engine: Any = None
 ) -> tuple:
-    """Register an agent and return (socket, session_id)."""
+    """Register an agent (Ed25519 challenge/response) and return (socket, session_id).
+
+    When *engine* is provided, a per-agent identity is minted through the
+    engine's AgentKeyRegistry so the listener can verify it — this exercises
+    the authenticated path. Without an engine, falls back to the legacy
+    unsigned single-shot register (only works on a listener without a key
+    registry).
+    """
     sock = _tcp_connect(host, port)
-    _send_json(sock, {
+    base = {
         "type": "register",
         "hostname": hostname,
         "os": "linux",
         "arch": "x86_64",
         "username": "testuser",
         "agent_version": "1.0.0-test",
-    })
-    response = _recv_json(sock)
+    }
+
+    if engine is not None:
+        # Mint an identity and pre-register it via the engine's registry.
+        from pupyteer.server.core.agent_keys import sign_payload
+        pair = engine.agent_keys.generate()
+        base["agent_id"] = pair.agent_id
+        # Stage 1: register without signature -> expect a challenge.
+        _send_json(sock, base)
+        challenge = _recv_json(sock)
+        assert challenge is not None, "No challenge response"
+        assert challenge["type"] == "challenge", f"Unexpected: {challenge}"
+        nonce = challenge["nonce"]
+        # Stage 2: sign the nonce and re-send.
+        base["nonce"] = nonce
+        base["signature"] = sign_payload(pair.priv_pem, nonce)
+        _send_json(sock, base)
+        response = _recv_json(sock)
+    else:
+        _send_json(sock, base)
+        response = _recv_json(sock)
+
     assert response is not None, "No registration response"
     assert response["type"] == "registered", f"Unexpected: {response}"
     session_id = response["session_id"]
@@ -181,7 +208,7 @@ class TestLiveAgentRegistration:
         """Registration creates a SessionInfo in the SessionManager."""
         thread, host, port = engine_thread
 
-        sock, session_id = _register_agent(host, port, hostname="reg-test")
+        sock, session_id = _register_agent(host, port, hostname="reg-test", engine=thread.engine)
 
         try:
             session = thread.submit(thread.engine.sessions.get(session_id))
@@ -198,8 +225,8 @@ class TestLiveAgentRegistration:
         """Each registration produces a distinct session ID."""
         thread, host, port = engine_thread
 
-        sock1, sid1 = _register_agent(host, port, hostname="agent-1")
-        sock2, sid2 = _register_agent(host, port, hostname="agent-2")
+        sock1, sid1 = _register_agent(host, port, hostname="agent-1", engine=thread.engine)
+        sock2, sid2 = _register_agent(host, port, hostname="agent-2", engine=thread.engine)
 
         try:
             assert sid1 != sid2
@@ -220,7 +247,7 @@ class TestLiveAgentCheckin:
         """Sending a checkin updates the session's last_checkin timestamp."""
         thread, host, port = engine_thread
 
-        sock, session_id = _register_agent(host, port, hostname="checkin-test")
+        sock, session_id = _register_agent(host, port, hostname="checkin-test", engine=thread.engine)
 
         try:
             before = thread.submit(thread.engine.sessions.get(session_id))
@@ -245,7 +272,7 @@ class TestLiveAgentCheckin:
         """Checkin with no queued commands returns empty commands list."""
         thread, host, port = engine_thread
 
-        sock, session_id = _register_agent(host, port, hostname="empty-checkin")
+        sock, session_id = _register_agent(host, port, hostname="empty-checkin", engine=thread.engine)
 
         try:
             _send_json(sock, {"type": "checkin", "session_id": session_id})
@@ -264,7 +291,7 @@ class TestLiveCommandDispatch:
         """A queued command is returned on the next checkin."""
         thread, host, port = engine_thread
 
-        sock, session_id = _register_agent(host, port, hostname="dispatch-test")
+        sock, session_id = _register_agent(host, port, hostname="dispatch-test", engine=thread.engine)
 
         try:
             # Queue a command
@@ -289,7 +316,7 @@ class TestLiveCommandDispatch:
         """Sending command output returns ack and completes the command."""
         thread, host, port = engine_thread
 
-        sock, session_id = _register_agent(host, port, hostname="output-test")
+        sock, session_id = _register_agent(host, port, hostname="output-test", engine=thread.engine)
 
         try:
             # Queue a command
@@ -329,7 +356,7 @@ class TestLiveCommandDispatch:
         """Full end-to-end loop: register → queue → checkin → output → ack."""
         thread, host, port = engine_thread
 
-        sock, session_id = _register_agent(host, port, hostname="full-loop")
+        sock, session_id = _register_agent(host, port, hostname="full-loop", engine=thread.engine)
 
         try:
             # Verify session exists
@@ -428,7 +455,7 @@ class TestLiveSessionCleanup:
         """After a socket disconnect, session is still tracked (until timeout)."""
         thread, host, port = engine_thread
 
-        sock, session_id = _register_agent(host, port, hostname="persist-test")
+        sock, session_id = _register_agent(host, port, hostname="persist-test", engine=thread.engine)
 
         # Close connection
         sock.close()

