@@ -19,6 +19,9 @@ from typing import Dict, List, Optional, Any
 
 from pupyteer.server.core.config import ConfigManager
 from pupyteer.server.core.logging import AuditLogger
+from pupyteer.server.sessions.capabilities import (
+    SHELL, refusal, required_capability,
+)
 
 logger = logging.getLogger("pupyteer.sessions")
 
@@ -42,11 +45,26 @@ class SessionInfo:
     state: SessionState = SessionState.CONNECTED
     connected_at: float = 0.0
     last_checkin: float = 0.0
+    killed_at: float = 0.0
     profile: str = ""
     agent_version: str = ""
     tags: List[str] = field(default_factory=list)
     task_status: str = "idle"
     remote_address: str = ""
+    #: Proof that a beacon belongs to this session, handed out when it registered.
+    #: The enrollment secret says a payload may become *a* session; only this says
+    #: it is *this* one. Empty means no beacon from this session can be verified,
+    #: so a session conjured anywhere other than the listener is inert.
+    beacon_token: str = ""
+    #: What the payload said it can do, at registration. Enforced by the command
+    #: queue rather than trusted for display: a tasking this list does not cover
+    #: is answered here instead of being sent to a shell that would invent a
+    #: reply. Empty means an agent built before the claim existed, which is
+    #: trusted with shell text and nothing structured.
+    capabilities: List[str] = field(default_factory=list)
+    #: The longest line this agent reads in one piece, so a chunk is sized to
+    #: something that survives the trip. 0 means undeclared.
+    max_line: int = 0
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -59,6 +77,11 @@ class SessionInfo:
         d = asdict(self)
         d["state"] = self.state.value
         d["uptime_seconds"] = self.uptime_seconds
+        # `sessions list`, `sessions info` and `sessions search` all render this,
+        # which is to say it ends up on screens, in team chat and in exported
+        # engagement notes. The token is what an outsider does not get to have, so
+        # it leaves the record for the listener's own use only.
+        d.pop("beacon_token", None)
         return d
 
 
@@ -83,6 +106,10 @@ class SessionManager:
         self._monitor_task: Optional[asyncio.Task] = None
         self._timeout_seconds: float = float(config.get("session.timeout_seconds", 300))
         self._heartbeat_interval: int = 30
+        # How long a killed session is kept so its exit order can be picked up.
+        self._kill_grace_seconds: float = float(
+            config.get("session.kill_grace_seconds", max(self._timeout_seconds, 120))
+        )
         self._command_queue: Dict[str, List[Dict[str, Any]]] = {}
 
         # Try to get session config from active profile
@@ -117,6 +144,9 @@ class SessionManager:
             sids = list(self._sessions)
         for sid in sids:
             await self.kill(sid, reason="engine_shutdown")
+            # The listener is going away, so no exit order can be delivered;
+            # there is nothing to keep the record for.
+            await self.remove(sid)
 
         logger.info("Session manager stopped")
 
@@ -155,27 +185,48 @@ class SessionManager:
     async def remove(self, session_id: str) -> bool:
         """Remove a session from tracking."""
         async with self._lock:
-            if session_id in self._sessions:
-                del self._sessions[session_id]
-                return True
-        return False
+            existed = session_id in self._sessions
+            self._sessions.pop(session_id, None)
+            # Queued commands and their output would otherwise accumulate per
+            # session for the life of the server.
+            self._command_queue.pop(session_id, None)
+        return existed
 
     async def kill(self, session_id: str, reason: str = "operator") -> bool:
-        """Terminate a session and notify the agent."""
+        """Order the agent to shut down, then forget the session once it may
+        have heard.
+
+        Deleting the record immediately left the implant running on target with
+        no session anyone could address — the opposite of what an operator
+        typing `sessions kill` expects. The exit order rides the normal command
+        queue and reaches the agent on its next check-in; the session is
+        dropped after the grace period either way.
+        """
+        import uuid
         async with self._lock:
             session = self._sessions.get(session_id)
             if not session:
                 return False
             session.state = SessionState.KILLED
+            session.killed_at = time.time()
             hostname = session.hostname
+            self._command_queue.setdefault(session_id, []).append({
+                "command_id": str(uuid.uuid4())[:12],
+                "command": "exit",
+                "queued_at": time.time(),
+                "status": "queued",
+                "result": None,
+            })
 
         self._audit.log_event(
             "session_killed",
             {"session_id": session_id, "reason": reason, "hostname": hostname},
             session=session_id,
         )
-        logger.info("Session killed: %s (reason: %s)", session_id, reason)
-        await self.remove(session_id)
+        logger.info(
+            "Session killed: %s (reason: %s) — exit ordered, purging after %ds",
+            session_id, reason, int(self._kill_grace_seconds),
+        )
         return True
 
     # ------------------------------------------------------------------ #
@@ -268,17 +319,45 @@ class SessionManager:
         import uuid
         command_id = str(uuid.uuid4())[:12]
 
+        # The implant decides what it can be asked to do, and the queue holds it
+        # to that. A tasking outside its declaration is answered here rather than
+        # sent: on the wire it would come back as whatever a shell says about a
+        # word it has never seen, and an operator cannot tell that output from a
+        # result. Refused commands therefore complete without ever being delivered.
+        want = required_capability(command)
+        refused = want != SHELL and want not in session.capabilities
+
+        now = time.time()
         cmd_entry = {
             "command_id": command_id,
             "command": command,
-            "queued_at": time.time(),
-            "status": "queued",
-            "result": None,
+            "queued_at": now,
+            "status": "completed" if refused else "queued",
+            "result": refusal(want, session.capabilities) if refused else None,
         }
+        if refused:
+            cmd_entry["completed_at"] = now
+            cmd_entry["refused"] = want
 
         if session_id not in self._command_queue:
             self._command_queue[session_id] = []
         self._command_queue[session_id].append(cmd_entry)
+
+        if refused:
+            # `task_status` stays as it was: the session is not busy, and marking
+            # it executing would hide the command that is.
+            self._audit.log_event(
+                "session_command_unsupported",
+                {"session_id": session_id, "command_id": command_id,
+                 "command": command, "capability": want,
+                 "declared": list(session.capabilities)},
+                session=session_id,
+            )
+            logger.info(
+                "Command %s refused for session %s: %s",
+                command_id, session_id, cmd_entry["result"],
+            )
+            return command_id
 
         # Update task status
         session.task_status = "executing"
@@ -300,9 +379,14 @@ class SessionManager:
         queue = self._command_queue.get(session_id, [])
         for cmd in queue:
             if cmd["command_id"] == command_id:
-                cmd["status"] = "completed"
+                # Result before status: these dicts are handed out live by
+                # get_command_history, so a reader that comes behind this loop
+                # must never be able to see a completed command whose output has
+                # not arrived yet. "completed" with no result reads as an empty
+                # command on the target, and an operator moves on.
                 cmd["result"] = result
                 cmd["completed_at"] = time.time()
+                cmd["status"] = "completed"
                 break
 
         # Update task status based on remaining queue
@@ -359,6 +443,10 @@ class SessionManager:
     def count(self) -> int:
         return len(self._sessions)
 
+    def list_ids(self) -> List[str]:
+        """Synchronous session-id snapshot, for tab completion."""
+        return list(self._sessions.keys())
+
     async def count_active(self) -> int:
         return sum(1 for s in self._sessions.values() if s.state == SessionState.CONNECTED)
 
@@ -384,13 +472,19 @@ class SessionManager:
     # ------------------------------------------------------------------ #
 
     async def _monitor_loop(self) -> None:
-        """Periodically check for timed-out sessions."""
+        """Periodically expire timed-out and fully-killed sessions."""
         while True:
             try:
                 await asyncio.sleep(30)
                 now = time.time()
+                expired: List[str] = []
                 async with self._lock:
                     for sid, session in self._sessions.items():
+                        if session.state == SessionState.KILLED:
+                            # Kept only so the exit order can be delivered.
+                            if now - session.killed_at > self._kill_grace_seconds:
+                                expired.append(sid)
+                            continue
                         if session.state != SessionState.CONNECTED:
                             continue
                         if session.last_checkin and (now - session.last_checkin) > self._timeout_seconds:
@@ -401,6 +495,9 @@ class SessionManager:
                                 session=sid,
                             )
                             logger.warning("Session timed out: %s (%s)", sid, session.hostname)
+                for sid in expired:
+                    await self.remove(sid)
+                    logger.debug("Dropped killed session %s after grace period", sid)
             except asyncio.CancelledError:
                 break
             except Exception as exc:

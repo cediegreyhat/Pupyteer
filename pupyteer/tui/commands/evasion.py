@@ -7,30 +7,23 @@ Wire to TUI via app.py: evasion [status|run|list|stats|profiles|runner]
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from typing import Any, Dict, List, Optional
 
-from pupyteer.server.core.engine import PupyteerEngine
 
-
-async def evasion_status(args: List[str]) -> Dict[str, Any]:
+async def evasion_status(tui: Any, args: List[str]) -> Dict[str, Any]:
     """Show evasion testing system status."""
-    engine = PupyteerEngine()
-    await engine.evasion.initialize()
-
-    stats = engine.evasion.get_stats()
-    result = {
+    engine = tui._engine
+    return {
         "status": "ok",
         "test_mode": engine.evasion.test_mode,
-        "litterbox_configured": engine.evasion._litterbox is not None,
-        "stats": stats,
+        "litterbox_configured": engine.evasion.litterbox_configured,
+        "stats": engine.evasion.get_stats(),
     }
 
-    await engine.evasion.shutdown()
-    return result
 
-
-async def evasion_run(args: List[str]) -> Dict[str, Any]:
+async def evasion_run(tui: Any, args: List[str]) -> Dict[str, Any]:
     """Run an evasion test.
 
     Usage: evasion run --name NAME --artifact PATH [--env ENV] [--controls C1,C2] [--profile PROFILE]
@@ -59,7 +52,7 @@ async def evasion_run(args: List[str]) -> Dict[str, Any]:
             profile_name = args[i + 1]
             i += 2
         else:
-            i += 1
+            return {"status": "error", "error": f"Unknown argument: {args[i]}"}
 
     if not artifact_path and not profile_name:
         return {"status": "error", "error": "Missing --artifact PATH or --profile PROFILE"}
@@ -67,8 +60,7 @@ async def evasion_run(args: List[str]) -> Dict[str, Any]:
     from pupyteer.server.evasion.models import EvasionTestConfig
     from pupyteer.server.evasion.runner import EvasionTestRunner, RunnerConfig
 
-    engine = PupyteerEngine()
-    await engine.evasion.initialize()
+    engine = tui._engine
 
     runner_config = RunnerConfig(auto_obfuscate=False)
     runner = EvasionTestRunner(engine.config, engine.audit, runner_config)
@@ -78,7 +70,7 @@ async def evasion_run(args: List[str]) -> Dict[str, Any]:
         if profile_name:
             result = await runner.run_with_profile(
                 profile_name,
-                artifact_path or "/dev/null",
+                artifact_path or os.devnull,
                 environment=environment,
             )
         else:
@@ -95,33 +87,21 @@ async def evasion_run(args: List[str]) -> Dict[str, Any]:
         return {"status": "ok", "result": result.to_dict()}
     finally:
         await runner.shutdown()
-        await engine.evasion.shutdown()
 
 
-async def evasion_list(args: List[str]) -> Dict[str, Any]:
+async def evasion_list(tui: Any, args: List[str]) -> Dict[str, Any]:
     """List recent evasion test results."""
-    engine = PupyteerEngine()
-    await engine.evasion.initialize()
-
-    history = engine.evasion.get_history()
+    history = tui._engine.evasion.get_history()
     results = [r.to_dict() for r in history[-20:]]
-
-    await engine.evasion.shutdown()
     return {"status": "ok", "count": len(results), "tests": results}
 
 
-async def evasion_stats(args: List[str]) -> Dict[str, Any]:
+async def evasion_stats(tui: Any, args: List[str]) -> Dict[str, Any]:
     """Show evasion test statistics."""
-    engine = PupyteerEngine()
-    await engine.evasion.initialize()
-
-    stats = engine.evasion.get_stats()
-    await engine.evasion.shutdown()
-
-    return {"status": "ok", "stats": stats}
+    return {"status": "ok", "stats": tui._engine.evasion.get_stats()}
 
 
-async def evasion_profiles(args: List[str]) -> Dict[str, Any]:
+async def evasion_profiles(tui: Any, args: List[str]) -> Dict[str, Any]:
     """List available evasion test configuration profiles."""
     from pupyteer.server.evasion.profiles import list_profiles
 
@@ -129,7 +109,7 @@ async def evasion_profiles(args: List[str]) -> Dict[str, Any]:
     return {"status": "ok", "count": len(profiles), "profiles": profiles}
 
 
-async def evasion_runner(args: List[str]) -> Dict[str, Any]:
+async def evasion_runner(tui: Any, args: List[str]) -> Dict[str, Any]:
     """Run via EvasionTestRunner with full orchestration.
 
     Usage: evasion runner --profile PROFILE --artifact PATH [--env ENV]
@@ -150,7 +130,7 @@ async def evasion_runner(args: List[str]) -> Dict[str, Any]:
             environment = args[i + 1]
             i += 2
         else:
-            i += 1
+            return {"status": "error", "error": f"Unknown argument: {args[i]}"}
 
     if not profile_name:
         return {"status": "error", "error": "--profile is required"}
@@ -159,8 +139,7 @@ async def evasion_runner(args: List[str]) -> Dict[str, Any]:
 
     from pupyteer.server.evasion.runner import EvasionTestRunner, RunnerConfig
 
-    engine = PupyteerEngine()
-    await engine.evasion.initialize()
+    engine = tui._engine
 
     runner_config = RunnerConfig(auto_obfuscate=False)
     runner = EvasionTestRunner(engine.config, engine.audit, runner_config)
@@ -173,7 +152,6 @@ async def evasion_runner(args: List[str]) -> Dict[str, Any]:
         return {"status": "ok", "result": result.to_dict()}
     finally:
         await runner.shutdown()
-        await engine.evasion.shutdown()
 
 
 COMMANDS = {

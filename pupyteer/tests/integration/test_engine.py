@@ -17,6 +17,7 @@ from pupyteer.server.tasks.manager import TaskManager, TaskState
 from pupyteer.server.profiles.manager import ProfileManager
 from pupyteer.server.transports.manager import TransportManager
 from pupyteer.payloads.manager import PayloadConfig, PayloadBuilder, PayloadStore, PayloadManager
+from pupyteer.payloads.manager import PayloadPlatform, PayloadArch, PayloadType
 
 
 # ─── Engine Integration ───────────────────────────────────────────────
@@ -225,7 +226,14 @@ class TestPayloadBuilder:
         config.set("paths.payload_artifacts", str(tmp_path))
         audit = AuditLogger(config)
         builder = PayloadBuilder(config, audit)
-        cfg = PayloadConfig(name="integration-test", platform=__import__("pupyteer.payloads.manager", fromlist=["PayloadPlatform"]).PayloadPlatform.LINUX, arch=__import__("pupyteer.payloads.manager", fromlist=["PayloadArch"]).PayloadArch.X64)
+        # A script payload: building an executable needs the compiler on the
+        # build host, which an integration test cannot assume.
+        cfg = PayloadConfig(
+            name="integration-test",
+            platform=PayloadPlatform.LINUX,
+            arch=PayloadArch.X64,
+            payload_type=PayloadType.SCRIPT,
+        )
         pid = builder.generate_payload_id()
         assert pid.startswith("pl-")
         metadata = await builder.build(cfg, pid)

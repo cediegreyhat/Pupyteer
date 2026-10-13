@@ -301,7 +301,14 @@ class TestSessionManager:
         await sessions.register(SessionInfo(session_id="kill-me", hostname="h"))
         ok = await sessions.kill("kill-me")
         assert ok is True
+        # The record survives only so the exit order can reach the agent on its
+        # next check-in; deleting it immediately would leave the implant running.
+        session = await sessions.get("kill-me")
+        assert session.state.value == "killed"
+        assert [c["command"] for c in await sessions.get_pending_commands("kill-me")] == ["exit"]
+        assert await sessions.remove("kill-me") is True
         assert sessions.count() == 0
+        assert await sessions.get_pending_commands("kill-me") == []
 
     @pytest.mark.asyncio
     async def test_kill_nonexistent(self, sessions):
@@ -345,11 +352,15 @@ class TestSessionManager:
 
     @pytest.mark.asyncio
     async def test_to_dict(self):
-        info = SessionInfo(session_id="dict", hostname="h", os="linux", state=SessionState.CONNECTED)
+        info = SessionInfo(session_id="dict", hostname="h", os="linux",
+                           state=SessionState.CONNECTED, beacon_token="proof-1")
         d = info.to_dict()
         assert d["session_id"] == "dict"
         assert d["state"] == "connected"
         assert "uptime_seconds" in d
+        # Every session view an operator has renders this — list, info, search —
+        # so anything in it is something that ends up on a screen or in an export.
+        assert "beacon_token" not in d
 
     @pytest.mark.asyncio
     async def test_initialize_and_shutdown(self, sessions):

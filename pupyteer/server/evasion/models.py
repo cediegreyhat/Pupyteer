@@ -17,6 +17,11 @@ from typing import Any, Dict, List, Optional
 
 class TestEnvironment(str, Enum):
     """Where the test runs."""
+
+    # Domain model, not a pytest test class — the "Test" prefix collides with
+    # pytest's default collection pattern.
+    __test__ = False
+
     LOCAL = "local"
     LAB = "lab"
     LITTERBOX = "litterbox"

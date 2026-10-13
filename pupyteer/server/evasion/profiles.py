@@ -9,7 +9,7 @@ evasion strategy (e.g., XOR-only, full chain, PE manipulation, anti-analysis).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Optional
 
 from pupyteer.server.evasion.obfuscator import EncodingScheme, ObfuscationConfig
 
@@ -21,6 +21,11 @@ class TestConfigurationProfile:
     A profile captures exactly which techniques were applied so that
     detection results can be correlated with specific evasion strategies.
     """
+
+    # Domain model, not a pytest test class — the "Test" prefix collides with
+    # pytest's default collection pattern.
+    __test__: ClassVar[bool] = False
+
     name: str
     description: str = ""
     obfuscation: ObfuscationConfig = field(default_factory=ObfuscationConfig)

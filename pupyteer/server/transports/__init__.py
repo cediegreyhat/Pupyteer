@@ -174,7 +174,13 @@ class TCPTransport(Transport):
 
 
 class WebSocketTransport(Transport):
-    """WebSocket transport (placeholder for full implementation)."""
+    """Client-side WebSocket transport.
+
+    This is an outbound *dialer*: it connects to a remote ``ws://``/``wss://``
+    endpoint and speaks over that client socket. It is not a server listener and
+    binds nothing — the server only accepts callbacks over the tcp/http/https
+    listeners in ``transports/manager.py``. Uses the ``websockets`` client.
+    """
 
     def __init__(self, name: str, config: Dict[str, Any]):
         super().__init__(name, config)

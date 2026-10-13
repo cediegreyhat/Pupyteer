@@ -1,8 +1,10 @@
 """Unit tests for Pupyteer module system — registry, discovery, lifecycle, validation."""
 import asyncio
+import base64
+import json
 import os
 import sys
-import tempfile
+import time
 from pathlib import Path
 from typing import Any, Dict
 
@@ -20,6 +22,7 @@ from pupyteer.server.modules.registry import (
     ModuleState,
     ModuleHealth,
 )
+from pupyteer.server.sessions import capabilities, transfer
 
 
 # ─── Fixtures ────────────────────────────────────────────────────────
@@ -368,19 +371,88 @@ class TestModuleRegistry:
 
 
 class TestModuleExecution:
+    """What a module answers, and whether it actually asked the agent.
+
+    A module that returns a well-shaped empty result for work it never did is the
+    failure mode these tests exist to catch: the operator sees "ok" and believes a
+    file landed. So every dispatching module is checked twice — once with no way to
+    reach the agent, which must be an error, and once against a session manager
+    that records what was queued.
+    """
+
+    @staticmethod
+    def _session(session_id: str = "sess-1") -> Any:
+        return type(
+            "Session", (),
+            {"session_id": session_id, "hostname": "test-host", "os": "linux",
+             "arch": "x64", "username": "root", "remote_address": "127.0.0.1:1",
+             "connected_at": 0, "last_checkin": 0},
+        )()
+
+    @staticmethod
+    def _agent(answers: Dict[str, Any]) -> Any:
+        """A session manager that completes every command with `answers`.
+
+        `answers` maps a queued command line to the result string, falling back to
+        ``answers["*"]``, so a test can assert on the exact task a module built.
+        """
+        queued: list = []
+
+        class _Stub:
+            async def get(self, session_id: str):
+                # A real session answers this, and the transfer loop asks it how
+                # long a line the agent reads before sizing a chunk. 0 is the
+                # undeclared answer, which is the conservative one.
+                return type("Session", (), {"session_id": session_id,
+                                            "max_line": 0})()
+
+            async def interact(self, session_id: str, command: str) -> str:
+                command_id = f"cmd-{len(queued)}"
+                queued.append({"command_id": command_id, "command": command,
+                               "status": "queued", "result": None})
+                return command_id
+
+            async def get_pending_commands(self, session_id: str) -> list:
+                for entry in queued:
+                    if entry["status"] == "queued":
+                        answer = answers.get(entry["command"], answers.get("*", ""))
+                        entry["status"] = "completed"
+                        entry["result"] = answer if isinstance(answer, str) \
+                            else json.dumps(answer)
+                return queued
+
+        stub = _Stub()
+        stub.queued = queued
+        return stub
+
     @pytest.mark.asyncio
     async def test_execute_sysinfo(self, registry):
         registry.discover()
-        result = await registry.execute("sysinfo", type("Session", (), {"hostname": "test-host", "os": "linux", "arch": "x64", "username": "root"})(), {})
+        session = self._session()
+        result = await registry.execute(
+            "sysinfo", session, {}, session_manager=self._agent({}))
         assert result["status"] == "ok"
         assert result["data"]["hostname"] == "test-host"
 
     @pytest.mark.asyncio
-    async def test_execute_exec(self, registry):
+    async def test_execute_exec_dispatches_to_the_agent(self, registry):
         registry.discover()
-        result = await registry.execute("exec", None, {"command": "whoami"})
+        agent = self._agent({"whoami": "root"})
+        result = await registry.execute(
+            "exec", self._session(), {"command": "whoami"}, session_manager=agent)
         assert result["status"] == "ok"
-        assert result["command"] == "whoami"
+        assert result["output"] == "root"
+        assert agent.queued[0]["command"] == "whoami"
+
+    @pytest.mark.asyncio
+    async def test_execute_exec_without_an_agent_is_an_error(self, registry):
+        """The command is not dispatched without a session manager, and must not
+        come back looking like it ran.
+        """
+        registry.discover()
+        result = await registry.execute("exec", self._session(), {"command": "whoami"})
+        assert result["status"] == "error"
+        assert "nothing was sent" in result["error"]
 
     @pytest.mark.asyncio
     async def test_execute_exec_missing_command(self, registry):
@@ -390,11 +462,101 @@ class TestModuleExecution:
         assert "command" in result["error"].lower()
 
     @pytest.mark.asyncio
-    async def test_execute_upload(self, registry):
+    async def test_a_dead_session_is_not_reported_as_a_slow_agent(self, registry):
+        """`interact` refuses to queue for a session that is gone. Spending the
+        whole timeout before saying "timed out" sends the operator chasing a
+        beaconing problem that does not exist.
+        """
+        class _Closed:
+            async def interact(self, session_id: str, command: str):
+                return None
+
+            async def get_pending_commands(self, session_id: str) -> list:
+                raise AssertionError("nothing was queued, so nothing may be polled")
+
         registry.discover()
-        result = await registry.execute("upload", None, {"local_path": "/tmp/a.txt", "remote_path": "/tmp/b.txt"})
+        started = time.monotonic()
+        result = await registry.execute(
+            "exec", self._session(), {"command": "whoami", "timeout": 30},
+            session_manager=_Closed())
+        assert result["status"] == "error"
+        assert "would not accept a command" in result["error"]
+        assert "timed out" not in result["error"]
+        assert time.monotonic() - started < 1.0, "the module waited out a dead session"
+
+    @pytest.mark.asyncio
+    async def test_a_silent_agent_says_so_with_the_command_it_asked_about(self, registry):
+        class _NeverAnswers:
+            async def interact(self, session_id: str, command: str) -> str:
+                return "cmd-dead"
+
+            async def get_pending_commands(self, session_id: str) -> list:
+                return []
+
+        registry.discover()
+        result = await registry.execute(
+            "exec", self._session(), {"command": "whoami", "timeout": 0.2},
+            session_manager=_NeverAnswers())
+        assert result["status"] == "error"
+        assert "timed out" in result["error"]
+        assert result["command_id"] == "cmd-dead"
+
+    @pytest.mark.asyncio
+    async def test_execute_upload_streams_the_file(self, registry, tmp_path):
+        registry.discover()
+        source = tmp_path / "source.txt"
+        source.write_bytes(b"x" * 1024)
+        target = tmp_path / "landed" / "on-target.txt"
+        agent = self._agent({"*": {"ok": True, "written": 1024}})
+        result = await registry.execute(
+            "upload", self._session(),
+            {"local_path": str(source), "remote_path": str(target)},
+            session_manager=agent)
         assert result["status"] == "ok"
-        assert result["local_path"] == "/tmp/a.txt"
+        assert result["bytes_transferred"] == 1024
+        task = json.loads(agent.queued[0]["command"])
+        assert task["action"] == "fs_put"
+        assert task["path"] == str(target)
+        assert base64.b64decode(task["data"]) == b"x" * 1024
+
+    @pytest.mark.asyncio
+    async def test_execute_upload_reports_what_never_arrived(self, registry, tmp_path):
+        """A refusal mid-way keeps the partial byte count: most of a file is a
+        corrupt file, and an operator needs to know it is one.
+        """
+        registry.discover()
+        source = tmp_path / "source.bin"
+        source.write_bytes(b"y" * (transfer.DEFAULT_CHUNK_SIZE + 7))
+
+        class _DiskFull:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def get(self, session_id: str):
+                # The stub that declares a line this long is the Python agent, and
+                # it is what lets the module keep its own chunk size, so the
+                # transfer spans two chunks and the second one fails.
+                return type("Session", (), {"session_id": session_id,
+                                            "max_line": capabilities.MAX_LINE_CAP})()
+
+            async def interact(self, session_id: str, command: str) -> str:
+                self.calls += 1
+                return f"cmd-{self.calls}"
+
+            async def get_pending_commands(self, session_id: str) -> list:
+                if self.calls < 2:
+                    return [{"command_id": "cmd-1", "status": "completed",
+                             "result": json.dumps({"ok": True})}]
+                return [{"command_id": "cmd-2", "status": "completed",
+                         "result": json.dumps({"ok": False, "error": "disk full"})}]
+
+        result = await registry.execute(
+            "upload", self._session(),
+            {"local_path": str(source), "remote_path": "/tmp/x.bin"},
+            session_manager=_DiskFull())
+        assert result["status"] == "error"
+        assert result["bytes_transferred"] == transfer.DEFAULT_CHUNK_SIZE
+        assert "disk full" in result["error"]
 
     @pytest.mark.asyncio
     async def test_execute_upload_missing_args(self, registry):
@@ -403,25 +565,122 @@ class TestModuleExecution:
         assert result["status"] == "error"
 
     @pytest.mark.asyncio
-    async def test_execute_download(self, registry):
+    async def test_execute_download_reassembles_chunks(self, registry, tmp_path):
         registry.discover()
-        result = await registry.execute("download", None, {"remote_path": "/etc/passwd"})
+        payload = base64.b64encode(b"hello target").decode()
+        agent = self._agent({"*": {"size": 12, "offset": 0, "length": 12,
+                                   "eof": True, "data": payload}})
+        local = tmp_path / "pulled.txt"
+        result = await registry.execute(
+            "download", self._session(),
+            {"remote_path": "/etc/hosts", "local_path": str(local)},
+            session_manager=agent)
         assert result["status"] == "ok"
-        assert result["remote_path"] == "/etc/passwd"
+        assert result["bytes_transferred"] == 12
+        assert local.read_bytes() == b"hello target"
+        assert json.loads(agent.queued[0]["command"])["action"] == "fs_get"
 
     @pytest.mark.asyncio
-    async def test_execute_file_list(self, registry):
+    async def test_execute_download_names_the_file_it_pulled(
+        self, registry, tmp_path
+    ):
+        """No local_path is not no file: the basename comes off the target."""
         registry.discover()
-        result = await registry.execute("file_list", None, {"path": "/tmp"})
-        assert result["status"] == "ok"
-        assert result["path"] == "/tmp"
+        cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            result = await registry.execute(
+                "download", self._session(), {"remote_path": "/var/log/app.log"},
+                session_manager=self._agent(
+                    {"*": {"size": 2, "eof": True,
+                           "data": base64.b64encode(b"hi").decode()}}))
+            assert result["status"] == "ok"
+            assert Path(result["local_path"]).name == "app.log"
+            assert (tmp_path / "app.log").read_bytes() == b"hi"
+        finally:
+            os.chdir(cwd)
 
     @pytest.mark.asyncio
-    async def test_execute_discovery(self, registry):
+    async def test_execute_download_of_a_missing_file_fails(
+        self, registry, tmp_path
+    ):
         registry.discover()
-        result = await registry.execute("discovery", None, {"target": "whoami"})
+        result = await registry.execute(
+            "download", self._session(),
+            {"remote_path": "/nope/nope", "local_path": str(tmp_path / "out")},
+            session_manager=self._agent({"*": {"error": "[Errno 2] no such file"}}))
+        assert result["status"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_execute_download_missing_args(self, registry):
+        registry.discover()
+        result = await registry.execute("download", None, {})
+        assert result["status"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_execute_file_list_reads_the_target(self, registry):
+        registry.discover()
+        entries = [{"name": "passwd", "is_file": True, "is_dir": False,
+                    "size": 1200, "mtime": 1.0}]
+        agent = self._agent({"*": {"path": "/etc", "entries": entries}})
+        result = await registry.execute(
+            "file_list", self._session(), {"path": "/etc"},
+            session_manager=agent)
         assert result["status"] == "ok"
-        assert result["target"] == "whoami"
+        assert result["entries"] == entries
+        assert json.loads(agent.queued[0]["command"])["action"] == "fs_list"
+
+    @pytest.mark.asyncio
+    async def test_an_empty_directory_is_not_an_error(self, registry):
+        registry.discover()
+        result = await registry.execute(
+            "file_list", self._session(), {"path": "/empty"},
+            session_manager=self._agent({"*": {"path": "/empty", "entries": []}}))
+        assert result["status"] == "ok"
+        assert result["entries"] == []
+
+    @pytest.mark.asyncio
+    async def test_a_directory_the_agent_cannot_open_is_not_empty(
+        self, registry
+    ):
+        """The old shape reported a failure as a listing of one entry named
+        `error`, which a caller reading `entries` cannot tell from content.
+        """
+        registry.discover()
+        result = await registry.execute(
+            "file_list", self._session(), {"path": "/denied"},
+            session_manager=self._agent({"*": {"error": "Permission denied"}}))
+        assert result["status"] == "error"
+        assert "Permission denied" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_execute_file_list_without_an_agent_is_an_error(self, registry):
+        registry.discover()
+        result = await registry.execute("file_list", self._session(), {"path": "/tmp"})
+        assert result["status"] == "error"
+        assert "entries" not in result
+
+    @pytest.mark.asyncio
+    async def test_execute_discovery_asks_the_agent(self, registry):
+        registry.discover()
+        # The agent renders an exec answer as stripped text, not a JSON object,
+        # so this is the shape a real session returns.
+        agent = self._agent({"*": "root"})
+        result = await registry.execute(
+            "discovery", self._session(), {"target": "whoami"},
+            session_manager=agent)
+        assert result["status"] == "ok"
+        assert result["output"] == "root"
+        dispatched = json.loads(agent.queued[0]["command"])
+        assert dispatched["action"] == "exec"
+        assert dispatched["command"] == "whoami"
+
+    @pytest.mark.asyncio
+    async def test_execute_discovery_without_an_agent_is_an_error(self, registry):
+        registry.discover()
+        result = await registry.execute(
+            "discovery", self._session(), {"target": "whoami"})
+        assert result["status"] == "error"
 
     @pytest.mark.asyncio
     async def test_execute_credential_collect(self, registry):
@@ -450,6 +709,55 @@ class TestModuleExecution:
         result = await registry.execute("nonexistent", None, {})
         assert result["status"] == "error"
         assert "not found" in result["error"].lower()
+
+
+class TestRegistryInjectsTheSessionManager:
+    """`ModuleRegistry.execute` is the console's path into a module.
+
+    `ModuleExecutor` injects the session manager that lets a module queue work on
+    the agent; without the same on this path every module quietly answers from
+    session metadata and reports success.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_session_manager_reaches_the_module(self, registry):
+        seen = {}
+
+        class _Probe(PupyModule):
+            name = "probe"
+            version = "1.0.0"
+            description = "records what it was given"
+            author = "test"
+            category = ModuleCategory.RECON
+
+            async def execute(self, session, args):
+                seen["manager"] = getattr(self, "_session_manager", None)
+                return {"status": "ok"}
+
+        registry._modules["probe"] = _Probe
+        manager = object()
+        result = await registry.execute("probe", None, {}, session_manager=manager)
+        assert result["status"] == "ok"
+        assert seen["manager"] is manager
+
+    @pytest.mark.asyncio
+    async def test_a_module_left_without_one_sees_nothing(self, registry):
+        seen = {}
+
+        class _Probe(PupyModule):
+            name = "quiet"
+            version = "1.0.0"
+            description = "records what it was given"
+            author = "test"
+            category = ModuleCategory.RECON
+
+            async def execute(self, session, args):
+                seen["manager"] = getattr(self, "_session_manager", None)
+                return {"status": "ok"}
+
+        registry._modules["quiet"] = _Probe
+        await registry.execute("quiet", None, {})
+        assert seen["manager"] is None
 
 
 # ─── ModuleRegistry Health Tests ─────────────────────────────────────
@@ -607,6 +915,272 @@ class TestModuleHealthDataclass:
             last_error="ImportError: foo",
         )
         assert h.last_error == "ImportError: foo"
+
+
+class TestDiscoveryFailures:
+    """A module file that cannot import must still be visible to the operator."""
+
+    def _registry_over(self, config, audit, paths):
+        reg = ModuleRegistry(config, audit)
+        reg._paths = paths
+        return reg
+
+    def test_unloadable_file_recorded_as_failed(self, config, audit, tmp_path):
+        (tmp_path / "broken.py").write_text(
+            "raise RuntimeError('boom during import')\n", encoding="utf-8"
+        )
+        reg = self._registry_over(config, audit, [tmp_path])
+        assert reg.discover() == 0
+        health = [h for h in reg.list_health() if h["state"] == "failed"]
+        assert [h["name"] for h in health] == ["file:broken"]
+        assert "boom during import" in health[0]["last_error"]
+
+    def test_valid_and_broken_files_mixed(self, config, audit, tmp_path):
+        (tmp_path / "good.py").write_text(
+            "from pupyteer.server.modules.registry import PupyModule, ModuleCategory\n"
+            "class Good(PupyModule):\n"
+            "    name = 'good'\n"
+            "    version = '1.0.0'\n"
+            "    description = 'ok'\n"
+            "    author = 't'\n"
+            "    category = ModuleCategory.CORE\n"
+            "    async def execute(self, session, args):\n"
+            "        return {'status': 'ok'}\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "bad.py").write_text("raise ValueError('nope')\n", encoding="utf-8")
+        reg = self._registry_over(config, audit, [tmp_path])
+        assert reg.discover() == 1
+        assert reg.get("good") is not None
+        failed = [h for h in reg.list_health() if h["state"] == "failed"]
+        assert [h["name"] for h in failed] == ["file:bad"]
+
+    def test_underscore_files_are_skipped_quietly(self, config, audit, tmp_path):
+        (tmp_path / "_helper.py").write_text("raise ValueError('nope')\n", encoding="utf-8")
+        reg = self._registry_over(config, audit, [tmp_path])
+        reg.discover()
+        assert reg.list_health() == []
+
+
+# ─── Anti-Forensics Gate Tests ───────────────────────────────────────
+
+# Spec 17 "Controlled": these five modules destroy evidence on a host (event
+# logs, prefetch entries, file timestamps) and have no test coverage. They are
+# unreachable only because ModuleCategory has no ANTI_FORENSICS member, which
+# makes builtin/antiforensics.py fail to import. Adding that one enum value
+# would activate all five with no other change, so the decision is pinned here
+# as a reviewed invariant rather than an accident an import fix would undo.
+ANTI_FORENSICS_MODULES = [
+    "log_clear",
+    "timestamp_match",
+    "artifact_wipe",
+    "prefetch_delete",
+    "recycle_clear",
+]
+
+
+class TestAntiForensicsDisabled:
+    def test_category_member_is_absent(self):
+        assert not hasattr(ModuleCategory, "ANTI_FORENSICS")
+
+    def test_modules_are_not_registered(self, registry):
+        registry.discover()
+        names = {m["name"] for m in registry.list_all()}
+        assert names.isdisjoint(ANTI_FORENSICS_MODULES)
+
+    def test_source_file_is_reported_as_failed(self, registry):
+        """Unreachable must not mean invisible — the console warns on this."""
+        registry.discover()
+        failed = {h["name"] for h in registry.list_health() if h["state"] == "failed"}
+        assert "file:antiforensics" in failed
+
+
+# ─── Implant Action Modules (ping / privesc / screenshot / migrate) ───
+
+
+class TestImplantActionModules:
+    """Modules that wrap structured agent actions already implemented in the stub.
+
+    These use a fake session manager that answers by the action the module
+    dispatched, so a test can assert both the task sent and how the reply is
+    parsed. As with the file modules, a refusal or a malformed reply must surface
+    as an error, never as an empty success.
+    """
+
+    @staticmethod
+    def _session(session_id: str = "sess-1") -> Any:
+        return type(
+            "Session", (),
+            {"session_id": session_id, "hostname": "test-host", "os": "linux",
+             "arch": "x64", "username": "root", "remote_address": "127.0.0.1:1",
+             "connected_at": 0, "last_checkin": 0},
+        )()
+
+    @staticmethod
+    def _agent(replies: Dict[str, Any]) -> Any:
+        """Answer each dispatched structured task by its ``action``.
+
+        ``replies`` maps an action name to the object the agent returns; the
+        queued raw commands are recorded so a test can check what was sent.
+        """
+        queued: list = []
+
+        class _Stub:
+            async def get(self, session_id: str):
+                return type("Session", (), {"session_id": session_id,
+                                            "max_line": 0})()
+
+            async def interact(self, session_id: str, command: str) -> str:
+                command_id = f"cmd-{len(queued)}"
+                queued.append({"command_id": command_id, "command": command,
+                               "status": "queued", "result": None})
+                return command_id
+
+            async def get_pending_commands(self, session_id: str) -> list:
+                for entry in queued:
+                    if entry["status"] != "queued":
+                        continue
+                    task = json.loads(entry["command"])
+                    reply = replies.get(task.get("action"), {"error": "unhandled"})
+                    entry["status"] = "completed"
+                    entry["result"] = json.dumps(reply)
+                return queued
+
+        stub = _Stub()
+        stub.queued = queued
+        return stub
+
+    @staticmethod
+    def _sent_task(agent: Any) -> Dict[str, Any]:
+        return json.loads(agent.queued[0]["command"])
+
+    # -- ping --
+
+    @pytest.mark.asyncio
+    async def test_ping_reports_the_agent_id(self, registry):
+        registry.discover()
+        agent = self._agent({"ping": {"pong": True, "id": "abc123"}})
+        result = await registry.execute(
+            "ping", self._session(), {}, session_manager=agent)
+        assert result["status"] == "ok"
+        assert result["agent_id"] == "abc123"
+        assert result["responsive"] is True
+        assert self._sent_task(agent)["action"] == "ping"
+
+    @pytest.mark.asyncio
+    async def test_ping_without_an_agent_is_an_error(self, registry):
+        registry.discover()
+        result = await registry.execute("ping", self._session(), {})
+        assert result["status"] == "error"
+        assert "nothing was sent" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_ping_rejects_a_reply_that_is_not_a_pong(self, registry):
+        registry.discover()
+        agent = self._agent({"ping": {"id": "abc"}})
+        result = await registry.execute(
+            "ping", self._session(), {}, session_manager=agent)
+        assert result["status"] == "error"
+
+    # -- privesc --
+
+    @pytest.mark.asyncio
+    async def test_privesc_suggest_returns_structured_findings(self, registry):
+        registry.discover()
+        payload = {"check": {"euid": 1000, "suid_binaries": ["/usr/bin/find"]},
+                   "suggestions": ["GTFOBin: /usr/bin/find"]}
+        agent = self._agent({"privesc_suggest": payload})
+        result = await registry.execute(
+            "privesc", self._session(), {}, session_manager=agent)
+        assert result["status"] == "ok"
+        assert result["suggestions"] == ["GTFOBin: /usr/bin/find"]
+        assert self._sent_task(agent)["action"] == "privesc_suggest"
+
+    @pytest.mark.asyncio
+    async def test_privesc_check_mode_dispatches_the_check(self, registry):
+        registry.discover()
+        agent = self._agent({"privesc_check": {"euid": 0, "is_admin": True}})
+        result = await registry.execute(
+            "privesc", self._session(), {"mode": "check"}, session_manager=agent)
+        assert result["status"] == "ok"
+        assert result["check"]["is_admin"] is True
+        assert self._sent_task(agent)["action"] == "privesc_check"
+
+    @pytest.mark.asyncio
+    async def test_privesc_rejects_an_unknown_mode(self, registry):
+        registry.discover()
+        result = await registry.execute(
+            "privesc", self._session(), {"mode": "exploit"})
+        assert result["status"] == "error"
+        assert "mode" in result["error"].lower()
+
+    # -- screenshot --
+
+    @pytest.mark.asyncio
+    async def test_screenshot_writes_the_image_to_disk(self, registry, tmp_path):
+        registry.discover()
+        raw = b"\x89PNG fake image bytes"
+        payload = {"format": "png", "bytes": len(raw),
+                   "data": base64.b64encode(raw).decode()}
+        agent = self._agent({"screenshot": payload})
+        dest = tmp_path / "shot.png"
+        result = await registry.execute(
+            "screenshot", self._session(), {"local_path": str(dest)},
+            session_manager=agent)
+        assert result["status"] == "ok"
+        assert result["bytes_written"] == len(raw)
+        assert dest.read_bytes() == raw
+        assert self._sent_task(agent)["action"] == "screenshot"
+
+    @pytest.mark.asyncio
+    async def test_screenshot_surfaces_an_agent_error(self, registry):
+        registry.discover()
+        agent = self._agent({"screenshot": {"error": "no working screenshot tool"}})
+        result = await registry.execute(
+            "screenshot", self._session(), {}, session_manager=agent)
+        assert result["status"] == "error"
+        assert "screenshot tool" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_screenshot_rejects_data_that_is_not_base64(self, registry, tmp_path):
+        registry.discover()
+        agent = self._agent({"screenshot": {"format": "png", "data": "!!!notb64!!!"}})
+        result = await registry.execute(
+            "screenshot", self._session(),
+            {"local_path": str(tmp_path / "x.png")}, session_manager=agent)
+        assert result["status"] == "error"
+        assert "base64" in result["error"]
+
+    # -- migrate --
+
+    @pytest.mark.asyncio
+    async def test_migrate_dispatches_target_and_technique(self, registry):
+        registry.discover()
+        agent = self._agent({"migrate": {"ok": True, "pid": 4321}})
+        result = await registry.execute(
+            "migrate", self._session(),
+            {"target": "4321", "technique": "reflective"}, session_manager=agent)
+        assert result["status"] == "ok"
+        task = self._sent_task(agent)
+        assert task["action"] == "migrate"
+        assert task["target"] == "4321"
+        assert task["technique"] == "reflective"
+
+    @pytest.mark.asyncio
+    async def test_migrate_requires_a_target(self, registry):
+        registry.discover()
+        result = await registry.execute("migrate", self._session(), {})
+        assert result["status"] == "error"
+        assert "target" in result["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_migrate_reports_a_refused_migration(self, registry):
+        registry.discover()
+        agent = self._agent({"migrate": {"ok": False, "error": "OpenProcess failed"}})
+        result = await registry.execute(
+            "migrate", self._session(), {"target": "1"}, session_manager=agent)
+        assert result["status"] == "error"
+        assert "OpenProcess" in result["error"]
 
 
 if __name__ == "__main__":

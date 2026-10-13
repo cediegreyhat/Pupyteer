@@ -10,18 +10,64 @@ from pathlib import Path
 
 import yaml
 
+from pupyteer.server.core.enrollment import DEFAULT_SECRET_FILE
+from pupyteer.server.core.tls import DEFAULT_CERT_FILE, DEFAULT_KEY_FILE
+
 logger = logging.getLogger("pupyteer.config")
+
+#: Where operator credentials live. Deliberately not in this file: a config is
+#: copied, pasted into tickets and backed up, and a password in it becomes the
+#: property of everyone who reads any of those.
+DEFAULT_OPERATORS_FILE = "./data/keys/operators.json"
+
+#: The audit trail. A default the code keeps to itself is not a default an
+#: operator can find, and this one decides where an engagement's record lands.
+DEFAULT_AUDIT_LOG_FILE = "./logs/audit.json"
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "server": {
         "host": "0.0.0.0",
         "port": 8443,
         "backlog": 10,
+        # HTTP callbacks share the session protocol with TCP; 0 disables them.
+        # Off by default because port 8080 is routinely occupied on a team box.
+        "http_port": 0,
+        "http_uri": "/index.html",
+        # On by default: the session protocol is JSON, so without TLS everything an
+        # operator types and everything the target answers is readable to whoever
+        # owns the network, and a C2 that is plaintext unless you remember a flag is
+        # plaintext on the one engagement where it mattered. Enabling it makes the
+        # agent pin the listener's certificate, which is the only check either side
+        # can make on a self-signed team server reached by IP.
+        #
+        # `server.tls: false` is the opt-out, and it is a visible one: the build log
+        # says so and the listener reports it. Turning this on for a server that
+        # already has fielded payloads strands them — they speak plaintext to a port
+        # that now refuses it, which `transports list` shows as handshakes_refused.
+        "tls": True,
+        "tls_cert": DEFAULT_CERT_FILE,
+        "tls_key": DEFAULT_KEY_FILE,
+        # Names in the certificate besides server.host. Set them before the
+        # certificate is first created; an existing one is never rewritten.
+        "tls_hostnames": [],
+        # Registrations must carry this secret, so only payloads built by this
+        # server can become sessions. On by default: reaching the port should not
+        # be enough to hand someone a handler.
+        "agent_auth": True,
+        "agent_auth_file": DEFAULT_SECRET_FILE,
     },
     "logging": {
         "level": "INFO",
         "format": "json",
         "file": None,
+    },
+    "audit": {
+        # Absolute rather than under paths.logs, because it is the file an
+        # engagement is judged on and `logs: null` must not move it by accident.
+        "log_file": DEFAULT_AUDIT_LOG_FILE,
+        "max_bytes": 10 * 1024 * 1024,
+        "backup_count": 5,
+        "compress": True,
     },
     "operator": {
         "name": "unknown",
@@ -31,9 +77,16 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "default": "HTTPS-Standard",
     },
     "security": {
+        # The console asks for a credential before it will run a verb that touches
+        # a session, a listener or an artifact. Turning this off means whoever
+        # holds the keyboard is admin, and the audit log says so as "unknown".
         "require_auth": True,
         "token_ttl": 3600,
         "max_failed_logins": 5,
+        # How long a name stays locked after `max_failed_logins` misses. It used to
+        # be forever, so five typos locked a team out of their own server.
+        "lockout_seconds": 300,
+        "operators_file": DEFAULT_OPERATORS_FILE,
     },
     "paths": {
         "payload_artifacts": "./payloads/artifacts",

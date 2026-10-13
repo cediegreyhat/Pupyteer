@@ -144,15 +144,7 @@ class TransportManager:
             "supported": protocol in SUPPORTED_LISTENER_PROTOCOLS,
         })
 
-<<<<<<< HEAD
     async def start_listener(self, session_manager: Any, agent_keys: Any = None) -> None:
-        """Start the real TCP agent listener.
-
-        Called by the engine after all subsystems are initialized.
-        *agent_keys* is the AgentKeyRegistry used to verify agent
-        registrations (per-agent Ed25519). Passed through to the listener.
-=======
-    async def start_listener(self, session_manager: Any) -> None:
         """Bind the real agent listener(s) for the requested protocol.
 
         tcp   — TCP AgentListener on the resolved port; the HTTP listener is
@@ -161,7 +153,6 @@ class TransportManager:
         https — HTTP agent listener with the listener TLS on the resolved port.
         other — refused: there is no server listener for it, so nothing is bound
                 and list() reports the protocol as unavailable, never listening.
->>>>>>> origin/nextgen
         """
         if self._listener is not None or self._http_listener is not None:
             return  # already started
@@ -219,25 +210,20 @@ class TransportManager:
 
         # protocol == "tcp"
         from pupyteer.server.transports.listener import AgentListener
-        listener_cfg = {"host": host, "port": port}
+        listener_cfg = {
+            "host": host,
+            "port": port,
+            "ssl_context": tls.ssl_context if tls else None,
+            "enrollment": enrollment,
+        }
         # Optional RC4 transport key so the listener interoperates with the
-        # compiled PE agent, which RC4-frames both directions with AGENT_RC4KEY.
-        # Unset -> plaintext wire (Python stub + tests). See listener.py and the
-        # WIRE FORMAT comment atop pupyteer/agent/core/pe_template.c.
+        # compiled PE agent, which RC4-frames both directions with
+        # AGENT_RC4KEY. Unset -> plaintext wire (Python stub + tests).
         rc4_key = self._config.get("transports.rc4_key", None)
         if rc4_key:
             listener_cfg["rc4_key"] = rc4_key
         self._listener = AgentListener(
-<<<<<<< HEAD
             config=listener_cfg,
-=======
-            config={
-                "host": host,
-                "port": port,
-                "ssl_context": tls.ssl_context if tls else None,
-                "enrollment": enrollment,
-            },
->>>>>>> origin/nextgen
             session_manager=session_manager,
             audit_logger=self._audit,
             agent_keys=agent_keys,

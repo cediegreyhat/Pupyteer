@@ -4,6 +4,13 @@ These modules dispatch anti-forensics commands to agents through the session
 manager's command queue via session_manager.interact(). The agent executes the
 command and reports back, at which point the session manager stores the result
 in the command queue for retrieval.
+
+NOTE: this file is deliberately not loadable — it references
+ModuleCategory.ANTI_FORENSICS, which is not defined. These modules clear event
+logs, delete prefetch entries and timestomp files, i.e. destroy evidence on a
+host, and no test exercises them. Registering them needs an explicit decision
+about that capability (and, per spec, lab-only safeguards) rather than an
+import-error fix; 'show modules' reports this file as failed on purpose.
 """
 from __future__ import annotations
 

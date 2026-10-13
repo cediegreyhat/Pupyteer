@@ -18,8 +18,14 @@ import os
 import re
 import stat
 import sys
+import tempfile
 from pathlib import Path
 from typing import List, Tuple
+
+# Invoked as `python scripts/verify_secure_defaults.py`, only scripts/ lands on
+# sys.path, so the pupyteer import in check_config_defaults() always failed and
+# --strict reported that as a finding on an otherwise clean tree.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # Patterns that indicate hardcoded secrets
 SECRET_PATTERNS: List[Tuple[re.Pattern, str]] = [
@@ -136,7 +142,36 @@ def check_config_defaults() -> List[str]:
         max_failed = DEFAULT_CONFIG.get('security', {}).get('max_failed_logins', 0)
         if max_failed <= 0 or max_failed > 10:
             findings.append(f"security.max_failed_logins ({max_failed}) should be between 1-10")
-        
+
+        # A lockout that never expires is not a lockout, it is a lock: five typos
+        # used to leave a team outside their own server with no way back.
+        lockout = DEFAULT_CONFIG.get('security', {}).get('lockout_seconds', 0)
+        if lockout <= 0 or lockout > 3600:
+            findings.append(f"security.lockout_seconds ({lockout}) is not a usable window")
+
+        # Credentials are not config values. A config is pasted into tickets,
+        # committed to a lab repo and backed up nightly, and the shipped default
+        # used to be `admin: changeme` — a password nobody has to look up to guess.
+        if DEFAULT_CONFIG.get('security', {}).get('operators'):
+            findings.append(
+                "security.operators holds credentials in the defaults; they belong "
+                "hashed in the file named by security.operators_file")
+        if not DEFAULT_CONFIG.get('security', {}).get('operators_file'):
+            findings.append("security.operators_file has no default location")
+
+        shipped = Path(__file__).resolve().parent.parent / "pupyteer" / "config" / "defaults" / "pupyteer.yaml"
+        try:
+            import yaml as _yaml
+            data = _yaml.safe_load(shipped.read_text(encoding="utf-8")) or {}
+            plain = (data.get("security") or {}).get("operators")
+            if plain:
+                findings.append(
+                    f"{shipped.name} ships {len(plain)} plaintext operator "
+                    "credential(s); it overrides the secure default for every "
+                    "install that copies it")
+        except OSError as exc:
+            findings.append(f"Could not read the shipped defaults: {exc}")
+
     except ImportError:
         findings.append("Could not import ConfigManager to verify defaults")
     
@@ -173,22 +208,213 @@ def check_file_permissions(project_root: Path) -> List[str]:
 
 
 def verify_ssl_defaults() -> List[str]:
-    """Verify SSL/TLS secure defaults."""
+    """Verify the TLS defaults the shipped code actually uses.
+
+    This section reports "SSL/TLS defaults", so it has to look at the TLS path:
+    an agent that trusts any certificate, or a listener that cannot be reached
+    without one, both read as green here and as a plaintext tap on the wire later.
+    """
     findings = []
-    
+
     try:
-        from pupyteer.agent.core.auth import AuthConfig
-        # Default should not have insecure settings
-        config = AuthConfig()
-        if config.jwt_algorithm.lower() == 'none':
-            findings.append("JWT algorithm should not default to 'none'")
-    except ImportError:
-        pass
-    
+        from pupyteer.agent.core.stub import AgentStubGenerator, StubConfig
+    except ImportError as exc:
+        return [f"Could not import the agent stub to verify TLS: {exc}"]
+
+    # A generated agent is the artifact that ships, so check the real rendering
+    # rather than the template source.
+    plain = AgentStubGenerator().generate(StubConfig(name="gate-plain"))
+    pinned = AgentStubGenerator().generate(
+        StubConfig(name="gate-tls", tls=True, tls_cert_pem="-----BEGIN CERTIFICATE-----\nX\n"))
+
+    for label, code in (("plaintext agent", plain), ("pinned agent", pinned)):
+        if "CERT_NONE" in code or "_create_unverified_context" in code:
+            findings.append(f"{label} disables certificate verification")
+        if "verify_mode = _ssl.CERT_NONE" in code:
+            findings.append(f"{label} accepts any server certificate")
+
+    if "TLS_ON = False" not in plain:
+        findings.append(
+            "a bare StubConfig must not assume a TLS listener it has no "
+            "certificate for; the server config decides, per build")
+    if "TLS_ON = True" not in pinned:
+        findings.append("StubConfig.tls does not reach the generated agent")
+    # TLS without a pin is not a downgrade to plaintext, it is a dead payload;
+    # make sure the template still has the branch that says so.
+    if "no listener certificate" not in pinned:
+        findings.append("an agent with TLS and no certificate must fail, not retry silently")
+
+    try:
+        from pupyteer.server.core.config import DEFAULT_CONFIG
+    except ImportError as exc:
+        findings.append(f"Could not import ConfigManager to verify TLS defaults: {exc}")
+        return findings
+
+    server = DEFAULT_CONFIG.get("server", {})
+    if server.get("tls") is not True:
+        findings.append(
+            "server.tls must default to true: a C2 that is plaintext unless one "
+            "flag is added is plaintext on the engagement where it mattered")
+    for key in ("tls_cert", "tls_key"):
+        if not server.get(key):
+            findings.append(f"server.{key} has no default, so enabling TLS would fail to find a certificate")
+
+    # The shipped yaml is what a real install reads, and it wins over
+    # DEFAULT_CONFIG — so a false here quietly un-defaults TLS for everyone who
+    # copies this file, while every unit test still passes against the code.
+    defaults_yaml = Path(__file__).resolve().parent.parent / "pupyteer" / "config" / "defaults" / "pupyteer.yaml"
+    try:
+        import yaml as _yaml
+        shipped = _yaml.safe_load(defaults_yaml.read_text(encoding="utf-8")) or {}
+        shipped_tls = (shipped.get("server") or {}).get("tls")
+        if shipped_tls is not True:
+            findings.append(
+                f"{defaults_yaml.name} ships server.tls: {shipped_tls!r}; it "
+                f"overrides the secure default for every install that copies it")
+    except OSError as exc:
+        findings.append(f"Could not read the shipped defaults to verify TLS: {exc}")
+
+    # What actually runs on a target is generated from a template, so the
+    # verification rule worth gating is the one in the text that ships. This used to
+    # read the default jwt_algorithm of AuthConfig, a module no payload imports.
+    try:
+        from pupyteer.agent.core.stub import AgentStubGenerator, StubConfig
+    except ImportError as exc:
+        findings.append(f"Could not import the agent stub to verify its TLS: {exc}")
+        return findings
+
+    agent = AgentStubGenerator().generate(StubConfig(
+        name="gate-tls", tls=True,
+        tls_cert_pem="-----BEGIN CERTIFICATE-----\ngate\n-----END CERTIFICATE-----\n"))
+    if "_ssl.CERT_NONE" in agent:
+        findings.append("a generated agent can turn certificate verification off")
+    if "_ssl.CERT_REQUIRED" not in agent:
+        findings.append("the generated agent never requires the listener's certificate")
+    # Trusting the system store is not the pin a self-signed listener certificate
+    # exists to establish: it accepts whatever the target already accepts.
+    for fallback in ("load_default_certs", "set_default_verify_paths"):
+        if fallback in agent:
+            findings.append(
+                f"the generated agent falls back to the target's CA store ({fallback})")
+
+    return findings
+
+
+def verify_registration_auth() -> List[str]:
+    """Verify that reaching the listener is not enough to own a session.
+
+    TLS keeps the channel private; the enrollment secret is the only thing that
+    decides *who may open a session at all*. Get this wrong and whoever finds the
+    port gets a dashboard full of handlers they can queue commands into.
+
+    And the secret is spent the moment the session exists — it is presented once,
+    at registration. So this also checks the second proof, the one that says a
+    beacon belongs to the session it names rather than to a session id someone read
+    off a screen.
+    """
+    findings = []
+
+    try:
+        from pupyteer.server.core.config import DEFAULT_CONFIG
+        from pupyteer.server.core.enrollment import (
+            EnrollmentLedger, beacon_accepts, listener_ledger)
+    except ImportError as exc:
+        return [f"Could not import the enrollment module to verify it: {exc}"]
+
+    server = DEFAULT_CONFIG.get("server", {})
+    if server.get("agent_auth") is not True:
+        findings.append(
+            "server.agent_auth should default to True: anyone who can reach the "
+            "listener would otherwise get a session without presenting anything")
+    if not server.get("agent_auth_file"):
+        findings.append(
+            "server.agent_auth_file has no default, so a build could not find the "
+            "secret to compile into a payload")
+
+    # The rule itself, in both directions, checked against the object the listener
+    # actually consults rather than a helper nobody calls.
+    with tempfile.TemporaryDirectory() as workdir:
+        ledger = EnrollmentLedger(Path(workdir) / "enrollment.key")
+        secret = ledger.current()
+        if not ledger.accepts(secret):
+            findings.append("a correct enrollment secret is being rejected")
+        for presented in (None, "", secret[:-1], secret.upper(), 12345, [secret]):
+            if ledger.accepts(presented):
+                findings.append(f"an enrollment secret of {presented!r} is being accepted")
+        # A credential file that has gone missing must stop the listener, not
+        # quietly reinstate it under a secret no payload knows.
+        vanished = EnrollmentLedger(Path(workdir) / "gone.key")
+        if vanished.accepted() or vanished.accepts("anything"):
+            findings.append(
+                "a missing enrollment file generates a replacement secret and "
+                "enrols whoever presents it, instead of accepting nobody")
+
+    # Authentication off is a statement the operator has to make about the config,
+    # and an unrecognised value is not that statement.
+    open_ledger = listener_ledger(lambda key, default=None: {
+        "server.agent_auth": False, "server.agent_auth_file": ":memory:"}.get(key, default))
+    if open_ledger is not None:
+        findings.append("server.agent_auth: false still checks enrollment secrets")
+    for raw in ("", "maybe", None, 1, True):
+        getter = lambda key, default=None, raw=raw: {
+            "server.agent_auth": raw,
+            "server.agent_auth_file": ":memory:"}.get(key, default)
+        if listener_ledger(getter) is None:
+            findings.append(
+                f"server.agent_auth={raw!r} is being read as a request for an "
+                "unauthenticated listener")
+
+    try:
+        from pupyteer.agent.core.stub import AgentStubGenerator, StubConfig
+    except ImportError as exc:
+        findings.append(f"Could not import the agent stub to verify enrollment: {exc}")
+        return findings
+
+    agent = AgentStubGenerator().generate(
+        StubConfig(name="gate-auth", auth_secret="gate-secret"))
+    if '"auth": AUTH_SECRET' not in agent:
+        findings.append(
+            "the generated agent does not present its enrollment secret when registering")
+    if 'AUTH_SECRET = "gate-secret"' not in agent:
+        findings.append("StubConfig.auth_secret does not reach the generated agent")
+    # A refusal the agent retries forever looks like a target with bad egress.
+    if "auth_failed" not in agent:
+        findings.append("the generated agent does not react to a rejected enrollment")
+
+    # Enrollment is proved once, here. Every message after it has to carry the
+    # per-session token, or a session id — which is printed on screens, listed by
+    # `sessions list` and written to the audit log — is a credential.
+    if '"beacon": beacon' not in agent:
+        findings.append(
+            "the generated agent beacons without the token registration handed it")
+    if '"beacon_token"' not in agent:
+        findings.append("the generated agent never reads a beacon token out of its reply")
+
+    if beacon_accepts("gate-beacon", "gate-beacon") is not True:
+        findings.append("a correct beacon token is being rejected")
+    for presented in (None, "", "gate-beaco", "GATE-BEACON", 12345, ["gate-beacon"]):
+        if beacon_accepts("gate-beacon", presented) is not False:
+            findings.append(f"a beacon token of {presented!r} is being accepted")
+    # Unlike the enrollment secret this has no off switch. A session that was never
+    # handed a proof failing closed is the difference between "that payload is from
+    # an older server" and "every session is open, and only some look open".
+    for expected in ("", None):
+        if beacon_accepts(expected, "gate-beacon") is not False:
+            findings.append(
+                f"a session whose beacon token is {expected!r} accepts beacons")
+
     return findings
 
 
 def main():
+    # Status lines use check/cross glyphs; the default Windows console codepage
+    # cannot encode them and raises, which would fail the check it just passed.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
     parser = argparse.ArgumentParser(description="Verify Pupyteer secure defaults")
     parser.add_argument(
         "--strict", "-s",
@@ -211,7 +437,7 @@ def main():
     all_findings = {}
     
     # Check 1: Hardcoded secrets
-    print("\n[1/4] Scanning for hardcoded secrets...")
+    print("\n[1/5] Scanning for hardcoded secrets...")
     secret_findings = scan_for_secrets(project_root)
     if secret_findings:
         all_findings["hardcoded_secrets"] = []
@@ -226,7 +452,7 @@ def main():
         print("  No hardcoded secrets found. ✓")
     
     # Check 2: Config defaults
-    print("\n[2/4] Verifying config defaults...")
+    print("\n[2/5] Verifying config defaults...")
     config_findings = check_config_defaults()
     if config_findings:
         all_findings["config_defaults"] = config_findings
@@ -236,7 +462,7 @@ def main():
         print("  Config defaults are secure. ✓")
     
     # Check 3: File permissions
-    print("\n[3/4] Checking file permissions...")
+    print("\n[3/5] Checking file permissions...")
     perm_findings = check_file_permissions(project_root)
     if perm_findings:
         all_findings["file_permissions"] = perm_findings
@@ -246,7 +472,7 @@ def main():
         print("  File permissions are appropriate. ✓")
     
     # Check 4: SSL/TLS defaults
-    print("\n[4/4] Verifying SSL/TLS defaults...")
+    print("\n[4/5] Verifying SSL/TLS defaults...")
     ssl_findings = verify_ssl_defaults()
     if ssl_findings:
         all_findings["ssl_defaults"] = ssl_findings
@@ -254,6 +480,16 @@ def main():
             print(f"  WARNING: {f}")
     else:
         print("  SSL/TLS defaults are secure. ✓")
+    
+    # Check 5: Agent enrollment
+    print("\n[5/5] Verifying agent registration is authenticated...")
+    enroll_findings = verify_registration_auth()
+    if enroll_findings:
+        all_findings["registration_auth"] = enroll_findings
+        for f in enroll_findings:
+            print(f"  WARNING: {f}")
+    else:
+        print("  Only payloads carrying this server's secret can register. ✓")
     
     # Summary
     print(f"\n{'=' * 70}")

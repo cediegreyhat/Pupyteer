@@ -2,20 +2,34 @@
 from __future__ import annotations
 
 import asyncio
+import getpass
 import logging
 import os
-import readline
 import shlex
 import signal
 import sys
 import time
 from typing import Any, Callable, Dict, List, Optional
 
+try:
+    import readline
+except ImportError:
+    # Windows ships no readline; the console falls back to plain input().
+    readline = None  # type: ignore[assignment]
+
 from pupyteer.server.core.config import ConfigManager
 from pupyteer.server.core.engine import PupyteerEngine
+from pupyteer.server.core.enrollment import secret_fingerprint
+from pupyteer.server.core.operators import MIN_PASSWORD_CHARS, WeakCredential
+from pupyteer.server.core.rbac import AccessDenied, Role
 from pupyteer.tui.themes import Theme, _Ansi, c, get_theme, available_themes
 
 logger = logging.getLogger("pupyteer.tui")
+
+#: Times the console asks for a credential before it gives up. The store locks a
+#: name after five misses on its own, so this only stops someone fumbling at a
+#: terminal that is not theirs.
+LOGIN_ATTEMPTS = 3
 
 
 # ─── Banner ────────────────────────────────────────────────────────────
@@ -74,20 +88,55 @@ class CommandRegistry:
 
 # ─── Tab Completer ────────────────────────────────────────────────────
 class TabCompleter:
-    """Readline tab-completion for registered commands."""
+    """Readline tab-completion for commands, subcommands and live names."""
 
-    def __init__(self, commands: List[str]):
+    def __init__(
+        self,
+        commands: List[str],
+        subcommands: Optional[Dict[str, List[str]]] = None,
+        dynamic: Optional[Callable[[str], List[str]]] = None,
+    ):
         self._commands = commands
+        self._subcommands = subcommands or {}
+        self._dynamic = dynamic
         self._matches: List[str] = []
+
+    def _candidates(self, words: List[str], typing_last: bool) -> List[str]:
+        """Choices for the token being completed.
+
+        `words` is the split line buffer; when the caret is not just past a
+        space, the final token is the partial input and is not a completed word.
+        """
+        prefix = words if typing_last else words[:-1]
+        if not prefix:
+            return self._commands
+        command = prefix[0]
+        if len(prefix) == 1:
+            return list(self._subcommands.get(command, []))
+        # Deeper positions -> dynamic names (sessions, modules, profiles, payloads).
+        if self._dynamic is None:
+            return []
+        # Providers read live engine state, which may not be ready.
+        try:
+            return self._dynamic(command) or []
+        except Exception:
+            logger.debug("Completion lookup failed for %s", command, exc_info=True)
+            return []
 
     def complete(self, text: str, state: int) -> Optional[str]:
         if state == 0:
-            line = readline.get_line_buffer()
-            if " " in line:
-                # Subcommand completion — just return empty for now
-                self._matches = []
+            # Without readline there is no line buffer, so the cursor position is
+            # unknown — assume the operator is completing the first word.
+            if readline is None:
+                self._matches = [m for m in self._commands if m.startswith(text)]
             else:
-                self._matches = [cmd for cmd in self._commands if cmd.startswith(text)]
+                line = readline.get_line_buffer()
+                typing_last = line.endswith((" ", "\t"))
+                words = line.split()
+                self._matches = [
+                    m for m in self._candidates(words, typing_last)
+                    if m.startswith(text)
+                ]
         try:
             return self._matches[state]
         except IndexError:
@@ -179,6 +228,12 @@ class PupyteerTUI:
         self._status_bar = StatusBar(engine, self._theme)
         self._dashboard = SessionDashboard(engine, self._theme)
 
+        # What a login proved, not what the config says to be called. None means
+        # this console has not been through the gate for any verb that needs one.
+        self._token: Optional[str] = None
+        self._operator: Optional[str] = None
+        self._role: Optional[str] = None
+
         self._register_commands()
         self._setup_readline()
         self._setup_signal_handlers()
@@ -202,10 +257,14 @@ class PupyteerTUI:
         r.register("run", self.cmd_run, "Run the active module")
         r.register("reload", self.cmd_reload, "Reload module registry")
         # Session/job commands
-        r.register("sessions", self.cmd_sessions, "Manage sessions", "sessions [list|info <id>|interact <id>|kill <id>]")
+        r.register("sessions", self.cmd_sessions, "Manage sessions",
+                   "sessions [list|info <id>|interact <id>|results <id>|kill <id>|rename <id> <name>|tag <id> <tag>|search <query>]")
         r.register("jobs", self.cmd_jobs, "Manage background jobs", "jobs [list|kill <id>|info <id>]")
         r.register("tasks", self.cmd_tasks, "Manage tasks", "tasks [list|info <id>|cancel <id>]")
-        r.register("profiles", self.cmd_profiles, "Manage C2 profiles", "profiles [list|show <name>|load <name>]")
+        r.register("payloads", self.cmd_payloads, "Payload lifecycle",
+                   "payloads [status|list|build|info|verify|remove|cleanup|versions]")
+        r.register("profiles", self.cmd_profiles, "Manage C2 profiles",
+                   "profiles [list|show <name>|validate <name>|load <name>|unload|new <file>]")
         r.register("transports", self.cmd_transports, "List active transports")
         r.register("config", self.cmd_config, "View configuration", "config [get <key>|set <key> <value>]")
         r.register("logs", self.cmd_logs, "View recent audit logs")
@@ -213,21 +272,66 @@ class PupyteerTUI:
         r.register("pipeline", self.cmd_pipeline, "Unified payload-to-evasion pipeline", "pipeline [run|build|test|auto|status|history]")
         r.register("theme", self.cmd_theme, "Change TUI theme", "theme [dark|list]")
         r.register("clear", self.cmd_clear, "Clear the screen")
+        # These three are the only way through the gate, so they have to be
+        # reachable with nobody logged in.
+        r.register("login", self.cmd_login, "Sign in as an operator", "login [name]")
+        r.register("logout", self.cmd_logout, "Sign out and revoke this token")
+        r.register("whoami", self.cmd_whoami, "Show who this console is acting as")
+        r.register("operator", self.cmd_operator, "Manage operator credentials",
+                   "operator [list|add <name> <role>|role <name> <role>|remove <name>]")
+        r.register("enrollment", self.cmd_enrollment,
+                   "Which payloads may enrol: show, rotate, revoke",
+                   "enrollment [show|rotate|revoke <fingerprint>]")
         r.register("exit", self.cmd_exit, "Exit Pupyteer")
         r.register("quit", self.cmd_exit, "Exit Pupyteer")
 
+    #: Second-token choices for commands that take a subcommand.
+    _SUBCOMMANDS = {
+        "sessions": ["list", "info", "interact", "results", "download", "upload",
+                     "kill", "rename", "tag", "search"],
+        "jobs": ["list", "kill", "info"],
+        "tasks": ["list", "info", "cancel"],
+        "profiles": ["list", "show", "validate", "load", "unload", "new"],
+        "payloads": ["status", "list", "build", "info", "verify", "remove", "cleanup", "versions"],
+        "config": ["get", "set"],
+        "theme": ["dark", "light", "list"],
+        "evasion": ["status", "run", "list", "stats"],
+        "pipeline": ["run", "build", "test", "auto", "status", "history"],
+        "operator": ["list", "add", "role", "remove"],
+        "enrollment": ["show", "rotate", "revoke"],
+    }
+
+    def _complete_names(self, command: str) -> List[str]:
+        """Live object names for the argument position of `command`."""
+        if command == "sessions":
+            return self._engine.sessions.list_ids()
+        if command in ("use", "modules", "info"):
+            return [m["name"] for m in self._engine.module_registry.list_all()]
+        if command == "profiles":
+            return [p["name"] for p in self._engine.profiles.list()]
+        if command == "payloads":
+            return [p.payload_id for p in self._engine.payloads.list_all()]
+        return []
+
     def _setup_readline(self) -> None:
         """Configure readline for command history and tab completion."""
+        if readline is None:
+            logger.debug("readline unavailable — history and tab completion disabled")
+            return
         try:
             readline.set_history_length(1000)
             readline.set_completer(
-                TabCompleter(self._registry.list_commands()).complete
+                TabCompleter(
+                    self._registry.list_commands(),
+                    self._SUBCOMMANDS,
+                    self._complete_names,
+                ).complete
             )
             readline.parse_and_bind("tab: complete")
             if os.path.exists(self._history_file):
                 readline.read_history_file(self._history_file)
         except Exception:
-            pass
+            logger.debug("readline setup failed", exc_info=True)
 
     def _setup_signal_handlers(self) -> None:
         """Set up signal handlers for terminal resize and interrupt."""
@@ -259,6 +363,427 @@ class PupyteerTUI:
         self._dashboard = SessionDashboard(self._engine, self._theme)
 
     # ------------------------------------------------------------------ #
+    #  Operator gate                                                     #
+    # ------------------------------------------------------------------ #
+    #
+    # What this gates is the console, not the network. There is no remote API: a
+    # second process on this machine that can import PupyteerEngine can do what an
+    # operator can. So a login decides which verbs this keyboard may run and who the
+    # audit log blames for them, and claims nothing beyond that.
+
+    def _first_credential(self) -> None:
+        """Create one operator when the store holds none, and show it once.
+
+        An empty store is not a broken server, but it is a door with no handle:
+        nobody can get in to make the first account. Generating a password turns
+        that into a five-second setup instead of a documentation hunt, and printing
+        it once — never to the audit log, never to a file — is the same bargain the
+        enrollment secret makes.
+        """
+        auth = self._engine.auth
+        name = str(self._config.get("operator.name") or "").strip() or "admin"
+        try:
+            created = auth.bootstrap(name)
+        except WeakCredential as exc:
+            self.render_error(f"Cannot create the first operator: {exc}")
+            return
+        self.render_warning(
+            "No operator credential exists yet, so this server made one to let you "
+            "in. It is shown once and stored nowhere else:")
+        print(c(f"    operator: {created['username']}", self._theme.get("info")))
+        print(c(f"    password: {created['password']}\n", self._theme.get("info")))
+        self.render_warning(
+            f"Copy it now, then add your own with 'operator add <name>' and retire "
+            f"this one with 'operator remove {created['username']}'.")
+
+    async def _read(self, prompt: str, secret: bool = False) -> Optional[str]:
+        """Read one line off the terminal without freezing the engine.
+
+        The read runs in a worker thread because the event loop is what keeps live
+        sessions being served; waiting for a password on the loop would stall every
+        handler on this box for as long as someone takes to type it.
+        """
+        loop = asyncio.get_event_loop()
+        reader = getpass.getpass if secret else input
+        try:
+            line = await loop.run_in_executor(None, reader, prompt)
+        except Exception as exc:      # EOF, a closed stdin, a terminal that is not there
+            logger.debug("Prompt abandoned: %s", exc)
+            return None
+        return line if secret else (line or "").strip()
+
+    async def _sign_in(self, username: str, password: str) -> bool:
+        auth = self._engine.auth
+        token = auth.authenticate(username, password)
+        if token is None:
+            return False
+        self._token = token
+        self._operator = auth.get_operator(token)
+        self._role = auth.role_of(token)
+        self._engine.audit.set_operator(self._operator)
+        return True
+
+    def _sign_out(self) -> None:
+        if self._token:
+            self._engine.auth.revoke(self._token)
+        self._token = None
+        self._operator = None
+        self._role = None
+        self._engine.audit.set_operator(None)
+
+    async def prompt_login(self, why: str = "") -> bool:
+        """Ask for a credential, up to LOGIN_ATTEMPTS times."""
+        auth = self._engine.auth
+        if not auth.has_operators:
+            self.render_error(
+                "Nobody can sign in: no usable credential is stored in "
+                f"{auth.operators.path}.")
+            return False
+        if why:
+            self.render_info(why)
+        default = str(self._config.get("operator.name") or "").strip()
+        for _ in range(LOGIN_ATTEMPTS):
+            asked = await self._read(f"  operator [{default}]: ")
+            if asked is None:
+                self.render_error("No terminal to ask for a credential in.")
+                return False
+            username = asked.strip() or default
+            password = await self._read(f"  {username} password: ", secret=True)
+            if password is None:
+                return False
+            if await self._sign_in(username, password):
+                self.render_success(
+                    f"Signed in as {self._operator} ({self._role}).")
+                return True
+            self.render_error("Wrong name or password.")
+        return False
+
+    async def _gate_startup(self) -> bool:
+        """Whether this console may start the engine at all.
+
+        Refusing to start is part of the design: a team server that opens its
+        listeners for whoever ran the command has already accepted the connection
+        nobody authorised, and whatever calls back cannot be unseen.
+        """
+        auth = self._engine.auth
+        if not auth.require_auth:
+            self.render_warning(
+                "security.require_auth is off — no credential is asked for, "
+                "everyone at this console is admin, and the audit log attributes "
+                "everything to the configured name.")
+            return True
+        if not auth.has_operators:
+            self._first_credential()
+        return await self.prompt_login()
+
+    async def _authorize(self, command: str, args: List[str],
+                         _retried: bool = False) -> bool:
+        """Whether this line may run now, rendering the refusal when it may not.
+
+        Re-signing in place rather than exiting is what makes a long engagement
+        survivable: the token holds an hour and a live session does not care, so an
+        expired credential should cost a password and not the board.
+        """
+        auth = self._engine.auth
+        if not auth.require_auth:
+            return True
+        try:
+            self._engine.authz.authorize_command(self._token or "", command, args)
+            return True
+        except AccessDenied as exc:
+            if exc.permission == "valid_token" and not _retried:
+                expired = self._token is not None
+                self._sign_out()
+                if await self.prompt_login(
+                        "Your sign-in expired — this server and its live sessions "
+                        "keep running while you sign in again." if expired
+                        else "This console is not signed in."):
+                    return await self._authorize(command, args, _retried=True)
+                # Asked, and no credential came. Reporting the generic denial here
+                # reads as "your role may not", which is a different problem from
+                # the one the operator is looking at and would send them to the
+                # wrong file to fix.
+                self._refused_without_credential(command, args)
+                return False
+            self._refused(command, args, exc)
+            return False
+
+    def _refused_without_credential(self, command: str,
+                                    args: List[str]) -> None:
+        verb = " ".join([command] + list(args)[:1]).strip()
+        self.render_error(
+            f"Not signed in — '{verb}' needs a credential. Run 'login'.")
+        self._engine.audit.log_event(
+            "command_denied",
+            {"command": command, "permission": "valid_token",
+             "args_count": len(args)},
+            result="denied",
+        )
+
+    def _refused(self, command: str, args: List[str], exc: AccessDenied) -> None:
+        self.render_error(f"Refused: {exc}")
+        # A refusal is the entry an operator will later say they never typed, so it
+        # is recorded with the same care as the command itself.
+        self._engine.audit.log_event(
+            "command_denied",
+            {"command": command, "permission": exc.permission,
+             "args_count": len(args)},
+            result="denied",
+        )
+
+    # ------------------------------------------------------------------ #
+    #  Gate verbs                                                        #
+    # ------------------------------------------------------------------ #
+
+    async def cmd_login(self, args: List[str]) -> None:
+        if self._operator:
+            self.render_info(
+                f"Already signed in as {self._operator} ({self._role}); signing in "
+                "again replaces that credential.")
+        username = (args[0] if args
+                    else str(self._config.get("operator.name") or "").strip())
+        if not username:
+            self.render_warning("Usage: login <name>")
+            return
+        password = await self._read(f"  {username} password: ", secret=True)
+        if password is None:
+            return
+        if await self._sign_in(username, password):
+            self.render_success(f"Signed in as {self._operator} ({self._role}).")
+        else:
+            self.render_error("Wrong name or password.")
+
+    async def cmd_logout(self, args: List[str]) -> None:
+        if not self._token:
+            self.render_info("Not signed in.")
+            return
+        who = self._operator
+        self._sign_out()
+        self.render_success(f"Signed out {who}. That token is revoked.")
+
+    async def cmd_whoami(self, args: List[str]) -> None:
+        auth = self._engine.auth
+        if not auth.require_auth:
+            self.render_warning(
+                "Authentication is off, so this console is whoever holds the "
+                f"keyboard. Entries are attributed to "
+                f"'{self._engine.audit.operator}'.")
+            return
+        remaining = auth.remaining(self._token) if self._token else None
+        if remaining is None:
+            self.render_warning(
+                "Not signed in. Every verb that touches a session, a listener or "
+                "an artifact is refused until you are.")
+            return
+        print(c(f"  operator: {self._operator}", self._theme.get("info")))
+        print(c(f"  role:     {self._role}", self._theme.get("info")))
+        print(c(f"  expires:  in {int(remaining)}s", self._theme.get("info")))
+
+    async def cmd_operator(self, args: List[str]) -> None:
+        """`operator list|add|role|remove` — the credential file, from the console.
+
+        There is deliberately no password argument: argv is readable by any process
+        on the box and the console's own history file would keep it.
+        """
+        auth = self._engine.auth
+        usage = "operator [list|add <name> [role]|role <name> <role>|remove <name>]"
+        if not args:
+            self.render_warning(f"Usage: {usage}")
+            return
+        verb, rest = args[0], args[1:]
+        if verb == "list":
+            store = auth.operators
+            names = store.names()
+            if not names:
+                self.render_warning(f"No operators stored in {store.path}.")
+                return
+            self.render_table(["OPERATOR", "ROLE"],
+                              [[n, store.role_of(n).value] for n in names])
+            return
+        if verb == "add":
+            await self._operator_add(rest)
+            return
+        if verb == "role":
+            if len(rest) < 2:
+                self.render_warning("Usage: operator role <name> <role>")
+                return
+            role, problem = self._parse_role(rest[1])
+            if problem:
+                self.render_error(problem)
+                return
+            try:
+                record = auth.set_role(rest[0], role)
+            except ValueError as exc:
+                self.render_error(f"Refused: {exc}")
+                return
+            self.render_success(
+                f"{record.username} is now {record.role.value}. A token already "
+                "issued to them keeps the old role until it expires.")
+            return
+        if verb == "remove":
+            if not rest:
+                self.render_warning("Usage: operator remove <name>")
+                return
+            if not auth.remove_operator(rest[0]):
+                self.render_error(f"No operator named {rest[0]}.")
+                return
+            self.render_success(f"Removed {rest[0]} and ended their live sessions.")
+            return
+        self.render_error(f"Unknown operator command: {verb}\n  Usage: {usage}")
+
+    async def _operator_add(self, rest: List[str]) -> None:
+        if not rest:
+            self.render_warning("Usage: operator add <name> [role]")
+            return
+        role, problem = self._parse_role(rest[1] if len(rest) > 1 else "operator")
+        if problem:
+            self.render_error(problem)
+            return
+        name = rest[0]
+        first = await self._read(f"  new password for {name}: ", secret=True)
+        if first is None:
+            return
+        if len(first) < MIN_PASSWORD_CHARS:
+            self.render_error(
+                f"Refused: a credential needs at least {MIN_PASSWORD_CHARS} "
+                "characters.")
+            return
+        if await self._read("  repeat it: ", secret=True) != first:
+            self.render_error("Refused: the two entries did not match.")
+            return
+        try:
+            record = self._engine.auth.add_operator(name, first, role)
+        except ValueError as exc:
+            self.render_error(f"Refused: {exc}")
+            return
+        self.render_success(f"Stored {record.username} as {record.role.value}.")
+
+    @staticmethod
+    def _parse_role(value: str) -> tuple:
+        """Role from a typed word, and the reason it is not one.
+
+        `system` is not offered: it is what the engine's own internals are allowed
+        to do, and a console that could hand it out would be one mistyped verb away
+        from having no rules left.
+        """
+        word = str(value).strip().lower()
+        if word == Role.SYSTEM.value:
+            return None, f"{Role.SYSTEM.value!r} is the engine's own role, not one " \
+                         "an operator can be given"
+        try:
+            return Role(word), None
+        except ValueError:
+            offered = ", ".join(r.value for r in Role if r is not Role.SYSTEM)
+            return None, f"Unknown role {word!r}; choose from {offered}"
+
+
+    # ------------------------------------------------------------------ #
+    #  Enrollment boundary                                               #
+    # ------------------------------------------------------------------ #
+
+    async def cmd_enrollment(self, args: List[str]) -> None:
+        """`enrollment show|rotate|revoke` — which payloads may become a session.
+
+        The secret is named here by fingerprint and its value is never printed.
+        It is the one credential every deployed agent shares, which makes it the
+        one worth the most to whoever finds it in a terminal scrollback or an
+        audit line; the file is the only copy and the console's job is to keep it
+        that way.
+        """
+        ledger = self._engine.transports.enrollment
+        usage = "enrollment [show|rotate|revoke <fingerprint>]"
+        if ledger is None:
+            if self._engine.transports.listener_requires_auth is False:
+                self.render_error(
+                    "Agent authentication is off, so this listener enrols "
+                    "whatever reaches its port — there is no boundary to manage "
+                    "until server.agent_auth is on.")
+            else:
+                self.render_warning(
+                    "No agent listener is running yet, so nothing is checking "
+                    "registrations against anything.")
+            return
+
+        verb = args[0] if args else "show"
+        if verb == "show":
+            self._enrollment_show(ledger)
+            return
+        if verb == "rotate":
+            await self._enrollment_rotate(ledger)
+            return
+        if verb == "revoke":
+            self._enrollment_revoke(ledger, args[1:])
+            return
+        self.render_error(f"Unknown enrollment command: {verb}\n  Usage: {usage}")
+
+    def _enrollment_show(self, ledger) -> None:
+        rows = ledger.status()
+        if not rows:
+            self.render_error(
+                f"{ledger.path} holds no enrollment secret, so this listener "
+                "admits nobody. Restore the file, or delete it and restart to "
+                "start a new boundary and rebuild the payloads.")
+            return
+        self.render_table(["FINGERPRINT", "ROLE"],
+                          [[r["fingerprint"], r["role"]] for r in rows])
+        retired = len(rows) - 1
+        if retired:
+            self.render_warning(
+                f"{retired} retired secret(s) still enrol payloads built with "
+                "them. That is the point of a rotation, not a leak — but each "
+                "one is a door, and `enrollment revoke <fingerprint>` is how you "
+                "close one you no longer need.")
+
+    async def _enrollment_rotate(self, ledger) -> None:
+        try:
+            new, retired = ledger.rotate()
+        except ValueError as exc:
+            self.render_error(f"Refused: {exc}")
+            return
+        self._engine.audit.log_event(
+            "enrollment_rotated",
+            {"new": secret_fingerprint(new), "retired": secret_fingerprint(retired)},
+            result="success")
+        self.render_success(
+            "New enrollment secret in place. Payloads built from here on carry "
+            f"it ({secret_fingerprint(new)[:8]}…); the one before "
+            f"({secret_fingerprint(retired)[:8]}…) is still accepted, so "
+            "everything already deployed keeps its session.")
+        print("  Nothing you build now will use the old one. Once no session you "
+              "care about is built with it, close it:\n"
+              f"    enrollment revoke {secret_fingerprint(retired)}")
+
+    def _enrollment_revoke(self, ledger, rest: List[str]) -> None:
+        if not rest:
+            self.render_warning("Usage: enrollment revoke <fingerprint>")
+            return
+        wanted = rest[0].strip().lower()
+        rows = ledger.status()
+        if rows and wanted == rows[0]["fingerprint"]:
+            # The message is the difference between this and a typo: the current
+            # secret is the one new payloads are built with, so cutting it off is
+            # a rotation, and saying "not found" would send an operator hunting
+            # for a fingerprint that is plainly on the screen.
+            self.render_error(
+                "Refused: that is the current secret, and what `payloads build` "
+                "compiles into new agents. Run `enrollment rotate` first — that "
+                "retires it and keeps it working until you revoke it here.")
+            return
+        if not ledger.revoke(wanted):
+            self.render_error(
+                f"No retired secret with fingerprint {wanted!r}. "
+                "`enrollment show` lists what is accepted.")
+            return
+        self._engine.audit.log_event(
+            "enrollment_revoked", {"fingerprint": wanted}, result="success")
+        self.render_success(
+            f"{wanted} no longer enrols anything. Payloads built with it will be "
+            "turned away on their next registration; sessions that already exist "
+            "keep running on their own beacon token — kill those with "
+            "`sessions kill <id>` if that is what you meant.")
+
+
+    # ------------------------------------------------------------------ #
     #  Render                                                             #
     # ------------------------------------------------------------------ #
 
@@ -269,7 +794,49 @@ class PupyteerTUI:
         status = self._engine.get_status()
         server = status["config"]
         print(c(f"  [Server]", theme.get("success")), f"{server['server_host']}:{server['server_port']}")
-        print(c(f"  [Operator]", theme.get("warning")), f"{server['operator']}")
+        # Whether callbacks are encrypted is the first thing that decides if this
+        # server is safe to start using, so it goes where the operator looks first.
+        fingerprint = server.get("listener_tls") or ""
+        if fingerprint:
+            print(c("  [Channel]", theme.get("success")),
+                  f"TLS, pinned to SHA-256 {fingerprint[:16]}…")
+        elif server.get("tls_configured") is False:
+            print(c("  [Channel]", theme.get("error")),
+                  "PLAINTEXT callbacks — server.tls is off, so anyone on the "
+                  "network reads every command and every result")
+        else:
+            # The banner is drawn before the engine starts, and the console now
+            # starts it only after a sign-in. A missing fingerprint here means
+            # nothing is listening yet, not that the channel is in the clear;
+            # shouting PLAINTEXT at that would train operators to ignore the
+            # warning for the case where it is true.
+            print(c("  [Channel]", theme.get("warning")),
+                  "TLS configured, no listener serving yet — 'banner' after "
+                  "sign-in shows the pinned certificate")
+        # Encryption says nobody on the wire can read the sessions; it does not say
+        # who is allowed to start one. That is what the enrollment secret is for.
+        auth = server.get("agent_auth")
+        if auth is False:
+            print(c("  [Enrollment]", theme.get("error")),
+                  "unauthenticated — anything that reaches the port gets a session")
+        elif auth:
+            print(c("  [Enrollment]", theme.get("success")),
+                  "registrations checked against this server's secret")
+        # The third line a buyer of this banner reads is "who is doing this". A name
+        # in a config file is what the audit log falls back to, not proof of who is
+        # typing, so it is only ever shown as that.
+        engine_auth = self._engine.auth
+        if self._operator:
+            print(c("  [Operator]", theme.get("success")),
+                  f"{self._operator} as {self._role}")
+        elif engine_auth.require_auth:
+            print(c("  [Operator]", theme.get("warning")),
+                  "not signed in — verbs that touch a target are refused until you "
+                  "are")
+        else:
+            print(c("  [Operator]", theme.get("error")),
+                  f"console authentication is off; whoever holds this keyboard is "
+                  f"admin, blamed as {server['operator']!r}")
         print(c(f"  [Profile]", theme.get("accent")), f"{status['state']['loaded_profile'] or 'none'}")
         print(c(f"  [Agents]", theme.get("info")), f"{status['state']['active_sessions']}")
         print()
@@ -350,32 +917,6 @@ class PupyteerTUI:
         else:
             self.render_error(f"Unknown theme: {args[0]}. Available: {', '.join(available_themes())}")
 
-    async def cmd_sessions(self, args: List[str]) -> None:
-        """Manage sessions — MSF-style."""
-        from pupyteer.tui.commands.sessions import (
-            sessions_list, sessions_info, sessions_interact, sessions_kill,
-        )
-        if not args:
-            args = ["list"]
-        action = args[0]
-        action_args = args[1:]
-        try:
-            if action == "list":
-                result = await sessions_list(self, action_args)
-            elif action == "info" and action_args:
-                result = await sessions_info(self, action_args)
-            elif action == "interact" and action_args:
-                result = await sessions_interact(self, action_args)
-            elif action == "kill" and action_args:
-                result = await sessions_kill(self, action_args)
-            else:
-                self.render_warning("Usage: sessions [list|info <id>|interact <id>|kill <id>]")
-                return
-            if result.get("status") == "ok":
-                self._render_msf_result(result)
-        except Exception as e:
-            self.render_error(f"Sessions error: {e}")
-
     async def cmd_tasks(self, args: List[str]) -> None:
         if not args or args[0] == "list":
             tasks = await self._engine.tasks.list_all()
@@ -412,42 +953,71 @@ class PupyteerTUI:
                 self.render_error(f"Task not found: {args[1]}")
 
     async def cmd_profiles(self, args: List[str]) -> None:
-        if not args or args[0] == "list":
-            profiles = self._engine.profiles.list()
-            headers = ["Name", "Version", "Transport", "Source", "Active"]
-            rows = []
-            for p in profiles:
-                rows.append([
-                    p["name"],
-                    p["version"],
-                    p["transport"],
-                    p["source"],
-                    "✓" if p["active"] else "",
-                ])
-            self.render_table(headers, rows)
+        action = args[0] if args else "list"
+        rest = args[1:]
+        manager = self._engine.profiles
 
-        elif args[0] == "show" and len(args) > 1:
-            profile = self._engine.profiles.get(args[1])
+        if action == "list":
+            profiles = manager.list()
+            if not profiles:
+                self.render_warning("No profiles loaded.")
+                return
+            headers = ["Name", "Version", "Transport", "Source", "Active"]
+            self.render_table(
+                headers,
+                [[p["name"], p["version"], p["transport"], p["source"], "✓" if p["active"] else ""]
+                 for p in profiles],
+            )
+
+        elif action == "show" and rest:
+            profile = manager.get(rest[0])
             if profile:
                 for key, val in profile.as_dict().items():
                     print(f"    {c(key + ':', self._theme.get('info'))} {val}")
             else:
-                self.render_error(f"Profile not found: {args[1]}")
+                self.render_error(f"Profile not found: {rest[0]}")
 
-        elif args[0] == "load" and len(args) > 1:
-            ok = self._engine.profiles.load(args[1])
-            if ok:
-                self.render_success(f"Profile {args[1]} loaded.")
+        elif action == "load" and rest:
+            if manager.load(rest[0]):
+                self.render_success(f"Profile {rest[0]} loaded.")
             else:
-                self.render_error("Failed to load profile.")
+                self.render_error(f"Failed to load profile: {rest[0]}")
 
-        elif args[0] == "validate" and len(args) > 1:
-            errors = self._engine.profiles.validate(args[1])
+        elif action == "validate" and rest:
+            errors = manager.validate_errors(rest[0])
             if errors:
                 for e in errors:
                     self.render_error(e)
             else:
-                self.render_success(f"Profile {args[1]} is valid.")
+                self.render_success(f"Profile {rest[0]} is valid.")
+
+        elif action == "unload":
+            manager.unload()
+            self.render_success("Active profile unloaded.")
+
+        elif action == "new":
+            if not rest:
+                self.render_error("Usage: profiles new <source.yaml>")
+                return
+            try:
+                profile = manager.create_from_file(rest[0])
+            except Exception as e:
+                self.render_error(f"Could not create profile: {e}")
+                return
+            errors = profile.validate_errors()
+            self.render_success(f"Profile '{profile.name}' created from {rest[0]}.")
+            if not profile.is_valid():
+                self.render_warning("It has validation errors — run "
+                                    f"'profiles validate {profile.name}' before loading.")
+            elif errors:
+                for e in errors:
+                    self.render_warning(e)
+
+        else:
+            self.render_warning(
+                "Usage: profiles [list|show <name>|validate <name>|load <name>"
+                "|unload|new <source.yaml>]"
+            )
 
     async def cmd_transports(self, args: List[str]) -> None:
         transports = self._engine.transports.list()
@@ -455,7 +1025,22 @@ class PupyteerTUI:
             self.render_warning("No active transports.")
             return
         for t in transports:
-            print(f"    {c(t['name'], self._theme.get('success'))} [{t['state']}]  sent={t['stats']['bytes_sent']}B  recv={t['stats']['bytes_received']}B")
+            stats = t["stats"]
+            # Whoever is refused at this port is the one fact in this table the
+            # operator has to notice, and it is absent until it happens. Each kind
+            # of refusal means something different: a stranger reaching the port, a
+            # payload that cannot finish a handshake, and someone speaking for a
+            # session whose id they got hold of without its token.
+            suffix = "".join(
+                "  " + c(f"{label}={stats[key]}", self._theme.get("error"))
+                for key, label in (
+                    ("registrations_rejected", "registrations rejected"),
+                    ("beacons_refused", "beacons refused"),
+                    ("handshakes_refused", "handshakes refused"),
+                )
+                if stats.get(key)
+            )
+            print(f"    {c(t['name'], self._theme.get('success'))} [{t['state']}]  sent={stats['bytes_sent']}B  recv={stats['bytes_received']}B{suffix}")
 
     async def cmd_config(self, args: List[str]) -> None:
         if not args or args[0] == "list":
@@ -464,8 +1049,25 @@ class PupyteerTUI:
         elif args[0] == "get" and len(args) > 1:
             print(f"  {args[1]} = {self._engine.config.get(args[1])}")
         elif args[0] == "set" and len(args) > 2:
+            if self._locked_at_runtime(args[1]):
+                self.render_error(
+                    f"Refused: {args[1]} is not a runtime preference. Set it in the "
+                    "config file before starting the server.")
+                self._engine.audit.log_event(
+                    "configuration_refused", {"key": args[1]}, result="denied")
+                return
             self._engine.config.set(args[1], args[2])
             print(f"  Set {args[1]} = {args[2]}")
+
+    #: Keys the console will not rewrite while it is running. `operator.name` is
+    #: who the audit log blames when nobody has signed in, and `security.*` is the
+    #: gate itself: a server whose console can switch off its own gate has no gate.
+    _LOCKED_KEYS = frozenset({"operator.name"})
+    _LOCKED_PREFIXES = ("security.",)
+
+    @classmethod
+    def _locked_at_runtime(cls, key: str) -> bool:
+        return key in cls._LOCKED_KEYS or key.startswith(cls._LOCKED_PREFIXES)
 
     async def cmd_logs(self, args: List[str]) -> None:
         log_path = self._engine.config.get("logging.file")
@@ -483,91 +1085,123 @@ class PupyteerTUI:
 
     async def cmd_evasion(self, args: List[str]) -> None:
         """Run evasion testing commands."""
-        from pupyteer.tui.commands.evasion import (
-            evasion_status,
-            evasion_run,
-            evasion_list,
-            evasion_stats,
-            evasion_profiles,
-            evasion_runner,
-        )
+        from pupyteer.tui.commands import evasion
 
-        if not args:
-            self.render_warning("Usage: evasion [status|run|list|stats|profiles|runner]")
-            return
-
-        action = args[0]
-        action_args = args[1:]
-
-        try:
-            if action == "status":
-                result = await evasion_status(action_args)
-            elif action == "run":
-                result = await evasion_run(action_args)
-            elif action == "list":
-                result = await evasion_list(action_args)
-            elif action == "stats":
-                result = await evasion_stats(action_args)
-            elif action == "profiles":
-                result = await evasion_profiles(action_args)
-            elif action == "runner":
-                result = await evasion_runner(action_args)
-            else:
-                self.render_error(f"Unknown evasion command: {action}")
-                return
-
-            import json
-            print(json.dumps(result, indent=2, default=str))
-        except Exception as e:
-            self.render_error(f"Evasion error: {e}")
-            logger.exception("Evasion command error")
+        handlers = {
+            "status": evasion.evasion_status,
+            "run": evasion.evasion_run,
+            "list": evasion.evasion_list,
+            "stats": evasion.evasion_stats,
+            "profiles": evasion.evasion_profiles,
+            "runner": evasion.evasion_runner,
+        }
+        await self._dispatch_subcommand(handlers, args, "evasion")
 
     async def cmd_pipeline(self, args: List[str]) -> None:
         """Run unified payload-to-evasion pipeline commands."""
-        from pupyteer.tui.commands.pipeline import (
-            pipeline_run,
-            pipeline_build,
-            pipeline_test,
-            pipeline_auto,
-            pipeline_status,
-            pipeline_history,
-            pipeline_profiles,
-            pipeline_info,
-        )
+        from pupyteer.tui.commands import pipeline
 
+        handlers = {
+            "run": pipeline.pipeline_run,
+            "build": pipeline.pipeline_build,
+            "test": pipeline.pipeline_test,
+            "auto": pipeline.pipeline_auto,
+            "status": pipeline.pipeline_status,
+            "history": pipeline.pipeline_history,
+            "profiles": pipeline.pipeline_profiles,
+            "info": pipeline.pipeline_info,
+        }
+        await self._dispatch_subcommand(handlers, args, "pipeline")
+
+    async def cmd_payloads(self, args: List[str]) -> None:
+        """Manage payload lifecycle — build, verify, list, cleanup."""
+        from pupyteer.tui.commands import payloads
+
+        handlers = {
+            "status": payloads.payload_status,
+            "list": payloads.payload_list,
+            "build": payloads.payload_build,
+            "info": payloads.payload_info,
+            "verify": payloads.payload_verify,
+            "remove": payloads.payload_remove,
+            "cleanup": payloads.payload_cleanup,
+            "versions": payloads.payload_versions,
+        }
+        await self._dispatch_subcommand(handlers, args, "payloads")
+
+    async def _dispatch_subcommand(
+        self,
+        handlers: Dict[str, Any],
+        args: List[str],
+        command: str,
+    ) -> None:
+        """Resolve `<command> <action>` against a handler table and render the result."""
+        usage = f"{command} [{'|'.join(handlers)}] ..."
         if not args:
-            self.render_warning("Usage: pipeline [run|build|test|auto|status|history|profiles|info]")
+            self.render_warning(f"Usage: {usage}")
+            return
+        handler = handlers.get(args[0])
+        if handler is None:
+            self.render_error(f"Unknown {command} command: {args[0]}\n  Usage: {usage}")
+            return
+        try:
+            result = await handler(self, args[1:])
+        except Exception as e:
+            self.render_error(f"{command.title()} error: {e}")
+            logger.exception("%s command error", command)
+            return
+        if result.get("status") != "ok":
+            self.render_error(
+                result.get("error")
+                or result.get("message")
+                or f"{command} {args[0]} failed"
+            )
+            return
+        self._render_command_result(result)
+
+    def _render_command_result(self, result: Dict[str, Any]) -> None:
+        """Render a command result as a table when its shape allows, else as JSON."""
+        import json
+
+        payloads = result.get("payloads")
+        if payloads is not None:
+            if not payloads:
+                self.render_warning("No payloads built.")
+                return
+            headers = ["ID", "Name", "Ver", "Platform", "Arch", "Status", "Size", "Operator"]
+            rows = [
+                [
+                    # Identifiers are never truncated: the table is where the
+                    # operator reads the id they then pass to `remove`/`info`.
+                    p["payload_id"], p["name"][:20], p["version"],
+                    p["platform"], p["arch"], p["status"],
+                    f"{p['size_bytes'] // 1024}KB" if p["size_bytes"] else "-",
+                    (p.get("operator") or "-")[:12],
+                ]
+                for p in payloads
+            ]
+            self.render_table(headers, rows)
+            print(f"\n  Total: {len(payloads)} payloads")
             return
 
-        action = args[0]
-        action_args = args[1:]
-
-        try:
-            if action == "run":
-                result = await pipeline_run(action_args)
-            elif action == "build":
-                result = await pipeline_build(action_args)
-            elif action == "test":
-                result = await pipeline_test(action_args)
-            elif action == "auto":
-                result = await pipeline_auto(action_args)
-            elif action == "status":
-                result = await pipeline_status(action_args)
-            elif action == "history":
-                result = await pipeline_history(action_args)
-            elif action == "profiles":
-                result = await pipeline_profiles(action_args)
-            elif action == "info":
-                result = await pipeline_info(action_args)
-            else:
-                self.render_error(f"Unknown pipeline command: {action}")
+        history = result.get("versions")
+        if history is not None:
+            if not history:
+                self.render_warning("No version history.")
                 return
+            headers = ["Version", "ID", "Status", "Built", "SHA-256"]
+            rows = [
+                [
+                    h.get("version", "-"), str(h.get("payload_id", "")),
+                    h.get("status", "-"), str(h.get("created_at", ""))[:19],
+                    str(h.get("hash_sha256", ""))[:16],
+                ]
+                for h in history
+            ]
+            self.render_table(headers, rows)
+            return
 
-            import json
-            print(json.dumps(result, indent=2, default=str))
-        except Exception as e:
-            self.render_error(f"Pipeline error: {e}")
-            logger.exception("Pipeline command error")
+        print(json.dumps(result, indent=2, default=str))
 
     async def cmd_clear(self, args: List[str]) -> None:
         # Clear screen — no user input passed, safe
@@ -581,25 +1215,41 @@ class PupyteerTUI:
         """Manage sessions — MSF-style."""
         from pupyteer.tui.commands.sessions import (
             sessions_list, sessions_info, sessions_interact, sessions_kill,
+            sessions_rename, sessions_tag, sessions_search, sessions_results,
+            sessions_download, sessions_upload, sessions_screenshot,
+            sessions_route,
         )
         if not args:
             args = ["list"]
         action = args[0]
         action_args = args[1:]
+        handlers = {
+            "list": sessions_list,
+            "info": sessions_info,
+            "interact": sessions_interact,
+            "results": sessions_results,
+            "download": sessions_download,
+            "upload": sessions_upload,
+            "screenshot": sessions_screenshot,
+            "kill": sessions_kill,
+            "rename": sessions_rename,
+            "tag": sessions_tag,
+            "search": sessions_search,
+            "route": sessions_route,
+        }
+        handler = handlers.get(action)
+        if handler is None:
+            self.render_warning(
+                "Usage: sessions [list|info <id>|interact <id>|results <id>"
+                "|download <id> <remote> [local]|upload <id> <local> <remote>"
+                "|screenshot <id> [local]|kill <id>|rename <id> <name>"
+                "|tag <id> <tag>|search <query>|route <id> <module>]"
+            )
+            return
         try:
-            if action == "list":
-                result = await sessions_list(self, action_args)
-            elif action == "info" and action_args:
-                result = await sessions_info(self, action_args)
-            elif action == "interact" and action_args:
-                result = await sessions_interact(self, action_args)
-            elif action == "kill" and action_args:
-                result = await sessions_kill(self, action_args)
-            else:
-                self.render_warning("Usage: sessions [list|info <id>|interact <id>|kill <id>]")
-                return
+            result = await handler(self, action_args)
             if result.get("status") == "ok":
-                self._render_msf_result(result)
+                await self._render_msf_result(result)
         except Exception as e:
             self.render_error(f"Sessions error: {e}")
 
@@ -621,7 +1271,7 @@ class PupyteerTUI:
                 self.render_warning("Usage: jobs [list|kill <id>|info <id>]")
                 return
             if result.get("status") == "ok":
-                self._render_msf_result(result)
+                await self._render_msf_result(result)
         except Exception as e:
             self.render_error(f"Jobs error: {e}")
 
@@ -655,9 +1305,9 @@ class PupyteerTUI:
 
     async def cmd_search(self, args: List[str]) -> None:
         """Search modules."""
-        from pupyteer.tui.commands.msf_core import search_modules
+        from pupyteer.tui.commands.msf_core import search
         try:
-            result = await search_modules(self, args)
+            result = await search(self, args)
         except Exception as e:
             self.render_error(f"search error: {e}")
 
@@ -703,7 +1353,7 @@ class PupyteerTUI:
 
     async def cmd_run(self, args: List[str]) -> None:
         """Run the active module."""
-        from pupyteer.tui.commands.msf_core import run_module
+        from pupyteer.tui.commands.msf_core import run as run_module
         try:
             result = await run_module(self, args)
         except Exception as e:
@@ -711,7 +1361,7 @@ class PupyteerTUI:
 
     async def cmd_reload(self, args: List[str]) -> None:
         """Reload module registry."""
-        from pupyteer.tui.commands.msf_core import reload_modules
+        from pupyteer.tui.commands.msf_core import reload as reload_modules
         try:
             result = await reload_modules(self, args)
         except Exception as e:
@@ -744,6 +1394,13 @@ class PupyteerTUI:
         self._running = True
         self.render_banner()
 
+        # Before the listeners, not after: signing in is what decides whether this
+        # machine starts serving at all. A failed login here leaves no port open.
+        if not await self._gate_startup():
+            self.render_error("Not starting: no operator signed in. No listener was "
+                              "opened and no payload has anywhere to call back to.")
+            return
+
         # Start engine
         try:
             await self._engine.start()
@@ -773,6 +1430,8 @@ class PupyteerTUI:
 
                 cmd = self._registry.get(cmd_name)
                 if cmd:
+                    if not await self._authorize(cmd_name, cmd_args):
+                        continue
                     try:
                         await cmd["handler"](cmd_args)
                     except Exception as e:
@@ -788,8 +1447,9 @@ class PupyteerTUI:
 
         # Shutdown
         await self._engine.stop()
-        try:
-            readline.write_history_file(self._history_file)
-        except Exception:
-            pass
+        if readline is not None:
+            try:
+                readline.write_history_file(self._history_file)
+            except Exception:
+                logger.debug("Could not write history file", exc_info=True)
         print(c("  Goodbye.\n", self._theme.get("primary")))

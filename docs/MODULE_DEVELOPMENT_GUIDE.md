@@ -68,7 +68,10 @@ class MyModule(PupyModule):
 ```
 pupyteer/server/modules/builtin/
 ├── __init__.py          # Package marker
-├── recon.py             # Recon modules (sysinfo, ps, netinfo)
+├── recon.py             # Recon/execution/file-transfer modules
+├── implant_actions.py   # Wrappers for structured agent actions (ping, privesc, screenshot, migrate)
+├── evasion.py           # Evasion test/config modules
+├── antiforensics.py     # Anti-forensics modules (intentionally not registered)
 └── your_module.py       # Your custom module file
 ```
 

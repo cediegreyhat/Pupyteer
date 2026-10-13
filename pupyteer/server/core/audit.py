@@ -283,6 +283,15 @@ class AuditEmitter:
         self._store = store
         self._default_operator = default_operator
 
+    def set_default_operator(self, name: str) -> None:
+        """Change who entries are attributed to from now on.
+
+        The console calls this when an operator signs in and when they sign out.
+        Nothing else writes it: an operator's name in a config or in a command
+        argument is a claim, and a claim is not proof.
+        """
+        self._default_operator = name or "unknown"
+
     def emit(
         self,
         event: str,

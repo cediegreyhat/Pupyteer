@@ -46,12 +46,12 @@
 
 | Package | Purpose |
 |---------|---------|
-| `pyyaml` | Configuration file parsing |
-| `pycryptodome` | Cryptographic operations |
-| `cerberus` | Configuration validation |
-| `colorama` | Cross-platform colored terminal output |
-| `readline` | Command history and tab completion (Unix) |
-| `pyOpenSSL` | TLS/SSL for HTTPS transports |
+| `pyyaml` | Configuration and profile parsing |
+| `cryptography` | AES in the pipeline's obfuscation stage (imported lazily) |
+| `httpx` | HTTP(S) transports and the external analyser client |
+| `websockets` | WebSocket transport |
+| `jinja2` | Agent stub templating (imported lazily) |
+| `readline` | Command history and tab completion — stdlib on Unix, optional elsewhere |
 
 Full dependency list in `requirements.txt`.
 
@@ -434,9 +434,18 @@ pip install -r requirements.txt
 
 ### Readline Not Working (Windows)
 
-**Error:** TAB completion and arrow keys don't work.
+**Symptom:** TAB completion and history recall don't work.
 
-**Fix:** Use WSL2 on Windows. Native Windows Python doesn't include readline.
+Pupyteer runs natively on Windows; `readline` is optional and the console
+degrades to plain line input without it. To restore completion and history,
+install a package that provides a `readline` module, such as `pyreadline3`:
+
+```
+pip install pyreadline3
+```
+
+WSL2 is still the better experience for building Linux agents, but it is no
+longer required to run the server or console.
 
 ### SSL/TLS Errors
 

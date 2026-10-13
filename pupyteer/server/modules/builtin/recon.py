@@ -1,20 +1,47 @@
 """Built-in Pupyteer modules — Recon, Execution, File Operations, Red-Team.
 
 These modules dispatch commands to agents through the session manager's
-command queue via session_manager.interact(). The agent executes the command
-and reports back, at which point the session manager stores the result in
-the command queue for retrieval.
+command queue, and wait for the answer. The queue-and-wait loop, and the chunked
+file transfer built on it, live in ``server.sessions.transfer`` — the same code
+the operator console runs, so a module cannot report a transfer the console would
+have discovered was incomplete.
 """
 from __future__ import annotations
 
-import time
+import json
+import os
 from typing import Any, Dict
 
 from pupyteer.server.modules.registry import PupyModule, ModuleCategory, ModuleRequirement
+from pupyteer.server.sessions import transfer
 
 
 # Default timeout for waiting for agent command results
-DEFAULT_COMMAND_TIMEOUT = 30.0
+DEFAULT_COMMAND_TIMEOUT = transfer.DEFAULT_TIMEOUT
+
+
+# How long a module will wait for one agent answer when the caller says nothing.
+# An agent between beacons is normal, so this has to outlast the beacon interval.
+def _command_timeout(args: Dict[str, Any]) -> float:
+    try:
+        value = float(args.get("timeout", DEFAULT_COMMAND_TIMEOUT))
+    except (TypeError, ValueError):
+        return DEFAULT_COMMAND_TIMEOUT
+    return value if value > 0 else DEFAULT_COMMAND_TIMEOUT
+
+
+def _no_agent(session: Any) -> Dict[str, Any]:
+    """What a module says when it was never given a way to reach the agent.
+
+    A module that cannot dispatch has not done the thing it is named after, so it
+    fails. Returning a well-shaped empty result instead is how an operator ends up
+    believing a file was uploaded.
+    """
+    return {
+        "status": "error",
+        "error": "no session manager: nothing was sent to the agent",
+        "session_id": getattr(session, "session_id", ""),
+    }
 
 
 async def _dispatch_command(session: Any, session_mgr: Any, command: str, timeout: float = DEFAULT_COMMAND_TIMEOUT) -> Dict[str, Any]:
@@ -26,38 +53,25 @@ async def _dispatch_command(session: Any, session_mgr: Any, command: str, timeou
     if not session_mgr:
         return {"status": "error", "error": "No session manager available"}
 
-    command_id = await session_mgr.interact(session.session_id, command)
-    if not command_id:
-        return {"status": "error", "error": "Failed to queue command for session"}
-
-    # Poll for result (agent executes asynchronously)
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        queue = await session_mgr.get_pending_commands(session.session_id)
-        for cmd in queue:
-            if cmd.get("command_id") == command_id:
-                if cmd.get("status") == "completed":
-                    # Remove completed command from queue
-                    await session_mgr.ack_command(
-                        session.session_id, command_id, cmd.get("result", "")
-                    )
-                    return {
-                        "status": "ok",
-                        "output": cmd.get("result", ""),
-                        "command_id": command_id,
-                    }
-        await asyncio.sleep(0.5)
-
+    answered = await transfer.run_command(
+        session_mgr, session.session_id, command, timeout=timeout)
+    if answered.get("error"):
+        return {"status": "error", "error": answered["error"]}
+    if answered["output"] is None:
+        return {
+            "status": "error",
+            "error": f"Command timed out after {timeout}s "
+                     f"(is the agent beaconing?)",
+            "command_id": answered["command_id"],
+        }
     return {
-        "status": "error",
-        "error": f"Command timed out after {timeout}s",
-        "command_id": command_id,
+        "status": "ok",
+        "output": answered["output"],
+        "command_id": answered["command_id"],
     }
 
 
 # ── Recon ──────────────────────────────────────────────────────────────
-
-import asyncio
 
 
 class SystemInfoModule(PupyModule):
@@ -188,16 +202,9 @@ class ShellExecModule(PupyModule):
 
         session_mgr = getattr(self, '_session_manager', None)
         if not session_mgr:
-            # No agent connected — return success with command echoed (testing/offline mode)
-            return {
-                "status": "ok",
-                "command": command,
-                "output": "",
-                "mode": "offline",
-                "message": "No session manager — command not dispatched to agent",
-            }
+            return _no_agent(session)
 
-        timeout = float(args.get("timeout", DEFAULT_COMMAND_TIMEOUT))
+        timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, command, timeout=timeout)
 
         return {
@@ -235,12 +242,26 @@ class UploadModule(PupyModule):
                 "status": "error",
                 "error": "Both local_path and remote_path are required",
             }
-        # Actual implementation streams bytes to agent
+        session_mgr = getattr(self, '_session_manager', None)
+        if not session_mgr:
+            return _no_agent(session)
+
+        outcome = await transfer.push(
+            session_mgr, session.session_id, local_path, remote_path,
+            timeout=_command_timeout(args))
+        if outcome["status"] != "ok":
+            return {
+                "status": "error",
+                "error": outcome["error"],
+                "local_path": local_path,
+                "remote_path": remote_path,
+                "bytes_transferred": outcome.get("bytes", 0),
+            }
         return {
             "status": "ok",
             "local_path": local_path,
             "remote_path": remote_path,
-            "bytes_transferred": 0,
+            "bytes_transferred": outcome["bytes"],
         }
 
     def validate_args(self, args: Dict[str, Any]) -> list[str]:
@@ -263,14 +284,35 @@ class DownloadModule(PupyModule):
 
     async def execute(self, session: Any, args: Dict[str, Any]) -> Dict[str, Any]:
         remote_path = args.get("remote_path", "")
-        local_path = args.get("local_path", "")
         if not remote_path:
             return {"status": "error", "error": "remote_path is required"}
+        local_path = args.get("local_path") or os.path.basename(
+            remote_path.replace("\\", "/").rstrip("/")) or "downloaded_file"
+        session_mgr = getattr(self, '_session_manager', None)
+        if not session_mgr:
+            return _no_agent(session)
+
+        parent = os.path.dirname(os.path.abspath(local_path))
+        os.makedirs(parent, exist_ok=True)
+        # Chunked straight to disk, so a target-side file larger than the
+        # operator's memory costs a file handle rather than a second copy of it.
+        with open(local_path, "wb") as sink:
+            outcome = await transfer.pull(
+                session_mgr, session.session_id, remote_path, sink,
+                timeout=_command_timeout(args))
+        if outcome["status"] != "ok":
+            return {
+                "status": "error",
+                "error": outcome["error"],
+                "remote_path": remote_path,
+                "local_path": local_path,
+                "bytes_transferred": outcome.get("bytes", 0),
+            }
         return {
             "status": "ok",
             "remote_path": remote_path,
             "local_path": local_path,
-            "bytes_transferred": 0,
+            "bytes_transferred": outcome["bytes"],
         }
 
     def validate_args(self, args: Dict[str, Any]) -> list[str]:
@@ -291,7 +333,23 @@ class FileListModule(PupyModule):
 
     async def execute(self, session: Any, args: Dict[str, Any]) -> Dict[str, Any]:
         path = args.get("path", ".")
-        return {"status": "ok", "path": path, "entries": []}
+        session_mgr = getattr(self, '_session_manager', None)
+        if not session_mgr:
+            return _no_agent(session)
+
+        reply = await transfer.run_action(
+            session_mgr, session.session_id, {"action": "fs_list", "path": path},
+            timeout=_command_timeout(args))
+        if reply.get("error"):
+            return {"status": "error", "error": reply["error"], "path": path}
+        entries = reply.get("entries")
+        if not isinstance(entries, list):
+            return {
+                "status": "error",
+                "error": f"agent sent no listing for {path}: {str(reply)[:200]}",
+                "path": path,
+            }
+        return {"status": "ok", "path": reply.get("path", path), "entries": entries}
 
     def validate_args(self, args: Dict[str, Any]) -> list[str]:
         return []
@@ -320,11 +378,24 @@ class DiscoveryModule(PupyModule):
     async def execute(self, session: Any, args: Dict[str, Any]) -> Dict[str, Any]:
         target = args.get("target", "whoami")
         command = self.DISCOVERY_CMDS.get(target, target)
+        session_mgr = getattr(self, '_session_manager', None)
+        if not session_mgr:
+            return _no_agent(session)
+
+        # Sent as a JSON task rather than typed text: "hostname" as a bare line is
+        # the agent's own module action, and an operator asking for the shell
+        # command would get the module's answer instead.
+        result = await _dispatch_command(
+            session, session_mgr, json.dumps({"action": "exec", "command": command,
+                                              "timeout": int(_command_timeout(args))}),
+            timeout=_command_timeout(args))
         return {
-            "status": "ok",
+            "status": result.get("status", "ok"),
             "target": target,
             "command": command,
-            "output": "",
+            "output": result.get("output", ""),
+            "command_id": result.get("command_id"),
+            "error": result.get("error"),
         }
 
 

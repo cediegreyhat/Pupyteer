@@ -20,28 +20,9 @@ from pupyteer.payloads.manager import (
     PayloadArch,
     PayloadType,
 )
-from pupyteer.server.core.engine import PupyteerEngine
 from pupyteer.server.evasion.models import EvasionTestConfig, TestEnvironment
 
-
-def _get_engine() -> PupyteerEngine:
-    """Get initialized engine with pipeline."""
-    engine = PupyteerEngine()
-    # Pipeline manager is now initialized as part of engine init
-    return engine
-
-
-async def _ensure_pipeline_initialized(engine: PupyteerEngine) -> None:
-    """Ensure the pipeline manager is initialized."""
-    # Pipeline is part of engine._pipeline, ensure it's initialized
-    if not hasattr(engine, '_pipeline'):
-        from pupyteer.server.core.pipeline import PipelineManager
-        engine._pipeline = PipelineManager(engine)
-    if not engine.pipeline._initialized:
-        await engine.pipeline.initialize()
-
-
-async def pipeline_run(args: List[str]) -> Dict[str, Any]:
+async def pipeline_run(tui: Any, args: List[str]) -> Dict[str, Any]:
     """Run full pipeline: Build → Obfuscate → Test.
 
     Usage: pipeline run --name NAME --platform PLATFORM --arch ARCH
@@ -49,7 +30,7 @@ async def pipeline_run(args: List[str]) -> Dict[str, Any]:
                        [--scheme xor|aes|rc4|chain] [--env ENVIRONMENT]
                        [--profile PROFILE] [--test-mode]
     """
-    engine = _get_engine()
+    engine = tui._engine
 
     # Parse arguments
     name = ""
@@ -108,7 +89,7 @@ async def pipeline_run(args: List[str]) -> Dict[str, Any]:
         elif args[i] == "--test-mode":
             test_mode = True; i += 1
         else:
-            i += 1
+            return {"status": "error", "error": f"Unknown argument: {args[i]}"}
 
     if not name:
         return {"status": "error", "error": "Missing required --name argument"}
@@ -141,7 +122,6 @@ async def pipeline_run(args: List[str]) -> Dict[str, Any]:
         test_mode=test_mode,
     )
 
-    await _ensure_pipeline_initialized(engine)
 
     try:
         result = await engine.pipeline.build_obfuscate_test(
@@ -154,14 +134,14 @@ async def pipeline_run(args: List[str]) -> Dict[str, Any]:
         return {"status": "error", "error": str(e)}
 
 
-async def pipeline_build(args: List[str]) -> Dict[str, Any]:
+async def pipeline_build(tui: Any, args: List[str]) -> Dict[str, Any]:
     """Build a payload only (no testing).
 
     Usage: pipeline build --name NAME --platform PLATFORM --arch ARCH
                          [--type TYPE] [--transport TRANSPORT] [--host HOST] [--port PORT]
                          [--profile PROFILE]
     """
-    engine = PupyteerEngine()
+    engine = tui._engine
     if not hasattr(engine, 'payloads'):
         return {"status": "error", "error": "Payload manager not initialized"}
 
@@ -222,7 +202,7 @@ async def pipeline_build(args: List[str]) -> Dict[str, Any]:
         elif args[i] == "--sign":
             sign = True; i += 1
         else:
-            i += 1
+            return {"status": "error", "error": f"Unknown argument: {args[i]}"}
 
     if not name:
         return {"status": "error", "error": "Missing required --name argument"}
@@ -266,13 +246,12 @@ async def pipeline_build(args: List[str]) -> Dict[str, Any]:
         return {"status": "error", "error": str(e)}
 
 
-async def pipeline_test(args: List[str]) -> Dict[str, Any]:
+async def pipeline_test(tui: Any, args: List[str]) -> Dict[str, Any]:
     """Test an existing artifact.
 
     Usage: pipeline test --artifact PATH [--env ENVIRONMENT] [--test-mode]
     """
-    engine = _get_engine()
-    await _ensure_pipeline_initialized(engine)
+    engine = tui._engine
 
     artifact_path = ""
     environment = TestEnvironment.LOCAL.value
@@ -287,7 +266,7 @@ async def pipeline_test(args: List[str]) -> Dict[str, Any]:
         elif args[i] == "--test-mode":
             test_mode = True; i += 1
         else:
-            i += 1
+            return {"status": "error", "error": f"Unknown argument: {args[i]}"}
 
     if not artifact_path:
         return {"status": "error", "error": "Missing required --artifact argument"}
@@ -310,7 +289,7 @@ async def pipeline_test(args: List[str]) -> Dict[str, Any]:
         return {"status": "error", "error": str(e)}
 
 
-async def pipeline_auto(args: List[str]) -> Dict[str, Any]:
+async def pipeline_auto(tui: Any, args: List[str]) -> Dict[str, Any]:
     """One-shot: Build + Obfuscate + Test with named profile.
 
     Usage: pipeline auto --name NAME [--platform PLATFORM] [--arch ARCH]
@@ -318,8 +297,7 @@ async def pipeline_auto(args: List[str]) -> Dict[str, Any]:
                         [--profile basic_xor|full_chain|pe_manipulation|anti_analysis|anti_injection|stealth_full]
                         [--env ENVIRONMENT]
     """
-    engine = _get_engine()
-    await _ensure_pipeline_initialized(engine)
+    engine = tui._engine
 
     name = ""
     platform = "windows"
@@ -356,7 +334,7 @@ async def pipeline_auto(args: List[str]) -> Dict[str, Any]:
         elif args[i] == "--env" and i + 1 < len(args):
             environment = args[i + 1]; i += 2
         else:
-            i += 1
+            return {"status": "error", "error": f"Unknown argument: {args[i]}"}
 
     if not name:
         return {"status": "error", "error": "Missing required --name argument"}
@@ -378,22 +356,20 @@ async def pipeline_auto(args: List[str]) -> Dict[str, Any]:
         return {"status": "error", "error": str(e)}
 
 
-async def pipeline_status(args: List[str]) -> Dict[str, Any]:
+async def pipeline_status(tui: Any, args: List[str]) -> Dict[str, Any]:
     """Show pipeline statistics and status."""
-    engine = _get_engine()
-    await _ensure_pipeline_initialized(engine)
+    engine = tui._engine
 
     stats = engine.pipeline.get_stats()
     return {"status": "ok", "stats": stats}
 
 
-async def pipeline_history(args: List[str]) -> Dict[str, Any]:
+async def pipeline_history(tui: Any, args: List[str]) -> Dict[str, Any]:
     """Show recent pipeline results.
 
     Usage: pipeline history [--limit N]
     """
-    engine = _get_engine()
-    await _ensure_pipeline_initialized(engine)
+    engine = tui._engine
 
     limit = 10
     if args and args[0] == "--limit" and len(args) > 1:
@@ -407,7 +383,7 @@ async def pipeline_history(args: List[str]) -> Dict[str, Any]:
     return {"status": "ok", "count": len(results), "history": results}
 
 
-async def pipeline_profiles(args: List[str]) -> Dict[str, Any]:
+async def pipeline_profiles(tui: Any, args: List[str]) -> Dict[str, Any]:
     """List available obfuscation profiles."""
     from pupyteer.server.evasion.profiles import list_profiles
 
@@ -415,13 +391,12 @@ async def pipeline_profiles(args: List[str]) -> Dict[str, Any]:
     return {"status": "ok", "count": len(profiles), "profiles": profiles}
 
 
-async def pipeline_info(args: List[str]) -> Dict[str, Any]:
+async def pipeline_info(tui: Any, args: List[str]) -> Dict[str, Any]:
     """Get detailed info about a pipeline run.
 
     Usage: pipeline info PIPELINE_ID
     """
-    engine = _get_engine()
-    await _ensure_pipeline_initialized(engine)
+    engine = tui._engine
 
     if not args:
         return {"status": "error", "error": "Missing pipeline_id argument"}

@@ -372,6 +372,57 @@ class TestPupyteerTUIRender:
         assert "0.0.0.0:8443" in captured.out
         assert "HTTPS-Default" in captured.out
 
+    def test_banner_warns_when_callbacks_are_plaintext(self, tui, capsys):
+        """`server.tls: false` is the one state that deserves the shout. The
+        operator should not have to remember to check whether the channel is
+        encrypted; the word is in the banner, so the match ignores case.
+        """
+        tui._engine.get_status.return_value["config"]["tls_configured"] = False
+        tui.render_banner()
+        assert "plaintext" in capsys.readouterr().out.lower()
+
+    def test_banner_does_not_call_a_stopped_listener_plaintext(self, tui, capsys):
+        """No fingerprint yet means nothing is serving, which is not the same
+        claim. The banner is drawn before the engine starts, so reading the
+        absence of a certificate as "in the clear" fires on every honest TLS
+        server and teaches operators to discount the warning.
+        """
+        tui._engine.get_status.return_value["config"]["tls_configured"] = True
+        tui.render_banner()
+        out = capsys.readouterr().out
+        assert "plaintext" not in out.lower()
+        assert "Channel" in out
+
+    def test_banner_shows_the_pinned_certificate(self, tui, capsys):
+        tui._engine.get_status.return_value["config"]["listener_tls"] = "ab" * 32
+        tui.render_banner()
+        out = capsys.readouterr().out
+        assert "plaintext" not in out.lower()
+        assert "TLS" in out and "abababababababab" in out
+
+    def test_banner_warns_when_anyone_may_register(self, tui, capsys):
+        """Encryption and admission are separate facts; the banner shows both."""
+        tui._engine.get_status.return_value["config"]["agent_auth"] = False
+        tui.render_banner()
+        out = capsys.readouterr().out
+        assert "Enrollment" in out
+        assert "unauthenticated" in out
+
+    def test_banner_says_the_listener_checks_registrations(self, tui, capsys):
+        tui._engine.get_status.return_value["config"]["agent_auth"] = True
+        tui.render_banner()
+        out = capsys.readouterr().out
+        assert "Enrollment" in out
+        assert "unauthenticated" not in out
+
+    def test_banner_stays_quiet_about_enrollment_before_the_listener_starts(
+        self, tui, capsys
+    ):
+        """None means nothing is enforcing anything yet; claiming otherwise lies."""
+        tui._engine.get_status.return_value["config"]["agent_auth"] = None
+        tui.render_banner()
+        assert "Enrollment" not in capsys.readouterr().out
+
     def test_render_dashboard(self, tui, capsys):
         tui.render_dashboard()
         captured = capsys.readouterr()
@@ -531,6 +582,38 @@ class TestPupyteerTUICommands:
         await tui.cmd_transports([])
         captured = capsys.readouterr()
         assert "No active transports" in captured.out
+
+    @pytest.mark.asyncio
+    async def test_cmd_transports_shows_every_kind_of_refusal(self, tui, capsys):
+        """A refusal an operator cannot read is not a warning.
+
+        The three kinds mean three different things — a stranger at the port, a
+        payload that cannot finish a handshake, someone speaking for a session
+        whose id they got hold of without its token — and none of them may be the
+        one that stays invisible because the table only prints the first.
+        """
+        tui._engine.transports.list.return_value = [{
+            "name": "agent_listener", "state": "listening",
+            "stats": {"bytes_sent": 10, "bytes_received": 20,
+                      "registrations_rejected": 3, "beacons_refused": 2,
+                      "handshakes_refused": 1},
+        }]
+        await tui.cmd_transports([])
+        out = capsys.readouterr().out
+        assert "registrations rejected=3" in out
+        assert "beacons refused=2" in out
+        assert "handshakes refused=1" in out
+
+    @pytest.mark.asyncio
+    async def test_cmd_transports_invents_no_refusal_to_report(self, tui, capsys):
+        tui._engine.transports.list.return_value = [{
+            "name": "agent_listener", "state": "listening",
+            "stats": {"bytes_sent": 0, "bytes_received": 0},
+        }]
+        await tui.cmd_transports([])
+        out = capsys.readouterr().out
+        assert "rejected" not in out
+        assert "refused" not in out
 
     @pytest.mark.asyncio
     async def test_cmd_config_list(self, tui, capsys):

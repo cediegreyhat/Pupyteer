@@ -4,6 +4,7 @@ Tests the Transport ABC, HTTPTransport, HTTPSTransport, TCPTransport,
 and the TransportManager integration.
 """
 import asyncio
+import ssl
 import struct
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -621,6 +622,277 @@ class TestProfileIntegration:
         })
         assert transport is not None
         assert transport.name == "profile-http"
+
+
+class TestListenerTlsResolution:
+    """server.tls decides what both listeners serve and what payloads pin."""
+
+    def test_disabled_tls_produces_no_material_and_no_files(self, tmp_path):
+        from pupyteer.server.core.tls import listener_tls
+
+        config = ConfigManager()
+        config.set("server.tls", False)
+        config.set("server.tls_cert", str(tmp_path / "listener.crt"))
+        assert listener_tls(config.get) is None
+        assert not any(tmp_path.iterdir()), "TLS off must not generate a certificate"
+
+    def test_a_string_true_from_a_config_file_enables_it(self, tmp_path):
+        """Environment overrides and hand-edited YAML arrive as strings."""
+        from pupyteer.server.core.tls import listener_tls
+
+        config = ConfigManager()
+        config.set("server.tls", "true")
+        config.set("server.tls_cert", str(tmp_path / "listener.crt"))
+        config.set("server.tls_key", str(tmp_path / "listener.key"))
+        material = listener_tls(config.get)
+        assert material is not None
+        assert "BEGIN CERTIFICATE" in material.cert_pem
+        assert len(material.fingerprint) == 64
+
+    def test_a_half_pair_is_an_error_not_a_new_certificate(self, tmp_path):
+        """Silently replacing a pinned certificate looks like dead agents."""
+        from pupyteer.server.core.tls import ensure_listener_cert
+
+        cert = tmp_path / "listener.crt"
+        key = tmp_path / "listener.key"
+        ensure_listener_cert(str(cert), str(key))
+        key.unlink()
+
+        with pytest.raises(FileNotFoundError) as caught:
+            ensure_listener_cert(str(cert), str(key))
+        assert "incomplete" in str(caught.value)
+        assert cert.exists(), "the certificate fielded payloads pin must survive"
+
+
+class TestHandshakeRefusalReporting:
+    """A TLS listener's failure mode is silence, so refusals have to be loud —
+    without letting a port sweep turn that noise into an audit log that is all
+    noise. The count is exact; the log line is thinned per peer.
+    """
+
+    class _Refused:
+        """A connection whose peer sends something that is not a ClientHello."""
+
+        def __init__(self, peer):
+            self._peer = peer
+
+        def get_extra_info(self, name, default=None):
+            return self._peer
+
+        async def start_tls(self, context, *, ssl_handshake_timeout=None):
+            raise ssl.SSLError(1, "[SSL: WRONG_VERSION_NUMBER] wrong version number")
+
+    @staticmethod
+    def _listener(tmp_path):
+        from pupyteer.server.transports.listener import AgentListener
+
+        config = ConfigManager()
+        config.set("audit.log_file", str(tmp_path / "audit.json"))
+        audit = AuditLogger(config)
+        return AgentListener({"ssl_context": object()}, None, audit), audit
+
+    @pytest.mark.asyncio
+    async def test_a_flood_from_one_peer_is_counted_but_written_once(self, tmp_path):
+        listener, audit = self._listener(tmp_path)
+        peer = ("203.0.113.9", 5555)
+
+        for _ in range(25):
+            assert await listener._upgrade_tls(None, self._Refused(peer)) is False
+
+        assert listener._stats["handshakes_refused"] == 25
+        rows = audit.query(event="handshake_refused")
+        assert len(rows) == 1, (
+            "25 refusals from one host must not cost 25 audit entries: the log "
+            "rotates, so a passerby would choose what the operator keeps"
+        )
+        # The live counter is the exact total; the durable trace just has to say
+        # who was refused and why, or a stranded payload leaves nothing to read.
+        assert rows[0]["details"]["peer"].startswith("203.0.113.9")
+        assert "WRONG_VERSION_NUMBER" in rows[0]["details"]["reason"]
+
+    @pytest.mark.asyncio
+    async def test_a_peer_that_keeps_trying_gets_a_line_again_later(
+        self, tmp_path, monkeypatch
+    ):
+        """Thinning is not once-ever: the next window re-reports, with the tally."""
+        import pupyteer.server.transports.listener as listener_module
+
+        listener, audit = self._listener(tmp_path)
+        refused = self._Refused(("203.0.113.9", 5555))
+        clock = [1000.0]
+        monkeypatch.setattr(listener_module.time, "monotonic", lambda: clock[0])
+
+        await listener._upgrade_tls(None, refused)
+        for _ in range(3):
+            clock[0] += 1.0
+            await listener._upgrade_tls(None, refused)
+        assert len(audit.query(event="handshake_refused")) == 1
+
+        clock[0] += 240.0
+        await listener._upgrade_tls(None, refused)
+        again = audit.query(event="handshake_refused")
+        assert len(again) == 2, "the second window reported nothing"
+        # Both lines were written in the same wall-clock second, so query order
+        # proves nothing; pick the line by the total it reports.
+        later = next(e for e in again if e["details"]["count"] == 5)
+        assert later["details"]["suppressed"] == 3, (
+            "the refusals this line stands for have to be named, or the count "
+            "and the log disagree about what happened"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Tests: honest listener status (the engine's TransportManager in manager.py)
+# ---------------------------------------------------------------------------
+
+# The engine wires listeners through transports/manager.py's TransportManager,
+# which is a different class from the registry-based one re-exported by
+# transports/__init__.py (imported above as TransportManager). Alias it so the
+# listener-status tests exercise the manager that actually binds.
+from pupyteer.server.transports.manager import (
+    TransportManager as ListenerTransportManager,
+)
+from pupyteer.server.transports.manager import Transport as StubTransport
+
+
+class _ProtocolProfiles:
+    """Stand-in exposing the transport config the listener manager reads."""
+
+    def __init__(self, transport):
+        self._transport = transport
+
+    def get_active_transport_config(self):
+        return dict(self._transport)
+
+    def active(self):
+        return None
+
+
+def _listener_config(tmp_path):
+    config = ConfigManager()
+    config.set("audit.log_file", str(tmp_path / "audit.json"))
+    config.set("server.host", "127.0.0.1")
+    # Plaintext: a stalled-read or stop-cancel test wants a real socket with no
+    # certificate generation on the path.
+    config.set("server.tls", False)
+    return config, AuditLogger(config)
+
+
+class TestHonestListenerStatus:
+    """A transport the server cannot bind must never be reported as listening."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("protocol", ["dns", "websocket", "ws", "wss", "doh"])
+    async def test_unsupported_protocol_refused_never_listening(
+            self, tmp_path, protocol):
+        config, audit = _listener_config(tmp_path)
+        profiles = _ProtocolProfiles(
+            {"protocol": protocol, "host": "127.0.0.1", "port": 0})
+        mgr = ListenerTransportManager(config, profiles, audit)
+        await mgr.initialize()
+        await mgr.start_listener(MagicMock())
+
+        assert mgr.listener is None, "nothing should have been bound"
+        states = {row["state"] for row in mgr.list()}
+        assert "listening" not in states, "an unbindable protocol claimed listening"
+        assert "unavailable" in states, "the refusal must be reported honestly"
+        # No listener, so nothing is checking registrations — stays None.
+        assert mgr.enrollment is None
+        assert mgr.listener_requires_auth is None
+
+    @pytest.mark.asyncio
+    async def test_refusal_is_audited(self, tmp_path):
+        config, audit = _listener_config(tmp_path)
+        profiles = _ProtocolProfiles(
+            {"protocol": "dns", "host": "127.0.0.1", "port": 0})
+        mgr = ListenerTransportManager(config, profiles, audit)
+        await mgr.initialize()
+        await mgr.start_listener(MagicMock())
+        rows = audit.query(event="listener_refused")
+        assert rows, "a refused protocol has to leave an audit trail"
+        assert rows[0]["details"]["protocol"] == "dns"
+
+    @pytest.mark.asyncio
+    async def test_initialize_creates_no_listening_stub(self, tmp_path):
+        """The old no-op placeholder rows are gone: init alone binds nothing."""
+        config, audit = _listener_config(tmp_path)
+        profiles = _ProtocolProfiles(
+            {"protocol": "dns", "host": "127.0.0.1", "port": 0})
+        mgr = ListenerTransportManager(config, profiles, audit)
+        await mgr.initialize()
+        assert all(r["state"] != "listening" for r in mgr.list())
+
+    def test_placeholder_transport_does_not_claim_listening(self):
+        transport = StubTransport("dns", {})
+        assert transport.state != "listening"
+        asyncio.run(transport.initialize())
+        assert transport.state == "initialized", (
+            "a configured record is not a bound socket")
+
+
+# ---------------------------------------------------------------------------
+# Tests: idle read timeout + handler-task cleanup
+# ---------------------------------------------------------------------------
+
+
+class TestIdleReadTimeout:
+    """A stalled peer must not hold a task and socket open forever."""
+
+    def _listener(self, tmp_path, idle_timeout):
+        from pupyteer.server.transports.listener import AgentListener
+
+        _, audit = _listener_config(tmp_path)
+        return AgentListener(
+            {"host": "127.0.0.1", "port": 0, "idle_timeout": idle_timeout},
+            MagicMock(), audit)
+
+    @pytest.mark.asyncio
+    async def test_stalled_read_is_dropped_on_timeout(self, tmp_path):
+        listener = self._listener(tmp_path, 0.2)
+        await listener.start()
+        port = listener._server.sockets[0].getsockname()[1]
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        try:
+            # Open a connection and dribble a partial line, never a newline — the
+            # slowloris shape. The idle deadline has to close it, not a full read.
+            writer.write(b'{"type": "reg')
+            await writer.drain()
+            data = await asyncio.wait_for(reader.read(1), timeout=3.0)
+            assert data == b"", "stalled connection was not closed by idle timeout"
+        finally:
+            writer.close()
+            await listener.stop()
+
+
+class TestStopCancelsHandlers:
+    """stop() must cancel handlers that never registered a session."""
+
+    @pytest.mark.asyncio
+    async def test_stop_cancels_a_pre_registration_handler(self, tmp_path):
+        from pupyteer.server.transports.listener import AgentListener
+
+        _, audit = _listener_config(tmp_path)
+        # A long idle timeout: the only way this handler ends quickly is stop().
+        listener = AgentListener(
+            {"host": "127.0.0.1", "port": 0, "idle_timeout": 60.0},
+            MagicMock(), audit)
+        await listener.start()
+        port = listener._server.sockets[0].getsockname()[1]
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        try:
+            await asyncio.sleep(0.1)  # let the server park the handler on readline()
+            assert listener._handler_tasks, "the running handler was not tracked"
+
+            started = time.monotonic()
+            await asyncio.wait_for(listener.stop(), timeout=3.0)
+            elapsed = time.monotonic() - started
+            assert elapsed < 2.0, f"stop did not cancel the blocked handler ({elapsed:.1f}s)"
+            assert not listener._handler_tasks, "handler task set not cleared"
+
+            data = await asyncio.wait_for(reader.read(1), timeout=3.0)
+            assert data == b"", "socket not closed under the cancelled handler"
+        finally:
+            writer.close()
 
 
 if __name__ == "__main__":

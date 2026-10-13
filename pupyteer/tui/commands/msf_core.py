@@ -179,9 +179,15 @@ async def show_modules(tui: Any, args: List[str]) -> Dict[str, Any]:
     ctx = _get_context(tui)
     registry = ctx.registry
     modules = registry.list_all()
+    failed = [h for h in registry.list_health() if h["state"] == "failed"]
 
     if not modules:
         tui.render_warning("No modules loaded. Run 'reload' to discover.")
+        if failed:
+            tui.render_warning(
+                f"{len(failed)} module file(s) failed to load: "
+                + ", ".join(h["name"] for h in failed[:5])
+            )
         return {"status": "ok", "count": 0, "modules": []}
 
     # Group by category
@@ -200,6 +206,12 @@ async def show_modules(tui: Any, args: List[str]) -> Dict[str, Any]:
         for m in sorted(mods, key=lambda x: x['name']):
             rows.append([m['name'], m.get('version', '?'), m.get('description', '')[:40]])
         tui.render_table(headers, rows)
+
+    if failed:
+        tui.render_warning(
+            f"{len(failed)} module(s) failed to load: "
+            + ", ".join(h["name"] for h in failed[:5])
+        )
 
     return {"status": "ok", "count": len(modules), "modules": modules}
 
@@ -466,7 +478,8 @@ async def _dispatch_module(tui: Any, module_name: str, session_id: str, args: Di
 
     # Use the engine's module registry to execute
     registry = _get_context(tui).registry
-    result = await registry.execute(module_name, session, args)
+    result = await registry.execute(
+        module_name, session, args, session_manager=tui._engine.sessions)
 
     if result.get('status') == 'ok':
         tui.render_success(f"Module executed successfully on {session_id}")

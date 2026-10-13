@@ -8,9 +8,13 @@ from __future__ import annotations
 import enum
 import functools
 import logging
-from typing import Any, Callable, Dict, Optional, Set
+from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, Set
 
-from pupyteer.server.core.auth import AuthLayer
+if TYPE_CHECKING:
+    # Only ever a name in an annotation. The layer that owns the credential file
+    # needs the vocabulary defined here, so importing it at runtime would close
+    # the loop auth -> operators -> rbac -> auth.
+    from pupyteer.server.core.auth import AuthLayer
 
 logger = logging.getLogger("pupyteer.security.rbac")
 
@@ -36,7 +40,23 @@ class Permission:
     TASK_READ = "task:read"
     TASK_CREATE = "task:create"
     TASK_CANCEL = "task:cancel"
-    
+
+    # Background job permissions
+    JOB_READ = "job:read"
+    JOB_CANCEL = "job:cancel"
+
+    # Module permissions: reading the library and driving a target with it are
+    # different things. Listing modules is what a viewer looks at; `run` and
+    # `exploit` put a command on a live session.
+    MODULE_READ = "module:read"
+    MODULE_RUN = "module:run"
+
+    # Payload permissions: an artifact is the thing that goes onto a target, so
+    # building one and deleting one are not the same act as looking at a list.
+    PAYLOAD_READ = "payload:read"
+    PAYLOAD_BUILD = "payload:build"
+    PAYLOAD_REMOVE = "payload:remove"
+
     # Profile permissions
     PROFILE_READ = "profile:read"
     PROFILE_LOAD = "profile:load"
@@ -56,11 +76,21 @@ class Permission:
     SYSTEM_ADMIN = "system:admin"
 
 
-# Role-to-permissions mapping
+# Role-to-permissions mapping.
+#
+# The line each role draws is what it may do to a *target*, not how much it may
+# see: VIEWER reads state and touches nothing, OPERATOR works sessions and builds
+# payloads, ADMIN changes the server itself (config, profiles, operators).
+# OPERATOR can read the audit log on purpose — an operator who cannot see what
+# they did last night cannot account for it — while VIEWER cannot, because the
+# log names operators and hosts and is not a dashboard.
 ROLE_PERMISSIONS: Dict[Role, Set[str]] = {
     Role.VIEWER: {
         Permission.SESSION_READ,
         Permission.TASK_READ,
+        Permission.JOB_READ,
+        Permission.MODULE_READ,
+        Permission.PAYLOAD_READ,
         Permission.PROFILE_READ,
         Permission.CONFIG_READ,
         Permission.EVASION_READ,
@@ -73,10 +103,17 @@ ROLE_PERMISSIONS: Dict[Role, Set[str]] = {
         Permission.TASK_READ,
         Permission.TASK_CREATE,
         Permission.TASK_CANCEL,
+        Permission.JOB_READ,
+        Permission.JOB_CANCEL,
+        Permission.MODULE_READ,
+        Permission.MODULE_RUN,
+        Permission.PAYLOAD_READ,
+        Permission.PAYLOAD_BUILD,
         Permission.PROFILE_READ,
         Permission.PROFILE_LOAD,
         Permission.CONFIG_READ,
         Permission.EVASION_READ,
+        Permission.AUDIT_READ,
     },
     Role.ADMIN: {
         Permission.SESSION_READ,
@@ -86,6 +123,13 @@ ROLE_PERMISSIONS: Dict[Role, Set[str]] = {
         Permission.TASK_READ,
         Permission.TASK_CREATE,
         Permission.TASK_CANCEL,
+        Permission.JOB_READ,
+        Permission.JOB_CANCEL,
+        Permission.MODULE_READ,
+        Permission.MODULE_RUN,
+        Permission.PAYLOAD_READ,
+        Permission.PAYLOAD_BUILD,
+        Permission.PAYLOAD_REMOVE,
         Permission.PROFILE_READ,
         Permission.PROFILE_LOAD,
         Permission.PROFILE_MODIFY,
@@ -104,6 +148,13 @@ ROLE_PERMISSIONS: Dict[Role, Set[str]] = {
         Permission.TASK_READ,
         Permission.TASK_CREATE,
         Permission.TASK_CANCEL,
+        Permission.JOB_READ,
+        Permission.JOB_CANCEL,
+        Permission.MODULE_READ,
+        Permission.MODULE_RUN,
+        Permission.PAYLOAD_READ,
+        Permission.PAYLOAD_BUILD,
+        Permission.PAYLOAD_REMOVE,
         Permission.PROFILE_READ,
         Permission.PROFILE_LOAD,
         Permission.PROFILE_MODIFY,
@@ -129,20 +180,47 @@ class AccessDenied(Exception):
 
 
 class PermissionChecker:
-    """Enforce role-based access control."""
-    
-    def __init__(self, auth_layer: AuthLayer):
+    """Enforce role-based access control.
+
+    Roles normally live on the stored credential, which is what makes them
+    survive a restart and what `operator add --role` writes. The in-memory map is
+    for callers with no credential file behind them, and is consulted first so a
+    deliberate local override still wins.
+    """
+
+    def __init__(self, auth_layer: "AuthLayer", store: Any = None):
         self._auth = auth_layer
+        self._store = store
         self._operator_roles: Dict[str, Role] = {}
-    
+
     def assign_role(self, operator: str, role: Role) -> None:
-        """Assign a role to an operator."""
+        """Assign a role to an operator, and to their credential when they have one.
+
+        The in-memory map is not a way to promote yourself: it is what
+        `create_default_admin` and a caller with no credential file behind it use,
+        and the console's `operator` verb goes through the store instead. Writing
+        through only when a credential exists keeps the two from disagreeing about
+        a name that is in one and not the other.
+        """
+        role = Role(role)
         self._operator_roles[operator] = role
+        if self._store is not None and self._store.get(operator) is not None:
+            self._store.set_role(operator, role)
+        elif self._store is not None:
+            logger.warning(
+                "Role %s for %s is in-memory only: no credential by that name is "
+                "stored, so it is gone on restart and cannot be logged in with",
+                role.value, operator)
         logger.info("Assigned role %s to operator %s", role.value, operator)
-    
+
     def get_role(self, operator: str) -> Role:
         """Get the role assigned to an operator."""
-        return self._operator_roles.get(operator, Role.VIEWER)
+        remembered = self._operator_roles.get(operator)
+        if remembered is not None:
+            return remembered
+        if self._store is not None:
+            return self._store.role_of(operator)
+        return Role.VIEWER
     
     def has_permission(self, operator: str, permission: str) -> bool:
         """Check if an operator has a specific permission."""
@@ -184,32 +262,19 @@ class PermissionChecker:
         return decorator
     
     def get_accessible_commands(self, operator: str) -> Set[str]:
-        """Return set of command names the operator can access."""
-        role = self.get_role(operator)
-        perms = ROLE_PERMISSIONS.get(role, set())
-        
-        accessible = set()
-        command_permissions = {
-            "status": Permission.SESSION_READ,
-            "sessions": Permission.SESSION_READ,
-            "tasks": Permission.TASK_READ,
-            "profiles": Permission.PROFILE_READ,
-            "transports": Permission.SESSION_READ,
-            "config": Permission.CONFIG_READ,
-            "logs": Permission.AUDIT_READ,
-            "evasion": Permission.EVASION_READ,
-            "help": None,  # Always accessible
-            "banner": None,
-            "clear": None,
-            "exit": None,
-            "quit": None,
+        """Return set of command names the operator can access.
+
+        Read from the same verb table the console gates with, because the
+        alternative is a second copy that says `sessions` is readable while the
+        dispatcher says `sessions kill` is not.
+        """
+        from pupyteer.server.core.session_auth import SessionAuthorization
+
+        perms = ROLE_PERMISSIONS.get(self.get_role(operator), set())
+        return {
+            name for name, perm in SessionAuthorization.COMMAND_PERMISSIONS.items()
+            if perm is None or perm in perms
         }
-        
-        for cmd, perm in command_permissions.items():
-            if perm is None or perm in perms:
-                accessible.add(cmd)
-        
-        return accessible
     
     def filter_command_args(
         self, operator: str, command: str, args: list

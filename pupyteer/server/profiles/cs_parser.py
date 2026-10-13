@@ -315,8 +315,19 @@ def _parse_block_body(tokens: List[str], pos: int, context: str) -> Tuple[Dict[s
 _BLOCK_WITH_CLIENT_SERVER_TOKENS = {"client", "server"}
 
 
+# Sub-blocks that may nest further ``{ ... }`` bodies inside a client/server
+# block (e.g. ``client { metadata { base64; } }``). We recurse into these so
+# brace tracking stays balanced and the encoding chains are actually captured.
+_NESTED_SUB_BLOCKS = {"metadata", "output", "id", "client", "server"}
+
+
 def _parse_sub_block(tokens: List[str], pos: int) -> Tuple[Dict[str, Any], int]:
-    """Parse a sub-block body: header, metadata, output, id, client, server."""
+    """Parse a sub-block body: header, metadata, output, id, client, server.
+
+    Nested blocks (``metadata``/``output``/``id`` inside ``client``/``server``)
+    are parsed recursively so their ``body``/``encode`` chains survive and the
+    block's closing brace is consumed at the correct nesting depth.
+    """
     sub: Dict[str, Any] = {}
     encoding_steps: List[str] = []
     prepend_chunks: List[str] = []
@@ -324,61 +335,87 @@ def _parse_sub_block(tokens: List[str], pos: int) -> Tuple[Dict[str, Any], int]:
     headers_dict: Dict[str, str] = {}
     parameters_dict: Dict[str, str] = {}
 
-    def _flush_encoding():
+    def _flush_encoding(target: Dict[str, Any]) -> None:
         if encoding_steps:
-            # Combine consecutive encoding transforms into a single chain
-            # but preserve order; we just store the list.
-            sub["encoding_chain"] = encoding_steps[:]
+            # Preserve order; the list *is* the encode chain.
+            target["encoding_chain"] = encoding_steps[:]
         if prepend_chunks:
-            sub["prepend"] = prepend_chunks[:]
+            target["prepend"] = prepend_chunks[:]
         if append_chunks:
-            sub["append"] = append_chunks[:]
+            target["append"] = append_chunks[:]
+
+    def _consume_semi() -> None:
+        nonlocal pos
+        if pos < len(tokens) and tokens[pos] == ";":
+            pos += 1
 
     while pos < len(tokens) and tokens[pos] != "}":
         tok = tokens[pos]
         if tok == "header":
             pos += 1
             name, pos = _parse_value(tokens, pos)
-            value, pos = _parse_value(tokens, pos)
+            # A ``header "Name";`` inside metadata/id/output declares the
+            # *carrier* header (no value); ``header "Name" "Value";`` sets one.
             if pos < len(tokens) and tokens[pos] == ";":
                 pos += 1
+                headers_dict[_unquote_if_str(name)] = ""
+                continue
+            value, pos = _parse_value(tokens, pos)
+            _consume_semi()
             headers_dict[_unquote_if_str(name)] = _unquote_if_str(value)
         elif tok == "parameter":
             pos += 1
             name, pos = _parse_value(tokens, pos)
-            value, pos = _parse_value(tokens, pos)
+            # Same one-vs-two-argument distinction as ``header``.
             if pos < len(tokens) and tokens[pos] == ";":
                 pos += 1
+                parameters_dict[_unquote_if_str(name)] = ""
+                continue
+            value, pos = _parse_value(tokens, pos)
+            _consume_semi()
             parameters_dict[_unquote_if_str(name)] = _unquote_if_str(value)
         elif tok in ("base64", "base64url", "netbios", "netbiosu", "mask", "uri-append"):
             encoding_steps.append(tok)
             pos += 1
-            if pos < len(tokens) and tokens[pos] == ";":
-                pos += 1
+            _consume_semi()
+        elif tok == "print":
+            encoding_steps.append("print")
+            pos += 1
+            _consume_semi()
         elif tok == "prepend":
             pos += 1
             val, pos = _parse_value(tokens, pos)
-            if pos < len(tokens) and tokens[pos] == ";":
-                pos += 1
+            _consume_semi()
             prepend_chunks.append(_unquote_if_str(val))
         elif tok == "append":
             pos += 1
             val, pos = _parse_value(tokens, pos)
-            if pos < len(tokens) and tokens[pos] == ";":
-                pos += 1
+            _consume_semi()
             append_chunks.append(_unquote_if_str(val))
-        elif tok == "print":
-            encoding_steps.append("print")
+        elif tok in _NESTED_SUB_BLOCKS:
+            # Recurse into nested metadata/output/id/client/server blocks.
+            name = tok
             pos += 1
-            if pos < len(tokens) and tokens[pos] == ";":
+            if pos < len(tokens) and tokens[pos] == "{":
                 pos += 1
+                nested, pos = _parse_sub_block(tokens, pos)
+                _consume_semi()  # tolerate a stray ';' after the closing brace
+                if pos < len(tokens) and tokens[pos] == "}":
+                    pos += 1
+                sub[name] = nested
+            else:
+                # Bare directive such as ``output;`` — skip to end of statement.
+                while pos < len(tokens) and tokens[pos] not in (";", "}"):
+                    pos += 1
+                _consume_semi()
         else:
-            # Unknown token
-            if pos < len(tokens) and tokens[pos] == ";":
+            # Unknown directive: skip to the end of the statement but never
+            # past the block's closing brace, so brace tracking stays balanced.
+            while pos < len(tokens) and tokens[pos] not in (";", "}"):
                 pos += 1
-            pos += 1
+            _consume_semi()
 
-    _flush_encoding()
+    _flush_encoding(sub)
     if headers_dict:
         sub["headers"] = headers_dict
     if parameters_dict:

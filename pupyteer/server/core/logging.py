@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from pupyteer.server.core.config import ConfigManager
+from pupyteer.server.core.config import ConfigManager, DEFAULT_AUDIT_LOG_FILE
 
 # Re-export the spec section 11 event catalog and helpers
 from pupyteer.server.core.audit import (
@@ -56,7 +56,7 @@ class AuditLogger:
             self._log_file.parent.mkdir(parents=True, exist_ok=True)
 
         # Structured audit log store (rotation + querying)
-        audit_log_path = config.get("audit.log_file", "./logs/audit.json")
+        audit_log_path = config.get("audit.log_file", DEFAULT_AUDIT_LOG_FILE)
         self._store = AuditLogStore(
             log_path=Path(audit_log_path),
             max_bytes=config.get("audit.max_bytes", 10 * 1024 * 1024),
@@ -64,6 +64,22 @@ class AuditLogger:
             compress=config.get("audit.compress", True),
         )
         self._emitter = AuditEmitter(self._store, default_operator=self._operator)
+        self._configured_operator = self._operator
+
+    def set_operator(self, name: Optional[str]) -> None:
+        """Attribute later entries to ``name``, or to the configured name for None.
+
+        Only the console that logged in calls this. A role or a name typed into
+        `config set` never reaches it, so attribution follows what proved who the
+        operator is rather than what the operator asked to be called.
+        """
+        self._operator = name or self._configured_operator
+        self._emitter.set_default_operator(self._operator)
+
+    @property
+    def operator(self) -> Optional[str]:
+        """Who entries are being attributed to right now."""
+        return self._operator
 
     def log_event(
         self,
@@ -82,13 +98,18 @@ class AuditLogger:
             # Allow passthrough for non-spec events (prefixed with "x_")
             spec_event = event
 
-        operator = data.pop("_operator", self._operator)
+        details = dict(data)
+        operator = details.pop("_operator", None)
+        # The emitter takes `operator` as its own argument, so leaving that key in
+        # `details` raises a TypeError out of the code whose job is to record what
+        # happened. Both spellings mean "who this entry is attributed to".
+        subject = details.pop("operator", None)
         entry = self._emitter.emit(
             event=spec_event,
-            operator=operator,
+            operator=operator or subject or self._operator,
             session=session,
             result=result,
-            **data,
+            **details,
         )
 
         # Also write to the legacy plain JSON file if configured

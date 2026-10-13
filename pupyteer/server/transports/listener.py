@@ -15,6 +15,7 @@ With no ``rc4_key`` the wire stays plaintext (default) — the path the Python
 agent stub and the test-suite exercise. The C agent is the source of truth
 for the framing; see the WIRE FORMAT comment atop ``pe_template.c``.
 
+
 Message types:
     Agent → Server:
         {"type": "register", "hostname": "...", "os": "...", "arch": "...",
@@ -182,6 +183,12 @@ class AgentListener:
             # decrypt continuously in _rc4_extract(), keyed by connection in the
             # handler (reset on each new connection).
             self._rc4_buf = bytearray()
+
+        # Maximum silence tolerated per read on an established connection; see
+        # IDLE_READ_TIMEOUT_SECONDS. Overridable so a stalled-read test does not
+        # have to wait five minutes.
+        self._idle_timeout = float(
+            config.get("idle_timeout", IDLE_READ_TIMEOUT_SECONDS))
 
         # Maximum silence tolerated per read on an established connection; see
         # IDLE_READ_TIMEOUT_SECONDS. Overridable so a stalled-read test does not
@@ -722,84 +729,97 @@ class AgentListener:
         remote: str,
         writer: asyncio.StreamWriter,
     ) -> Dict[str, Any]:
-        """Register an agent — authenticated via Ed25519 challenge/response.
-
-        Flow when an agent-key registry is configured (the default):
-          1. Agent sends {"type":"register", "agent_id": "...", ...} WITHOUT a
-             signature. We issue a per-connection nonce and reply
-             {"type":"challenge","nonce":...}.
-          2. Agent re-sends the same register with "nonce" and "signature".
-          3. We verify the signature against the pubkey on file for agent_id.
-          Only then is a session created.
-
-        Legacy fallback: if no registry is present AND require_agent_auth is
-        False, an unsigned register is accepted (old behaviour) so existing
-        lab tooling keeps working. Logged loudly so it's never silent.
-        """
-        agent_id = msg.get("agent_id", "")
-        signature = msg.get("signature", "")
-        nonce = msg.get("nonce", "")
-
-        # ---- Stage 1: no signature yet -> issue a challenge ----
-        if not signature:
-            if self._agent_keys is not None:
-                if not agent_id:
-                    return {"type": "error", "message": "missing_agent_id"}
-                nonce_out = self._agent_keys.issue_nonce(agent_id)
-                self._audit.log_event(
-                    "agent_challenge_issued",
-                    {"agent_id": agent_id, "remote": remote},
-                )
-                return {"type": "challenge", "nonce": nonce_out}
-            # No registry configured and auth not required -> legacy accept.
-            if self._require_agent_auth:
-                return {"type": "error", "message": "auth_required"}
-            logger.warning(
-                "UNSIGNED agent registration accepted (no key registry): %s from %s",
-                agent_id or "<none>", remote,
-            )
-            return await self._create_session(msg, remote, writer, agent_id or None)
-
-        # ---- Stage 2: signed register -> verify ----
-        if self._agent_keys is None:
-            return {"type": "error", "message": "auth_unavailable"}
-        if not agent_id:
-            return {"type": "error", "message": "missing_agent_id"}
-        if not self._agent_keys.is_known(agent_id):
+        """Create a new session and register it."""
+        ledger = self._enrollment
+        if ledger is not None and not ledger.accepts(msg.get("auth")):
+            # Deliberately before anything is created: a session is a handler an
+            # operator can run commands through and push files to, so a stranger
+            # must not be able to conjure one by reaching the port.
+            self._stats["registrations_rejected"] += 1
+            if not ledger.accepted():
+                # Says something different from "wrong secret": here the server
+                # is the one that cannot present a credential, and no payload
+                # built against anything will get in until it is fixed.
+                why = "accepting no enrollment secret at all"
+            elif not msg.get("auth"):
+                why = "absent"
+            else:
+                why = "wrong"
+            logger.warning("Rejected registration from %s: enrollment secret %s",
+                           remote, why)
             self._audit.log_event(
-                "agent_auth_rejected",
-                {"agent_id": agent_id, "remote": remote, "reason": "unknown_agent"},
-                result="denied",
+                "registration_rejected",
+                {
+                    "remote_address": remote,
+                    "claimed_hostname": str(msg.get("hostname", ""))[:120],
+                    "reason": "bad_enrollment_secret",
+                },
+                result="error",
             )
-            logger.warning(
-                "Rejected registration for unknown agent %s from %s",
-                agent_id, remote,
-            )
-            return {"type": "error", "message": "unknown_agent"}
+            return {"type": "error", "message": "auth_failed"}
 
-        ok = self._agent_keys.verify_registration(agent_id, signature, nonce)
-        if not ok:
-            self._audit.log_event(
-                "agent_auth_rejected",
-                {"agent_id": agent_id, "remote": remote, "reason": "bad_signature"},
-                result="denied",
-            )
-            logger.warning(
-                "Rejected registration: bad signature for agent %s from %s",
-                agent_id, remote,
-            )
-            return {"type": "error", "message": "bad_signature"}
+        session_id = str(uuid.uuid4())[:12]
 
-        return await self._create_session(msg, remote, writer, agent_id)
+        info = SessionInfo(
+            session_id=session_id,
+            hostname=msg.get("hostname", "unknown"),
+            os=msg.get("os", "unknown"),
+            arch=msg.get("arch", "unknown"),
+            username=msg.get("username", "unknown"),
+            agent_version=msg.get("agent_version", "unknown"),
+            remote_address=remote,
+            # What the payload says it carries, not what this build shipped: a
+            # session is created from this message and nothing else, so the only
+            # account of the binary on the target is the one the binary gives.
+            # A payload built before either field existed declares neither, and is
+            # left with shell commands and no structured tasking.
+            capabilities=declared_capabilities(msg.get("capabilities")),
+            max_line=(declared_max_line(msg.get("max_line"))
+                      if msg.get("max_line") else 0),
+            # Handed out once, in the reply below, and never shown to an operator.
+            # Everything after this line has to bring it back or it is a stranger
+            # wearing a session id.
+            beacon_token=new_beacon_token(),
+        )
 
-    async def _create_session(
-        self,
-        msg: Dict[str, Any],
-        remote: str,
-        writer: asyncio.StreamWriter,
-        agent_id: Optional[str],
-    ) -> Dict[str, Any]:
-        """Create + register a SessionInfo for an authenticated agent."""
+        registered_id = await self._session_manager.register(info)
+
+        async with self._lock:
+            self._connections[registered_id] = ConnectionState(
+                session_id=registered_id,
+                writer=writer,
+                addr=remote,
+            )
+
+        self._stats["sessions_created"] += 1
+
+        self._audit.log_event(
+            "session_registered",
+            {
+                "session_id": registered_id,
+                "hostname": info.hostname,
+                "os": info.os,
+                "arch": info.arch,
+                "username": info.username,
+                "remote_address": remote,
+                # What was deployed is a question the report asks eventually, and
+                # this is the only moment anyone records the payload's own answer.
+                "capabilities": list(info.capabilities),
+            },
+            session=registered_id,
+        )
+        logger.info(
+            "Agent registered: %s (%s@%s) from %s",
+            registered_id, info.username, info.hostname, remote,
+        )
+
+        return {
+            "type": "registered",
+            "session_id": registered_id,
+            "beacon_token": info.beacon_token,
+        }
+
+    # ------------------------------------------------------------------
         ledger = self._enrollment
         if ledger is not None and not ledger.accepts(msg.get("auth")):
             # Deliberately before anything is created: a session is a handler an
