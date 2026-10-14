@@ -37,14 +37,15 @@ def setup_logging(level: str = "INFO") -> None:
     )
 
 
-async def async_main(config_path: str | None = None, no_tui: bool = False) -> int:
+async def async_main(config_path: str | None = None, no_tui: bool = False,
+                     environment: str | None = None) -> int:
     """Async main entry."""
     from pupyteer.server.core.config import ConfigManager
     from pupyteer.server.core.engine import PupyteerEngine
     from pupyteer.tui.app import PupyteerTUI
 
     configure_stdio()
-    config = ConfigManager(config_path)
+    config = ConfigManager(config_path, environment=environment)
     setup_logging(config.get("logging.level", "INFO"))
 
     engine = PupyteerEngine(config_path)
@@ -88,6 +89,13 @@ def main() -> int:
         version="Pupyteer v1.0.0 (Nightfall)",
     )
     parser.add_argument(
+        "-e", "--environment",
+        help="Environment overlay name (dev/staging/prod). Loads "
+             "pupyteer.<name>.yaml/.json from cwd, ~/.config/pupyteer, or /etc/pupyteer. "
+             "Overrides the PUPYTEER_ENV variable.",
+        default=None,
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Enable debug logging",
@@ -99,7 +107,7 @@ def main() -> int:
         os.environ["PUPYTEER_LOGGING__LEVEL"] = "DEBUG"
 
     try:
-        return asyncio.run(async_main(args.config, args.headless))
+        return asyncio.run(async_main(args.config, args.headless, args.environment))
     except KeyboardInterrupt:
         print("\nInterrupted.")
         return 0

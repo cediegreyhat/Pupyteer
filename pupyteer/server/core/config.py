@@ -136,14 +136,18 @@ class ConfigManager:
       2. pupyteer.yaml / .json in cwd
       3. ~/.config/pupyteer/config.yaml / .json
       4. /etc/pupyteer/config.yaml / .json
-      5. Environment-specific overlay (based on PUPTYEER_ENV)
+      5. Environment-specific overlay (based on PUPYTEER_ENV)
       6. PUPYTEER_* env vars (uppercase, double-underscore separator)
     """
 
-    def __init__(self, path: Optional[str] = None):
+    def __init__(self, path: Optional[str] = None, environment: Optional[str] = None):
         self._config: Dict[str, Any] = copy.deepcopy(DEFAULT_CONFIG)
         self._sources: list[str] = []
-        self._environment: str = os.environ.get("PUPTYEER_ENV", "dev")
+        # An explicit environment (CLI -e) wins over the PUPYTEER_ENV var, which
+        # in turn wins over the "dev" default. Without this the overlay in
+        # _load_environment_config() is unreachable for operators who never set
+        # the env var by hand.
+        self._environment: str = environment or os.environ.get("PUPYTEER_ENV", "dev")
         self._audit: Any = None  # Set by engine after construction
 
         # Load explicit path first
@@ -288,7 +292,7 @@ class ConfigManager:
             logger.warning("Failed to load config %s: %s", path, exc)
 
     def _load_environment_config(self) -> None:
-        """Load environment-specific config overlay based on PUPTYEER_ENV."""
+        """Load environment-specific config overlay based on PUPYTEER_ENV."""
         env = self._environment
         env_files = [
             Path.cwd() / f"pupyteer.{env}.yaml",
