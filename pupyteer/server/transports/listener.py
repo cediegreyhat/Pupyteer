@@ -731,7 +731,19 @@ class AgentListener:
     ) -> Dict[str, Any]:
         """Create a new session and register it."""
         ledger = self._enrollment
-        if ledger is not None and not ledger.accepts(msg.get("auth")):
+        # Agent-key auth and enrollment are alternative mechanisms: a payload
+        # that authenticates with a valid Ed25519 agent-key signature does not
+        # also have to carry an enrollment secret (that is the point of the
+        # signed-key model). Only fall back to requiring the enrollment secret
+        # when this registration is not on the agent-key path.
+        agent_key_path = (
+            self._agent_keys is not None
+            and self._require_agent_auth
+            and bool(msg.get("agent_id"))
+        )
+        if (ledger is not None
+                and not agent_key_path
+                and not ledger.accepts(msg.get("auth"))):
             # Deliberately before anything is created: a session is a handler an
             # operator can run commands through and push files to, so a stranger
             # must not be able to conjure one by reaching the port.
@@ -757,6 +769,43 @@ class AgentListener:
                 result="error",
             )
             return {"type": "error", "message": "auth_failed"}
+
+        # ── Signed-agent-key challenge/response ──────────────────────────
+        # When agent authentication is required (a key registry is wired in)
+        # AND this registration is on the agent-key path (it names an
+        # agent_id), it must prove possession of the agent's private key via
+        # an Ed25519 signature over a single-use server nonce. The first
+        # register (no signature) gets a challenge; the second (signed nonce)
+        # is verified and only then becomes a session. A registration that
+        # authenticated by enrollment secret instead (no agent_id) skips this.
+        agent_id = str(msg.get("agent_id", ""))
+        if (self._agent_keys is not None
+                and self._require_agent_auth
+                and agent_id):
+            signature = msg.get("signature")
+            nonce = msg.get("nonce")
+            if not signature or not nonce:
+                # Stage 1: issue a fresh single-use challenge.
+                self._stats.setdefault("challenges_issued", 0)
+                self._stats["challenges_issued"] += 1
+                return {
+                    "type": "challenge",
+                    "nonce": self._agent_keys.issue_nonce(agent_id),
+                }
+            if not self._agent_keys.verify_registration(
+                    agent_id, str(signature), str(nonce)):
+                self._stats["registrations_rejected"] += 1
+                logger.warning(
+                    "Rejected registration from %s: agent signature invalid "
+                    "for agent_id %s", remote, agent_id[:40])
+                self._audit.log_event(
+                    "registration_rejected",
+                    {"remote_address": remote,
+                     "claimed_hostname": str(msg.get("hostname", ""))[:120],
+                     "reason": "bad_agent_signature"},
+                    result="error",
+                )
+                return {"type": "error", "message": "auth_failed"}
 
         session_id = str(uuid.uuid4())[:12]
 
@@ -811,100 +860,6 @@ class AgentListener:
         logger.info(
             "Agent registered: %s (%s@%s) from %s",
             registered_id, info.username, info.hostname, remote,
-        )
-
-        return {
-            "type": "registered",
-            "session_id": registered_id,
-            "beacon_token": info.beacon_token,
-        }
-
-    # ------------------------------------------------------------------
-        ledger = self._enrollment
-        if ledger is not None and not ledger.accepts(msg.get("auth")):
-            # Deliberately before anything is created: a session is a handler an
-            # operator can run commands through and push files to, so a stranger
-            # must not be able to conjure one by reaching the port.
-            self._stats["registrations_rejected"] += 1
-            if not ledger.accepted():
-                # Says something different from "wrong secret": here the server
-                # is the one that cannot present a credential, and no payload
-                # built against anything will get in until it is fixed.
-                why = "accepting no enrollment secret at all"
-            elif not msg.get("auth"):
-                why = "absent"
-            else:
-                why = "wrong"
-            logger.warning("Rejected registration from %s: enrollment secret %s",
-                           remote, why)
-            self._audit.log_event(
-                "registration_rejected",
-                {
-                    "remote_address": remote,
-                    "claimed_hostname": str(msg.get("hostname", ""))[:120],
-                    "reason": "bad_enrollment_secret",
-                },
-                result="error",
-            )
-            return {"type": "error", "message": "auth_failed"}
-
-        session_id = str(uuid.uuid4())[:12]
-
-        info = SessionInfo(
-            session_id=session_id,
-            hostname=msg.get("hostname", "unknown"),
-            os=msg.get("os", "unknown"),
-            arch=msg.get("arch", "unknown"),
-            username=msg.get("username", "unknown"),
-            agent_version=msg.get("agent_version", "unknown"),
-            remote_address=remote,
-            # What the payload says it carries, not what this build shipped: a
-            # session is created from this message and nothing else, so the only
-            # account of the binary on the target is the one the binary gives.
-            # A payload built before either field existed declares neither, and is
-            # left with shell commands and no structured tasking.
-            capabilities=declared_capabilities(msg.get("capabilities")),
-            max_line=(declared_max_line(msg.get("max_line"))
-                      if msg.get("max_line") else 0),
-            # Handed out once, in the reply below, and never shown to an operator.
-            # Everything after this line has to bring it back or it is a stranger
-            # wearing a session id.
-            beacon_token=new_beacon_token(),
-        )
-
-        registered_id = await self._session_manager.register(info)
-
-        async with self._lock:
-            conn = ConnectionState(
-                session_id=registered_id,
-                writer=writer,
-                addr=remote,
-            )
-            conn.agent_id = agent_id
-            conn.authenticated = True
-            self._connections[registered_id] = conn
-
-        self._stats["sessions_created"] += 1
-
-        self._audit.log_event(
-            "session_registered",
-            {
-                "session_id": registered_id,
-                "agent_id": agent_id,
-                "hostname": info.hostname,
-                "os": info.os,
-                "arch": info.arch,
-                "username": info.username,
-                "remote_address": remote,
-                # What was deployed is a question the report asks eventually, and
-                # this is the only moment anyone records the payload's own answer.
-                "capabilities": list(info.capabilities),
-            },
-            session=registered_id,
-        )
-        logger.info(
-            "Agent registered: %s (agent_id=%s, %s@%s) from %s",
-            registered_id, agent_id, info.username, info.hostname, remote,
         )
 
         return {

@@ -214,12 +214,17 @@ class TransportManager:
 
         # protocol == "tcp"
         from pupyteer.server.transports.listener import AgentListener
+        # RC4 transport key: same value a payload builder bakes in as
+        # AGENT_RC4KEY. Resolved here so the listener and the built agent agree;
+        # absent means the wire stays plaintext.
+        rc4_key = self._config.get("transports.rc4_key")
         self._listener = AgentListener(
             config={
                 "host": host,
                 "port": port,
                 "ssl_context": tls.ssl_context if tls else None,
                 "enrollment": enrollment,
+                "rc4_key": rc4_key,
             },
             session_manager=session_manager,
             audit_logger=self._audit,

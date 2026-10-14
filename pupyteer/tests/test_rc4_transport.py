@@ -79,6 +79,10 @@ class _EngineThread:
             self.engine.config.set("server.port", self._port)
             # Enable the RC4 transport on the listener (matches AGENT_RC4KEY).
             self.engine.config.set("transports.rc4_key", self._rc4_key_hex)
+            # Plaintext RC4 channel: the listener would otherwise serve TLS
+            # (server.tls defaults on) and the handshake would fail on the
+            # agent's non-TLS RC4 frame with WRONG_VERSION_NUMBER.
+            self.engine.config.set("server.tls", False)
             self._loop.run_until_complete(self.engine.start())
             self._ready.set()
             self._loop.run_forever()
