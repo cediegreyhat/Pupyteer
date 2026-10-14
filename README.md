@@ -263,6 +263,33 @@ one, and the difference decides whether you wait or move on. An action the paylo
 was not built to carry (say `screenshot` without `--screenshot`) is refused with
 that reason, never answered with a result the target did not produce.
 
+### Post-exploitation modules (`post_*`)
+
+Ten `post_*` modules cover the Metasploit-style post layer, and every one of them
+dispatches a real task to the agent — there are no simulation stubs in this set.
+They build a well-formed `exec` command per target OS and return whatever the
+implant answered:
+
+| Module | What it does on the target |
+|---|---|
+| `post_env` | user, host, privileges, full environment |
+| `post_routes` | routing table + ARP/neighbour cache (pivot recon) |
+| `post_listeners` | listening ports and active connections |
+| `post_ssh_keys` | enumerate SSH keys and their permissions |
+| `post_shell_history` | retrieve shell command history |
+| `post_sudo` | `sudo -n -l` (non-interactive privilege check) |
+| `post_suid` | find SUID/SGID binaries (local privesc map) |
+| `post_cron` | enumerate cron jobs / systemd timers / scheduled tasks |
+| `post_portscan` | TCP-connect port scan **from the target** (pivot scanning) |
+| `post_http_fetch` | fetch a URL **from the target** (target-egress retrieval) |
+
+`post_portscan` and `post_http_fetch` are the pivot capabilities: the scan or the
+request egresses from the implant's network position, so it reaches internal-only
+services and never exposes the operator's IP. Every operator-supplied value is
+validated before it is placed in a command line — a host with shell
+metacharacters is refused with an error and nothing is sent, so an argument that
+is meant to name a host cannot terminate the command and start a second one.
+
 ---
 
 ## 🏗️ Architecture
