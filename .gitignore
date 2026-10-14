@@ -37,3 +37,8 @@ graphify-out/
 
 # History
 .pupyteer_history
+
+# Local operator config — contains secrets (RC4 keys, enrollment tokens).
+# ConfigManager scans cwd/pupyteer.json unconditionally, so committing it
+# leaks them and pollutes test fixtures.
+pupyteer.json

