@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import sys
 from typing import Any, Dict, List, Optional
 
@@ -293,4 +294,17 @@ def run_cli(argv: Optional[List[str]] = None) -> Optional[int]:
 
     if not getattr(args, "command", None):
         return None
+
+    # A subcommand's stdout is the payload: list-modules --json and
+    # server-info are meant to be piped into other tools. The engine's
+    # setup_logging() never ran on this path, so the pupyteer logger had no
+    # handler and Python's "last resort" handler dumped every logger.warning
+    # straight to stderr — the module-registry's intentional antiforensics
+    # load failure appeared on a clean rc=0 call, unusable in a pipe.
+    # Configure logging here instead: quiet (ERROR and up only) on the normal
+    # path so a scripted call is pipe-clean, full detail under --debug. The
+    # intentional antiforensics warning is still reachable with --debug.
+    level = logging.DEBUG if getattr(args, "debug", False) else logging.ERROR
+    logging.basicConfig(level=level, format="%(levelname)s %(name)s: %(message)s")
+
     return args.func(args)

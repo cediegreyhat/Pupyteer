@@ -151,3 +151,52 @@ def test_build_payload_dry_run_invalid_still_nonzero(capsys):
         ["build-payload", "x", "--transport", "email", "--dry-run"], capsys)
     assert rc == 2
     assert "Invalid transport" in err
+
+
+# ─── the subcommand path owns its logging ────────────────────────
+#
+# A subcommand's stdout/stderr are the contract for scripted use: list-modules
+# --json and server-info are piped into other tools. Before run_cli configured
+# logging itself, the engine's setup_logging() had not run yet, so the pupyteer
+# logger had no handler and Python's "last resort" handler dumped every
+# logger.warning straight to stderr — including the module registry's
+# intentional antiforensics load failure — onto an otherwise clean rc=0 call.
+
+
+def test_quiet_subcommand_does_not_leak_registry_warning_to_stderr(capsys):
+    """The deliberate antiforensics load failure must not appear on a normal
+    scripted call. It is a warning the registry emits by design; on a
+    pipe-clean subcommand it belongs nowhere but --debug."""
+    import logging
+
+    # basicConfig is a no-op once the root logger has handlers, so reset the
+    # handler state to exercise run_cli's own configuration in isolation.
+    root = logging.getLogger()
+    had = root.handlers[:]
+    root.handlers.clear()
+    try:
+        rc, out, err = _run(["list-modules"], capsys)
+    finally:
+        root.handlers[:] = had
+    assert rc == 0
+    assert "exec" in out
+    assert "Failed to load module" not in err
+    assert "antiforensics" not in err
+
+
+def test_debug_surfaces_the_intentional_registry_warning(capsys):
+    """Under --debug the operator explicitly asked for detail, so the same
+    warning is legitimate output. This is what keeps the quiet default honest
+    rather than a silent swallow."""
+    import logging
+
+    root = logging.getLogger()
+    had = root.handlers[:]
+    root.handlers.clear()
+    try:
+        rc, _, err = _run(["--debug", "list-modules"], capsys)
+    finally:
+        root.handlers[:] = had
+    assert rc == 0
+    assert "Failed to load module" in err
+    assert "antiforensics" in err
