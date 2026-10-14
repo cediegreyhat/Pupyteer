@@ -659,7 +659,9 @@ class TestTLS:
         This is the test that catches them drifting: a payload the operator built
         yesterday, before the server was ever started, has to call home today.
         """
-        from pupyteer.payloads.manager import PayloadConfig, PayloadManager, PayloadType
+        from pupyteer.payloads.manager import (PayloadArch, PayloadConfig,
+                                               PayloadManager, PayloadPlatform,
+                                               PayloadType)
         from pupyteer.server.core.logging import AuditLogger
 
         config_path = _write_tls_server_config(tmp_path, listener_port)
@@ -672,6 +674,10 @@ class TestTLS:
         meta = await manager.build(PayloadConfig(
             name="tls-chain", payload_type=PayloadType.SCRIPT,
             host="127.0.0.1", port=listener_port, sleep=1, jitter=0,
+            # Run on the host: a Windows script payload imports winreg and
+            # cannot execute on Linux/macOS.
+            platform=PayloadPlatform(_host_platform()),
+            arch=PayloadArch.X64 if _host_platform() != "macos" else PayloadArch.ARM64,
         ))
         assert cert_file.exists(), "building a TLS payload produced no listener certificate"
 

