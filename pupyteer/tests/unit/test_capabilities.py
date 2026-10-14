@@ -123,11 +123,46 @@ class TestDeclaredMaxLine:
         assert caps.declared_max_line(-5) == caps.DEFAULT_MAX_LINE
         assert caps.declared_max_line("wide") == caps.DEFAULT_MAX_LINE
 
+    def test_a_json_infinity_or_nan_does_not_kill_the_registration(self):
+        # json.loads accepts Infinity and NaN by default, so an agent can put
+        # them on the wire in a max_line field. int() of those is an
+        # OverflowError, which used to escape and drop the connection the
+        # implant was mid-registration on, with no reply and no audit entry.
+        # A non-finite claim is not a buffer the agent announced; it is the
+        # same as saying nothing.
+        assert caps.declared_max_line(float("inf")) == caps.DEFAULT_MAX_LINE
+        assert caps.declared_max_line(float("-inf")) == caps.DEFAULT_MAX_LINE
+        assert caps.declared_max_line(float("nan")) == caps.DEFAULT_MAX_LINE
+
     def test_a_claim_bigger_than_the_listener_is_clamped_not_believed(self):
         assert caps.declared_max_line(1024 * 1024 * 1024) == caps.MAX_LINE_CAP
 
     def test_a_real_number_is_kept(self):
         assert caps.declared_max_line(65536) == 65536
+
+
+class TestRequiredCapabilityReadsAnyShape:
+    """required_capability is the gate the queue calls on every interact.
+
+    It is typed as ``str`` but the queue feeds it whatever the operator typed
+    and whatever a module put in a task envelope, so a non-string can reach it.
+    An unguarded ``.strip()`` raised AttributeError there, which is not a
+    refused command the operator can read — it is a crash inside the session
+    layer. A command that is not even a string is neither a typed verb nor a
+    structured task, so it reads as shell: the same answer an empty command
+    gets, and the one an implant is always trusted with.
+    """
+
+    def test_a_non_string_command_reads_as_shell(self):
+        for value in (123, [None], [1, 2], {"a": 1}, True, ("x",)):
+            assert caps.required_capability(value) == caps.SHELL
+
+    def test_a_string_command_still_reads_its_verb(self):
+        assert caps.required_capability("ping") == "ping"
+        assert caps.required_capability("  fs_get  ") == "fs_get"
+        assert caps.required_capability("ps") == "processes"
+        assert caps.required_capability("") == caps.SHELL
+        assert caps.required_capability('{"action": "screenshot"}') == "screenshot"
 
 
 # ─── the queue enforces it ───────────────────────────────────────────

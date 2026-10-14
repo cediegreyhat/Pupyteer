@@ -36,6 +36,7 @@ Three things follow from that shape and are deliberate:
 from __future__ import annotations
 
 import json
+import math
 from typing import Any, Dict, List, Sequence
 
 #: Every capability name the server will accept a claim for. Anything else in a
@@ -98,14 +99,29 @@ MAX_LINE_CAP = 4 * 1024 * 1024
 
 
 def declared_max_line(presented: Any) -> int:
-    """How much of one message an agent says it can hold, clamped to what is sane."""
+    """How much of one message an agent says it can hold, clamped to what is sane.
+
+    The claim arrives on the wire as a JSON number, so it can be anything JSON
+    can express — and JSON's grammar includes ``Infinity`` and ``NaN``. An
+    ``int()`` of those is an OverflowError, which used to escape here and kill
+    the registration the agent was in the middle of: the connection dropped
+    with no reply, no audit entry, and the operator reading nothing at all
+    about why a live implant just vanished.
+
+    Every unreadable value therefore means the same thing — *this payload did
+    not announce a buffer* — and gets the safe default. Only a finite positive
+    number counts as a claim, and it is still clamped from above, because the
+    transfer layer sizes chunks from this number and an unbounded claim is a
+    promise to read a line bigger than the listener itself accepts.
+    """
     try:
-        value = int(presented)
+        value = float(presented)
     except (TypeError, ValueError):
         return DEFAULT_MAX_LINE
-    if value <= 0:
+    # float() accepts Infinity/NaN from JSON; both mean "no sane number here".
+    if not math.isfinite(value) or value <= 0:
         return DEFAULT_MAX_LINE
-    return min(value, MAX_LINE_CAP)
+    return min(int(value), MAX_LINE_CAP)
 
 
 def declared_capabilities(presented: Any) -> List[str]:
@@ -132,8 +148,16 @@ def required_capability(command: str) -> str:
     are three shapes to read and they are read in that order. Anything that is
     not one of the recognised words is the shell's problem, and has been all
     along.
+
+    A command that is not even a string cannot be a typed verb or a JSON task,
+    so it reads as shell — the same answer an empty command gets. An earlier
+    version called ``.strip()`` on whatever arrived and an unguarded caller
+    could hand it a list or a dict, which raised AttributeError inside the
+    queue and took the registration it was gating down with it.
     """
-    text = (command or "").strip()
+    if not isinstance(command, str):
+        return SHELL
+    text = command.strip()
     if not text:
         return SHELL
     if text.startswith("{"):
