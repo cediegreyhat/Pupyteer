@@ -22,7 +22,10 @@ from pupyteer.server.core.engine import PupyteerEngine
 from pupyteer.server.core.enrollment import secret_fingerprint
 from pupyteer.server.core.operators import MIN_PASSWORD_CHARS, WeakCredential
 from pupyteer.server.core.rbac import AccessDenied, Role
-from pupyteer.tui.themes import Theme, _Ansi, c, get_theme, available_themes
+from pupyteer.tui.themes import (
+    Theme, _Ansi, c, c_dim, gradient_line, get_theme, available_themes,
+    theme_blurb, status_dot, ramp, _CYAN, _MAGENTA, strip_ansi, THEMES,
+)
 
 logger = logging.getLogger("pupyteer.tui")
 
@@ -33,19 +36,55 @@ LOGIN_ATTEMPTS = 3
 
 
 # ─── Banner ────────────────────────────────────────────────────────────
-BANNER = r"""
-╔══════════════════════════════════════════════════════════════════╗
-║                                                                  ║
-║   ██████╗ ██╗   ██╗██████╗ ██╗   ██╗████████╗███████╗███████╗  ║
-║   ██╔══██╗██║   ██║██╔══██╗╚██╗ ██╔╝╚══██╔══╝██╔════╝██╔════╝  ║
-║   ██████╔╝██║   ██║██████╔╝ ╚████╔╝    ██║   █████╗  █████╗    ║
-║   ██╔═══╝ ██║   ██║██╔═══╝   ╚██╔╝     ██║   ██╔══╝  ██╔══╝    ║
-║   ██║     ╚██████╔╝██║        ██║      ██║   ███████╗███████╗  ║
-║   ╚═╝      ╚═════╝ ╚═╝        ╚═╝      ╚═╝   ╚══════╝╚══════╝  ║
-║                                                                  ║
-║          Red Team Operations Framework  v{codename} {version}     ║
-╚══════════════════════════════════════════════════════════════════╝
-""".format(codename="Nightfall", version="1.0.0")
+
+#: Inner width of the banner frame, in visible columns. The gradient ramp and
+#: the right-hand padding are both computed against this so the box never
+#: drifts open when a terminal renders the box-drawing glyphs at double width.
+_W = 64
+
+_BANNER_WORDMARK = [
+    "██████╗ ██╗   ██╗██████╗ ██╗   ██╗████████╗███████╗███████╗",
+    "██╔══██╗██║   ██║██╔══██╗╚██╗ ██╔╝╚══██╔══╝██╔════╝██╔════╝",
+    "██████╔╝██║   ██║██████╔╝ ╚████╔╝    ██║   █████╗  █████╗  ",
+    "██╔═══╝ ██║   ██║██╔═══╝   ╚██╔╝     ██║   ██╔══╝  ██╔══╝  ",
+    "██║     ╚██████╔╝██║        ██║      ██║   ███████╗███████╗",
+    "╚═╝      ╚═════╝ ╚═╝        ╚═╝      ╚═╝   ╚══════╝╚══════╝",
+]
+
+
+def _render_banner(codename: str, version: str, theme: Theme) -> str:
+    """Compose the startup banner: gradient wordmark, boxed tagline.
+
+    Rendered per-theme at draw time rather than frozen at import, so switching
+    themes re-sweeps the wordmark in the new palette instead of leaving the old
+    gradient burned in.
+    """
+    grad = ramp(_CYAN, _MAGENTA, _W)
+    box_c = theme.get("dashboard_border")
+
+    def _row(content: str) -> str:
+        # Pad to the inner width using VISIBLE length, so an already-colored
+        # content string does not leave the frame short by its escape codes.
+        vis = strip_ansi(content)
+        pad = " " * max(0, _W - len(vis))
+        return f"{c('║', box_c)}{content}{pad}{c('║', box_c)}"
+
+    rows = ["",
+            c("╔" + "═" * _W + "╗", box_c),
+            _row("")]
+    for line in _BANNER_WORDMARK:
+        rows.append(_row(gradient_line("  " + line, grad)))
+    rows.append(_row(""))
+    tagline = f"   Red Team Operations Framework · v{codename} {version}   "
+    rows.append(_row(c(tagline, theme.get("banner_text"), _Ansi.BOLD)))
+    rows.append(_row(""))
+    rows.append(c("╚" + "═" * _W + "╝", box_c))
+    return "\n".join(rows)
+#: The banner rendered once in the default (dark) palette. Kept as a module
+#: constant because callers import it to check the wordmark/tagline without
+#: standing up an engine; the live TUI re-renders it in the active theme.
+BANNER = _render_banner("Nightfall", "1.0.0", THEMES["dark"])
+
 
 
 # ─── Command Registry ─────────────────────────────────────────────────
@@ -70,7 +109,9 @@ class CommandRegistry:
         cmd = self._commands.get(name)
         if not cmd:
             return c(f"  Unknown command: {name}", theme.get("error"))
-        lines = [c(f"  {name}", theme.get("primary"), _Ansi.BOLD), f"    {cmd['help']}"]
+        lines = [c(f"\n  {name}", theme.get("primary"), _Ansi.BOLD),
+                 c("  " + "─" * (len(name) + 4), theme.get("table_border")),
+                 f"    {cmd['help']}"]
         if cmd["usage"]:
             lines.append(c(f"    Usage: {cmd['usage']}", theme.get("muted")))
         return "\n".join(lines)
@@ -78,11 +119,13 @@ class CommandRegistry:
     def get_all_help(self, theme: Optional[Theme] = None) -> str:
         if theme is None:
             theme = get_theme("dark")
-        lines = [c("\nAvailable Commands:", theme.get("primary"), _Ansi.BOLD)]
+        lines = [c("\n  Available Commands", theme.get("primary"), _Ansi.BOLD),
+                 c("  " + "─" * 46, theme.get("table_border"))]
         for name in sorted(self._commands.keys()):
             cmd = self._commands[name]
-            lines.append(f"  {c(name, theme.get('success')):20s} {cmd['help']}")
-        lines.append(c("\nUse 'help <command>' for details.\n", theme.get("muted")))
+            lines.append(f"    {c(name.ljust(16), theme.get('success'), _Ansi.BOLD)}"
+                         f"  {c(cmd['help'], theme.get('text'))}")
+        lines.append(c("\n  Use 'help <command>' for details.\n", theme.get("muted")))
         return "\n".join(lines)
 
 
@@ -156,14 +199,45 @@ class SessionDashboard:
         status = self._engine.get_status()
         state = status["state"]
         theme = self._theme
+        b = theme.get("dashboard_border")
+        val = theme.get("text")
 
-        # Dashboard box
-        print(c("\n  ┌─── Dashboard ───────────────────────────────────┐", theme.get("dashboard_border")))
-        print(c("  │", theme.get("dashboard_border")), f"  {c('Server:', theme.get('info'))}    {'online' if state['started'] else 'offline'}")
-        print(c("  │", theme.get("dashboard_border")), f"  {c('Agents:', theme.get('info'))}    {state['active_sessions']}")
-        print(c("  │", theme.get("dashboard_border")), f"  {c('Tasks:', theme.get('info'))}     {state['queued_tasks']}")
-        print(c("  │", theme.get("dashboard_border")), f"  {c('Profile:', theme.get('info'))}   {state['loaded_profile'] or 'none'}")
-        print(c("  └─────────────────────────────────────────────────┘\n", theme.get("dashboard_border")))
+        online = bool(state["started"])
+        agents = state["active_sessions"]
+        tasks = state["queued_tasks"]
+        profile = state["loaded_profile"] or "none"
+
+        #: Inner width between the frame glyphs. Every row and rule is built
+        #: against this one number so a long value can never push the frame open.
+        inner = 50
+        side = c("│", b)
+        #: The panel title lives inside the top rule, so it is part of the same
+        #: fixed-width line rather than a separate row that could drift.
+        title = " Dashboard "
+        # ┌ + ─ + title + rule + ┐ must total inner + 2, so the rule fills
+        # inner - 1 - len(title) and the frame never drifts.
+        rule = "─" * max(0, inner - 1 - len(title))
+        top = (c("┌─", b) + c(title, theme.get("table_header"), _Ansi.BOLD)
+               + c(rule + "┐", b))
+        bot = c("└" + "─" * inner + "┘", b)
+
+        def _row(label: str, value: str, kind: str) -> str:
+            # 2 pad + 9 label + 2 pad + 1 dot + 2 pad + value + slack + frame.
+            head = 2 + 9 + 2 + 1 + 2
+            slack = max(0, inner - head - len(str(value)))
+            return (f"{side}  {c(label.ljust(9), theme.get('muted'))}"
+                    f"  {status_dot(theme, kind)}  {c(value, val)}"
+                    f"{' ' * slack}{side}")
+
+        print()
+        print(top)
+        print(_row("Server", "online" if online else "offline",
+                   "ok" if online else "off"))
+        print(_row("Agents", str(agents), "ok" if agents else "off"))
+        print(_row("Tasks", str(tasks), "warn" if tasks else "ok"))
+        print(_row("Profile", profile, "none" if profile == "none" else "ok"))
+        print(bot)
+        print()
 
     def render_compact(self) -> str:
         """Render a compact status line for the status bar."""
@@ -171,10 +245,11 @@ class SessionDashboard:
         state = status["state"]
         theme = self._theme
         return (
-            f"{c('[Server]', theme.get('success'))} {'Online' if state['started'] else 'Offline'} "
-            f"{c('[Agents]', theme.get('info'))} {state['active_sessions']} "
-            f"{c('[Tasks]', theme.get('warning'))} {state['queued_tasks']} "
-            f"{c('[Profile]', theme.get('accent'))} {state['loaded_profile'] or 'none'}"
+            f"{status_dot(theme, 'ok' if state['started'] else 'off')} "
+            f"{c('Server', theme.get('muted'))} {'Online' if state['started'] else 'Offline'}  "
+            f"{c('Agents', theme.get('info'))} {state['active_sessions']}  "
+            f"{c('Tasks', theme.get('warning'))} {state['queued_tasks']}  "
+            f"{c('Profile', theme.get('accent'))} {state['loaded_profile'] or 'none'}"
         )
 
 
@@ -223,7 +298,8 @@ class PupyteerTUI:
         self._running = False
         self._theme_name = self._config.get("operator.theme", "dark")
         self._theme = get_theme(self._theme_name)
-        self._prompt = c("pupyteer", self._theme.get("prompt"), _Ansi.BOLD) + c(" > ", self._theme.get("muted"))
+        self._prompt = (c("pupyteer", self._theme.get("prompt"), _Ansi.BOLD)
+                                    + c(" ▸ ", self._theme.get("muted")))
         self._history_file = os.path.expanduser("~/.pupyteer_history")
         self._status_bar = StatusBar(engine, self._theme)
         self._dashboard = SessionDashboard(engine, self._theme)
@@ -294,7 +370,7 @@ class PupyteerTUI:
         "profiles": ["list", "show", "validate", "load", "unload", "new"],
         "payloads": ["status", "list", "build", "info", "verify", "remove", "cleanup", "versions"],
         "config": ["get", "set"],
-        "theme": ["dark", "light", "list"],
+        "theme": ["dark", "aurora", "light", "list"],
         "evasion": ["status", "run", "list", "stats"],
         "pipeline": ["run", "build", "test", "auto", "status", "history"],
         "operator": ["list", "add", "role", "remove"],
@@ -358,7 +434,8 @@ class PupyteerTUI:
         """Update the current theme."""
         self._theme_name = theme_name
         self._theme = get_theme(theme_name)
-        self._prompt = c("pupyteer", self._theme.get("prompt"), _Ansi.BOLD) + c(" > ", self._theme.get("muted"))
+        self._prompt = (c("pupyteer", self._theme.get("prompt"), _Ansi.BOLD)
+                                    + c(" ▸ ", self._theme.get("muted")))
         self._status_bar = StatusBar(self._engine, self._theme)
         self._dashboard = SessionDashboard(self._engine, self._theme)
 
@@ -790,55 +867,63 @@ class PupyteerTUI:
     def render_banner(self) -> None:
         """Print the startup banner."""
         theme = self._theme
-        print(c(BANNER, theme.get("banner"), _Ansi.BOLD))
+        print(_render_banner("Nightfall", "1.0.0", theme))
         status = self._engine.get_status()
         server = status["config"]
-        print(c(f"  [Server]", theme.get("success")), f"{server['server_host']}:{server['server_port']}")
+        print(f"  {c('Server', theme.get('muted'))}  {c(f'{server['server_host']}:{server['server_port']}', theme.get('text'))}")
         # Whether callbacks are encrypted is the first thing that decides if this
         # server is safe to start using, so it goes where the operator looks first.
         fingerprint = server.get("listener_tls") or ""
+
+        def _stat(label: str, value: str, kind: str) -> str:
+            """A labelled status line: dim label, colored dot, plain value."""
+            return (f"  {c(label.ljust(11), theme.get('muted'))}  "
+                    f"{status_dot(theme, kind)}  {value}")
+
         if fingerprint:
-            print(c("  [Channel]", theme.get("success")),
-                  f"TLS, pinned to SHA-256 {fingerprint[:16]}…")
+            print(_stat("Channel", f"TLS, pinned to SHA-256 {fingerprint[:16]}…", "ok"))
         elif server.get("tls_configured") is False:
-            print(c("  [Channel]", theme.get("error")),
-                  "PLAINTEXT callbacks — server.tls is off, so anyone on the "
-                  "network reads every command and every result")
+            print(_stat("Channel",
+                        "PLAINTEXT callbacks — server.tls is off, so anyone on the "
+                        "network reads every command and every result", "error"))
         else:
             # The banner is drawn before the engine starts, and the console now
             # starts it only after a sign-in. A missing fingerprint here means
             # nothing is listening yet, not that the channel is in the clear;
             # shouting PLAINTEXT at that would train operators to ignore the
             # warning for the case where it is true.
-            print(c("  [Channel]", theme.get("warning")),
-                  "TLS configured, no listener serving yet — 'banner' after "
-                  "sign-in shows the pinned certificate")
+            print(_stat("Channel",
+                        "TLS configured, no listener serving yet — 'banner' after "
+                        "sign-in shows the pinned certificate", "warn"))
         # Encryption says nobody on the wire can read the sessions; it does not say
         # who is allowed to start one. That is what the enrollment secret is for.
         auth = server.get("agent_auth")
         if auth is False:
-            print(c("  [Enrollment]", theme.get("error")),
-                  "unauthenticated — anything that reaches the port gets a session")
+            print(_stat("Enrollment",
+                        "unauthenticated — anything that reaches the port gets a session",
+                        "error"))
         elif auth:
-            print(c("  [Enrollment]", theme.get("success")),
-                  "registrations checked against this server's secret")
+            print(_stat("Enrollment",
+                        "registrations checked against this server's secret", "ok"))
+        # No listener yet means there is no boundary to describe; saying so here
+        # would claim a state the operator has not actually put the server in.
         # The third line a buyer of this banner reads is "who is doing this". A name
         # in a config file is what the audit log falls back to, not proof of who is
         # typing, so it is only ever shown as that.
         engine_auth = self._engine.auth
         if self._operator:
-            print(c("  [Operator]", theme.get("success")),
-                  f"{self._operator} as {self._role}")
+            print(_stat("Operator", f"{self._operator} as {self._role}", "ok"))
         elif engine_auth.require_auth:
-            print(c("  [Operator]", theme.get("warning")),
-                  "not signed in — verbs that touch a target are refused until you "
-                  "are")
+            print(_stat("Operator",
+                        "not signed in — verbs that touch a target are refused until "
+                        "you are", "warn"))
         else:
-            print(c("  [Operator]", theme.get("error")),
-                  f"console authentication is off; whoever holds this keyboard is "
-                  f"admin, blamed as {server['operator']!r}")
-        print(c(f"  [Profile]", theme.get("accent")), f"{status['state']['loaded_profile'] or 'none'}")
-        print(c(f"  [Agents]", theme.get("info")), f"{status['state']['active_sessions']}")
+            print(_stat("Operator",
+                        f"console authentication is off; whoever holds this keyboard "
+                        f"is admin, blamed as {server['operator']!r}", "error"))
+        print(_stat("Profile", status['state']['loaded_profile'] or 'none', "none"))
+        print(_stat("Agents", str(status['state']['active_sessions']),
+                    "ok" if status['state']['active_sessions'] else "off"))
         print()
 
     def render_dashboard(self) -> None:
@@ -846,7 +931,7 @@ class PupyteerTUI:
         self._dashboard.render()
 
     def render_table(self, headers: List[str], rows: List[List[str]]) -> None:
-        """Render a simple ASCII table."""
+        """Render a table with a boxed header row and dim separators."""
         theme = self._theme
         if not rows:
             print(c("  (no data)", theme.get("muted")))
@@ -858,31 +943,46 @@ class PupyteerTUI:
             for i, cell in enumerate(row):
                 widths[i] = max(widths[i], len(str(cell)))
 
-        # Header
-        header_line = "  " + " │ ".join(c(h.ljust(w), theme.get("table_header")) for h, w in zip(headers, widths))
-        print(header_line)
-        print(c("  " + "─┼─".join("─" * w for w in widths), theme.get("table_border")))
+        b = theme.get("table_border")
+        hdr = theme.get("table_header")
 
-        # Rows
-        for row in rows:
-            line = "  " + " │ ".join(str(cell).ljust(w) for cell, w in zip(row, widths))
-            print(line)
+        def _sep(l: str, m: str, r: str) -> str:
+            return c("  " + l + m.join("─" * (w + 2) for w in widths) + r, b)
+
+        # Header — bold gradient title in a boxed row
+        header_line = c("  │", b)
+        for h, w in zip(headers, widths):
+            header_line += " " + c(h.ljust(w), hdr, _Ansi.BOLD) + " " + c("│", b)
+        print(_sep("┌", "┬", "┐"))
+        print(header_line)
+        print(_sep("├", "┼", "┤"))
+
+        # Rows — alternating dim stripe on even rows for scannability
+        for idx, row in enumerate(rows):
+            cells = []
+            for cell, w in zip(row, widths):
+                text = str(cell).ljust(w)
+                if idx % 2 == 1:
+                    text = c(text, theme.get("muted"))
+                cells.append(text)
+            print(c("  │", b) + " " + f" {c('│', b)} ".join(cells) + " " + c("│", b))
+        print(_sep("└", "┴", "┘"))
 
     def render_error(self, message: str) -> None:
         """Render an error message with color coding."""
-        print(c(f"  ✗ ERROR: {message}", self._theme.get("error"), _Ansi.BOLD))
+        print(c(f"  ✗  ERROR: {message}", self._theme.get("error"), _Ansi.BOLD))
 
     def render_warning(self, message: str) -> None:
         """Render a warning message with color coding."""
-        print(c(f"  ⚠ WARNING: {message}", self._theme.get("warning")))
+        print(c(f"  ⚠  WARNING: {message}", self._theme.get("warning")))
 
     def render_success(self, message: str) -> None:
         """Render a success message with color coding."""
-        print(c(f"  ✓ {message}", self._theme.get("success")))
+        print(c(f"  ✓  {message}", self._theme.get("success")))
 
     def render_info(self, message: str) -> None:
         """Render an info message with color coding."""
-        print(c(f"  ℹ {message}", self._theme.get("info")))
+        print(c(f"  ℹ  {message}", self._theme.get("info")))
 
     # ------------------------------------------------------------------ #
     #  Commands                                                            #
@@ -907,8 +1007,10 @@ class PupyteerTUI:
             themes = available_themes()
             print(c("\n  Available themes:", self._theme.get("primary"), _Ansi.BOLD))
             for t in themes:
-                marker = "→" if t == self._theme_name else " "
-                print(f"    {c(marker, self._theme.get('success'))} {t}")
+                marker = "▸" if t == self._theme_name else " "
+                blurb = c(theme_blurb(t), self._theme.get("muted"))
+                line = f"    {c(marker, self._theme.get('success'))} {c(t, self._theme.get('text'), _Ansi.BOLD)}"
+                print(f"{line:<32}  {blurb}")
             print()
         elif args[0] in available_themes():
             self._update_theme(args[0])

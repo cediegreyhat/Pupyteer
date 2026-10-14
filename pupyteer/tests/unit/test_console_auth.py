@@ -149,7 +149,7 @@ class TestStartupGate:
         tui.render_banner()
         out = capsys.readouterr().out
         assert "plaintext" not in out.lower()
-        assert "[Channel]" in out
+        assert "Channel" in out
 
 
 class TestRoleGate:

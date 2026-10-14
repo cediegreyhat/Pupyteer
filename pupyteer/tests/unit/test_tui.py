@@ -1,5 +1,6 @@
 """Unit tests for Pupyteer TUI — themes, command registry, session dashboard, and app features."""
 import asyncio
+import io
 import os
 import sys
 from unittest.mock import MagicMock, AsyncMock, patch
@@ -10,8 +11,15 @@ import pytest
 # Ensure pupyteer is importable
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from pupyteer.tui.themes import Theme, _Ansi, c, get_theme, available_themes, _dark_theme, _light_theme
-from pupyteer.tui.app import CommandRegistry, TabCompleter, SessionDashboard, StatusBar, PupyteerTUI, BANNER
+from pupyteer.tui.themes import (
+    Theme, _Ansi, c, get_theme, available_themes, _dark_theme,
+    _light_theme, _aurora_theme, ramp, gradient_line, strip_ansi,
+    status_dot, theme_blurb, _CYAN, _MAGENTA,
+)
+from pupyteer.tui.app import (
+    CommandRegistry, TabCompleter, SessionDashboard, StatusBar,
+    PupyteerTUI, BANNER, _render_banner,
+)
 
 
 # ─── Theme Tests ─────────────────────────────────────────────────────
@@ -683,6 +691,108 @@ class TestPupyteerTUIErrorHandling:
         tui.render_success("Test success message")
         captured = capsys.readouterr()
         assert "Test success message" in captured.out
+
+
+# ─── Truecolor / gradient theme engine ────────────────────────────────
+
+
+class TestTruecolorThemeEngine:
+    """The gradient engine is the part of the polish that can silently rot: a
+    ramp that stops varying, or a box that drifts open because a colored
+    string was padded by its escape codes instead of its visible width."""
+
+    def test_every_theme_declares_the_roles_the_console_reads(self):
+        for name in available_themes():
+            theme = get_theme(name)
+            for role in ("primary", "success", "error", "warning", "info",
+                         "muted", "text", "border", "table_header"):
+                assert theme.get(role) != "", f"{name} is missing {role}"
+
+    def test_a_theme_get_accepts_a_bare_ansi_string(self):
+        """A palette built from plain escape codes must still work, so a caller
+        is not forced into the pair form to construct a Theme."""
+        theme = Theme("t", {"key1": "\033[91m"})
+        assert theme.get("key1") == "\033[91m"
+
+    def test_gradient_varies_across_the_line(self):
+        codes = ramp(_CYAN, _MAGENTA, 64)
+        with patch("pupyteer.tui.themes._Ansi.supports_color", return_value=True):
+            line = gradient_line("A" * 20, codes)
+        seen = set()
+        for seg in line.split("\033[0m"):
+            if "\033[" in seg:
+                seen.add(seg.split("m")[0] + "m")
+        assert len(seen) == 20, "each column must get its own ramp color"
+
+    def test_gradient_leaves_the_visible_text_alone(self):
+        codes = ramp(_CYAN, _MAGENTA, 64)
+        with patch("pupyteer.tui.themes._Ansi.supports_color", return_value=True):
+            out = gradient_line("hello world", codes)
+        assert strip_ansi(out) == "hello world"
+
+    def test_gradient_does_not_recolor_an_existing_escape(self):
+        """Composing with an already-colored string must not double-wrap it."""
+        codes = ramp(_CYAN, _MAGENTA, 16)
+        with patch("pupyteer.tui.themes._Ansi.supports_color", return_value=True):
+            inner = c("abc", _Ansi.BOLD)
+            out = gradient_line(inner, codes)
+        assert strip_ansi(out) == "abc"
+
+    def test_the_banner_box_is_the_same_width_in_every_theme(self):
+        """Padding is computed on VISIBLE width, so escape codes must not leave
+        the right-hand frame short."""
+        for name in available_themes():
+            b = _render_banner("Nightfall", "1.0.0", get_theme(name))
+            widths = {len(strip_ansi(l)) for l in b.splitlines()}
+            widths.discard(0)
+            assert widths == {66}, f"{name} banner widths drifted: {widths}"
+
+    def test_the_banner_names_the_product(self):
+        assert "██████╗" in BANNER
+        assert "Red Team Operations Framework" in BANNER
+        assert "Nightfall" in BANNER
+        assert "1.0.0" in BANNER
+
+    def test_aurora_theme_is_offered_and_described(self):
+        assert "aurora" in available_themes()
+        assert theme_blurb("aurora")
+
+    def test_status_dot_picks_a_color_per_state(self):
+        theme = get_theme("dark")
+        with patch("pupyteer.tui.themes._Ansi.supports_color", return_value=True):
+            assert status_dot(theme, "ok") != status_dot(theme, "error")
+            assert status_dot(theme, "off") != status_dot(theme, "ok")
+
+    def test_the_dashboard_box_is_a_fixed_width(self):
+        """Same invariant as the banner: colored cells must not shrink the frame."""
+        engine = MagicMock()
+        engine.config.get.return_value = "dark"
+        engine.get_status.return_value = {
+            "config": {}, "state": {"started": True, "active_sessions": 3,
+                                    "queued_tasks": 1, "loaded_profile": "HTTPS"},
+        }
+        with patch("pupyteer.tui.app.readline"):
+            tui = PupyteerTUI(engine)
+        buf = io.StringIO()
+        with patch("sys.stdout", buf):
+            with patch("pupyteer.tui.themes._Ansi.supports_color", return_value=True):
+                tui.render_dashboard()
+        widths = {len(strip_ansi(l)) for l in buf.getvalue().splitlines()}
+        widths.discard(0)
+        assert len(widths) == 1, f"dashboard widths drifted: {sorted(widths)}"
+
+    def test_no_color_degrades_to_plain_text(self):
+        with patch("pupyteer.tui.themes._Ansi.supports_color", return_value=False):
+            assert c("hello", _Ansi.RED) == "hello"
+            assert gradient_line("hello", ramp(_CYAN, _MAGENTA, 8)) == "hello"
+
+    def test_supports_256_is_a_terminal_property_not_a_tty_property(self):
+        """Piped stdout must not report a dumb terminal: the answer is about
+        what TERM says the terminal can do."""
+        with patch.dict(os.environ, {"TERM": "xterm-256color"}, clear=False):
+            assert _Ansi.supports_256() is True
+        with patch.dict(os.environ, {"TERM": "dumb", "COLORTERM": ""}, clear=False):
+            assert _Ansi.supports_256() is False
 
 
 if __name__ == "__main__":
