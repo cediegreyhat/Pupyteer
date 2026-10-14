@@ -69,6 +69,32 @@ executable's name and none of its contents.
 crontab entry when you ask for it explicitly. `--screenshot` is likewise opt-in;
 a payload built without it answers a capture request with `unknown action`.
 
+### Scriptable subcommands (no TUI)
+
+For repeatable or automated work the same capabilities are reachable without
+starting a console. None of these bind a port or talk to a live session:
+
+```
+pupyteer list-modules [--category recon] [--json]
+pupyteer module-info exec
+pupyteer module-health [--json]
+pupyteer server-info [--reveal]
+pupyteer build-payload <name> --host <cb> --port <cb> [--platform linux] \
+    [--arch x64] [--transport tcp] [--profile HTTPS-Standard] \
+    [--sleep 30] [--jitter 25] [--persistence] [--screenshot] [--sign]
+```
+
+`build-payload` applies the same cross-compilation rules as the console command
+above, and **exits non-zero when the build fails** so a CI gate or a shell
+script can tell the difference between a payload and an error. `server-info`
+redacts secret-bearing keys by default; `--reveal` shows them on your own
+terminal. `module-health` deliberately reports files that failed to load — for
+example `antiforensics.py`, which is gated off on purpose because it destroys
+evidence on a host.
+
+Every subcommand also accepts `-c/--config` and `-e/--environment`, matching the
+main entry point.
+
 To use HTTP callbacks instead, enable the listener in the server config and
 build with `--transport http`:
 

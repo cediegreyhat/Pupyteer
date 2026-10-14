@@ -67,8 +67,12 @@ async def async_main(config_path: str | None = None, no_tui: bool = False,
     return 0
 
 
-def main() -> int:
-    """Synchronous entry point."""
+def build_arg_parser() -> argparse.ArgumentParser:
+    """Build the top-level parser.
+
+    Exposed so pupyteer.cli can add its subcommands to the same parser rather
+    than re-declaring the global flags — one place defines them.
+    """
     parser = argparse.ArgumentParser(
         prog="pupyteer",
         description="Pupyteer — Red Team Operations Framework v1.0.0",
@@ -90,7 +94,7 @@ def main() -> int:
     )
     parser.add_argument(
         "-e", "--environment",
-        help="Environment overlay name (dev/staging/prod). Loads "
+        help="Environment overlay name (dev/staging/prod/ctf). Loads "
              "pupyteer.<name>.yaml/.json from cwd, ~/.config/pupyteer, or /etc/pupyteer. "
              "Overrides the PUPYTEER_ENV variable.",
         default=None,
@@ -100,7 +104,21 @@ def main() -> int:
         action="store_true",
         help="Enable debug logging",
     )
+    return parser
 
+
+def main() -> int:
+    """Synchronous entry point."""
+    # A subcommand is non-interactive work (list modules, build a payload,
+    # dump config) and must never fall through into starting the engine, so it
+    # is checked before anything else touches config or binds a port.
+    from pupyteer.cli import run_cli
+
+    rc = run_cli()
+    if rc is not None:
+        return rc
+
+    parser = build_arg_parser()
     args = parser.parse_args()
 
     if args.debug:

@@ -1,0 +1,124 @@
+"""Non-interactive subcommand surface.
+
+These tests exercise pupyteer.cli without a TUI or a live listener. They are
+the guard rail for the property that matters: scripted use must never start
+the engine, bind a port, or report success for a build that failed.
+"""
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from pupyteer.cli import _redact, run_cli
+from pupyteer.main import build_arg_parser
+
+
+@pytest.fixture(autouse=True)
+def _clean_env(monkeypatch, tmp_path):
+    monkeypatch.delenv("PUPYTEER_ENV", raising=False)
+    monkeypatch.chdir(tmp_path)
+    yield
+
+
+def _run(argv, capsys):
+    rc = run_cli(argv)
+    out = capsys.readouterr()
+    return rc, out.out, out.err
+
+
+def test_no_subcommand_returns_none(capsys):
+    """No subcommand means the caller starts the engine/TUI, not a CLI command."""
+    assert run_cli([]) is None
+
+
+def test_parser_exposes_subcommands():
+    parser = build_arg_parser()
+    # Import lazily to keep the registry import out of module scope.
+    from pupyteer.cli import add_subcommands
+
+    add_subcommands(parser)
+    args = parser.parse_args(["list-modules"])
+    assert args.command == "list-modules"
+    assert hasattr(args, "func")
+
+
+def test_list_modules_text(capsys):
+    rc, out, _ = _run(["list-modules"], capsys)
+    assert rc == 0
+    assert "MODULE" in out
+    # Registry discovery is exercised for real, so a known module must appear.
+    assert "exec" in out
+
+
+def test_list_modules_json(capsys):
+    rc, out, _ = _run(["list-modules", "--json"], capsys)
+    assert rc == 0
+    rows = json.loads(out)
+    assert isinstance(rows, list) and rows
+    assert all("name" in m for m in rows)
+
+
+def test_list_modules_category_filter(capsys):
+    rc, out, _ = _run(["list-modules", "--category", "recon"], capsys)
+    assert rc == 0
+    assert "recon" in out
+    # file_ops modules must be filtered out.
+    assert "upload" not in out
+
+
+def test_module_info(capsys):
+    rc, out, _ = _run(["module-info", "exec"], capsys)
+    assert rc == 0
+    info = json.loads(out)
+    assert info["name"] == "exec"
+    assert info["category"] == "execution"
+
+
+def test_module_info_unknown_is_nonzero(capsys):
+    rc, _, err = _run(["module-info", "definitely_not_a_module"], capsys)
+    assert rc == 2
+    assert "Unknown module" in err
+    assert "list-modules" in err
+
+
+def test_module_health_reports_deliberate_failure(capsys):
+    """antiforensics.py is deliberately unloadable (it destroys evidence and no
+    test exercises it). The health command must surface it as failed rather
+    than hide it, so 'everything registered' is not mistaken for 'all good'."""
+    rc, out, _ = _run(["module-health", "--json"], capsys)
+    assert rc == 0
+    rows = json.loads(out)
+    names = {r["name"] for r in rows}
+    assert "file:antiforensics" in names
+    failed = [r for r in rows if r["state"] == "failed"]
+    assert failed
+
+
+def test_server_info_redacts_secrets(capsys):
+    rc, out, _ = _run(["server-info"], capsys)
+    assert rc == 0
+    cfg = json.loads(out)
+    assert "***redacted***" in json.dumps(cfg)
+
+
+def test_redact_recurses_and_conservative():
+    obj = {"auth": {"api_token": "abc", "url": "http://x"},
+           "list": [{"password": "p"}], "port": 8443}
+    red = _redact(obj)
+    assert red["auth"]["api_token"] == "***redacted***"
+    assert red["auth"]["url"] == "http://x"
+    assert red["list"][0]["password"] == "***redacted***"
+    assert red["port"] == 8443
+
+
+def test_build_payload_invalid_platform(capsys):
+    rc, _, err = _run(["build-payload", "x", "--platform", "plan9"], capsys)
+    assert rc == 2
+    assert "not a valid PayloadPlatform" in err
+
+
+def test_build_payload_invalid_port(capsys):
+    rc, _, err = _run(["build-payload", "x", "--port", "99999"], capsys)
+    assert rc == 2
+    assert "Invalid port" in err
