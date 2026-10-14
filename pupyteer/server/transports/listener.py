@@ -75,6 +75,17 @@ HANDSHAKE_TIMEOUT_SECONDS = 10.0
 # use to exercise the path quickly.
 IDLE_READ_TIMEOUT_SECONDS = 300.0
 
+# Ceiling on the RC4 decrypt buffer for one connection. MAX_MESSAGE_BYTES bounds
+# a single plaintext line, but the RC4 path cannot use readline() (any ciphertext
+# byte may equal '\n'), so it accumulates raw ciphertext until a balanced JSON
+# object forms. A peer that streams ciphertext that never decrypts to one would
+# otherwise grow that buffer without bound — a one-byte frame is all it takes to
+# hold megabytes of RAM per connection, and enough connections take the listener
+# down. A legit agent's largest single frame is its command output, so this
+# matches MAX_MESSAGE_BYTES; an RC4 peer that exceeds it never completed a frame
+# and is dropped.
+MAX_RC4_BUFFER_BYTES = MAX_MESSAGE_BYTES
+
 # One line per refusal is what an operator needs the first time a payload fails to
 # call back; it is also an invitation to bury the entries that matter, because the
 # audit log rotates at a fixed size and drops the oldest. So refusals of every kind
@@ -190,11 +201,13 @@ class AgentListener:
         self._idle_timeout = float(
             config.get("idle_timeout", IDLE_READ_TIMEOUT_SECONDS))
 
-        # Maximum silence tolerated per read on an established connection; see
-        # IDLE_READ_TIMEOUT_SECONDS. Overridable so a stalled-read test does not
-        # have to wait five minutes.
-        self._idle_timeout = float(
-            config.get("idle_timeout", IDLE_READ_TIMEOUT_SECONDS))
+        # Ceiling on the per-connection RC4 decrypt buffer; see
+        # MAX_RC4_BUFFER_BYTES. Overridable so a test can trip it quickly. A
+        # None (key present but unset) falls back to the default rather than
+        # int(None) crashing the listener on startup.
+        _max_rc4_cfg = config.get("max_rc4_buffer")
+        self._max_rc4_buffer = (
+            int(_max_rc4_cfg) if _max_rc4_cfg is not None else MAX_RC4_BUFFER_BYTES)
 
         self._server: Optional[asyncio.base_events.Server] = None
         self._connections: Dict[str, ConnectionState] = {}  # session_id → state
@@ -224,6 +237,10 @@ class AgentListener:
             # without it, a stranded implant and a powered-off host are the
             # same number — zero — and nothing points at the rebuild.
             "handshakes_refused": 0,
+            # An RC4 peer that streamed ciphertext past MAX_RC4_BUFFER_BYTES
+            # without completing a frame. Distinct from a handshake refusal: the
+            # peer spoke the protocol but is streaming undecryptable bytes.
+            "rc4_buffer_overflows": 0,
         }
         # Refusals leave a trace line at most once a window per key; see
         # _thin_report. Handshake refusals key on the peer, beacon refusals on
@@ -489,6 +506,16 @@ class AgentListener:
                         break
                     self._stats["bytes_received"] += len(chunk)
                     self._rc4_buf.extend(chunk)
+                    # Bound the buffer before decrypting: a peer that streams
+                    # ciphertext which never decrypts to a complete JSON object
+                    # would otherwise grow _rc4_buf without limit (one frame at
+                    # a time) until the listener OOMs. See MAX_RC4_BUFFER_BYTES.
+                    if len(self._rc4_buf) > self._max_rc4_buffer:
+                        logger.warning(
+                            "Dropping %s: RC4 buffer exceeded %d bytes without a "
+                            "complete frame", remote_str, self._max_rc4_buffer)
+                        self._stats["rc4_buffer_overflows"] += 1
+                        break
                     msgs, leftover = self._rc4_extract(self._rc4_buf)
                     self._rc4_buf = bytearray(leftover)
                     drop = False

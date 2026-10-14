@@ -269,3 +269,116 @@ class TestRC4WireContract:
         """_send_rc4 (the test's stand-in for the C agent) == the pinned frame."""
         payload = {"type": "register", "hostname": "win-box"}
         assert _send_rc4_frame(payload, self.KEY) == self._frame(payload)
+
+
+class _StubAudit:
+    def log_event(self, *a, **k):
+        pass
+
+
+class _FakeWriter:
+    """Just enough StreamWriter for _handle_client's RC4 branch: it never
+    writes on a pure-garbage stream, but close()/wait_closed() run in finally."""
+
+    def get_extra_info(self, name):
+        return ("127.0.0.1", 44444) if name == "peername" else None
+
+    def close(self):
+        pass
+
+    async def wait_closed(self):
+        return None
+
+    async def start_tls(self, *a, **k):
+        raise AssertionError("plaintext listener must not upgrade TLS")
+
+
+class TestRC4BufferBound:
+    """The RC4 decrypt buffer must not grow without limit.
+
+    The RC4 path cannot use readline() (any ciphertext byte can be '\\n'), so it
+    accumulates raw ciphertext until a balanced JSON object forms. A peer that
+    streams ciphertext which never decrypts to one object would otherwise grow
+    the per-connection buffer without bound until the listener OOMs. Before the
+    cap there was nothing stopping that: one frame is all a peer has to send to
+    pin megabytes of RAM, and many such connections take the listener down.
+    """
+
+    def _listener(self, max_rc4_buffer):
+        from pupyteer.server.transports.listener import AgentListener
+        return AgentListener(
+            config={
+                "host": "127.0.0.1",
+                "port": 0,
+                "rc4_key": RC4_KEY_HEX,
+                "max_rc4_buffer": max_rc4_buffer,
+            },
+            session_manager=None,
+            audit_logger=_StubAudit(),
+        )
+
+    @pytest.mark.asyncio
+    async def test_undecryptable_stream_is_bounded(self):
+        """Streaming ciphertext that never forms a JSON object stops the
+        connection at the cap instead of growing the buffer forever."""
+        key = bytes.fromhex(RC4_KEY_HEX)
+        listener = self._listener(max_rc4_buffer=4096)
+
+        reader = asyncio.StreamReader()
+        writer = _FakeWriter()
+
+        # Feed well past the cap: bytes that, RC4-decrypted, never produce a
+        # complete JSON object (raw non-JSON ciphertext). One frame would be
+        # enough to overflow the tiny cap.
+        for _ in range(64):
+            reader.feed_data(_rc4(b"\x00" * 1024, key) + b"\n")
+
+        await listener._handle_client(reader, writer)
+
+        assert listener._stats["rc4_buffer_overflows"] == 1
+        # The buffer was not allowed to grow past the cap + one chunk.
+        assert len(listener._rc4_buf) <= 4096 + 4096
+
+    @pytest.mark.asyncio
+    async def test_a_complete_frame_under_the_cap_is_kept(self):
+        """The cap does not fire on a legitimate small frame — the connection
+        logic runs normally and no overflow is counted."""
+        key = bytes.fromhex(RC4_KEY_HEX)
+        listener = self._listener(max_rc4_buffer=1024 * 1024)
+
+        reader = asyncio.StreamReader()
+        writer = _FakeWriter()
+        # A single well-formed RC4 frame (a checkin the listener will parse).
+        frame = _send_rc4_frame({"type": "checkin", "session_id": "x"}, key)
+        reader.feed_data(frame)
+        reader.feed_eof()
+
+        await listener._handle_client(reader, writer)
+
+        assert listener._stats["rc4_buffer_overflows"] == 0
+
+    def test_default_cap_matches_message_ceiling(self):
+        """With no override the cap equals MAX_MESSAGE_BYTES, so a legit
+        agent's largest single frame (its command output) always fits."""
+        from pupyteer.server.transports.listener import (
+            MAX_MESSAGE_BYTES,
+            AgentListener,
+        )
+        listener = AgentListener(
+            config={"host": "127.0.0.1", "port": 0, "rc4_key": RC4_KEY_HEX},
+            session_manager=None,
+            audit_logger=_StubAudit(),
+        )
+        assert listener._max_rc4_buffer == MAX_MESSAGE_BYTES
+
+    def test_unset_cap_key_does_not_crash_startup(self):
+        """A present-but-None max_rc4_buffer (manager forwards config.get)
+        falls back to the default rather than int(None) crashing the listener."""
+        from pupyteer.server.transports.listener import MAX_MESSAGE_BYTES, AgentListener
+        listener = AgentListener(
+            config={"host": "127.0.0.1", "port": 0, "rc4_key": RC4_KEY_HEX,
+                    "max_rc4_buffer": None},
+            session_manager=None,
+            audit_logger=_StubAudit(),
+        )
+        assert listener._max_rc4_buffer == MAX_MESSAGE_BYTES

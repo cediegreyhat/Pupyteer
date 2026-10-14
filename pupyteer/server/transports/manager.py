@@ -225,6 +225,9 @@ class TransportManager:
                 "ssl_context": tls.ssl_context if tls else None,
                 "enrollment": enrollment,
                 "rc4_key": rc4_key,
+                # Threaded through so the RC4 buffer ceiling is tunable rather
+                # than always the MAX_RC4_BUFFER_BYTES default; absent keeps that.
+                "max_rc4_buffer": self._config.get("transports.max_rc4_buffer"),
             },
             session_manager=session_manager,
             audit_logger=self._audit,
