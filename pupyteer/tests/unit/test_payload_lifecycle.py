@@ -1,8 +1,10 @@
 """Tests for full payload lifecycle management per spec section 3."""
+import ast
 import asyncio
 import os
 import sys
 import tempfile
+import types
 from pathlib import Path
 
 import pytest
@@ -46,21 +48,44 @@ def audit(config):
     return AuditLogger(config)
 
 
-def _load_agent(agent_path: Path):
-    """Import a generated agent without running it (the __main__ guard holds)."""
-    import importlib.util
+def _agent_constants(agent_path: Path) -> dict:
+    """Extract a generated agent's baked-in module constants via AST only.
 
-    spec = importlib.util.spec_from_file_location(agent_path.stem, str(agent_path))
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    A generated agent targets a specific OS; on a different-OS build host its
+    platform imports (``winreg``, ``ctypes.wintypes`` …) cannot be imported,
+    and its assignments may even reference those imports. Importing or exec'ing
+    the module is therefore wrong on a host mismatch — it raises an environment
+    error, not a product defect. Instead we parse the source and read only the
+    top-level assignments whose value is a literal (the TLS/enrollment/auth
+    constants the template bakes in), evaluated with ``ast.literal_eval`` so no
+    import or name lookup ever runs.
+    """
+    tree = ast.parse(agent_path.read_text(encoding="utf-8"))
+    consts: dict = {}
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        try:
+            value = ast.literal_eval(node.value)
+        except (ValueError, SyntaxError):
+            continue  # non-literal (e.g. references an import) — skip safely
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                consts[target.id] = value
+    return consts
+
+
+def _load_agent(agent_path: Path) -> types.SimpleNamespace:
+    """Namespace of a generated agent's baked-in constants (no import)."""
+    return types.SimpleNamespace(**_agent_constants(agent_path))
 
 
 def _pinned_cert(agent_path: Path) -> str:
     """The certificate PEM compiled into a generated agent.
 
-    Read from the imported module rather than the source text, so the escaping
-    the template applies cannot hide a mismatch between build and listener.
+    Read from the baked-in constants rather than the source text, so the
+    escaping the template applies cannot hide a mismatch between build and
+    listener.
     """
     return _load_agent(agent_path).TLS_CERT_PEM
 

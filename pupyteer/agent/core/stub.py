@@ -477,7 +477,6 @@ def _decrypt_payload(envelope: bytes) -> bytes:
 _LOG_LEVELS = {"debug": _lg.DEBUG, "info": _lg.INFO,
                "warning": _lg.WARNING, "error": _lg.ERROR}
 
-
 def _log(msg, level="info"):
     if level == "debug" and not dbg:
         return
