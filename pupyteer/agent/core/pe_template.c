@@ -799,8 +799,7 @@ static void close_conn(SOCKET s) {
     closesocket(s);
 }
 
-static int raw_plain_send(SOCKET s, const char *data) {
-    size_t len = strlen(data);
+static int raw_plain_send(SOCKET s, const char *data, size_t len) {
     size_t sent = 0;
     while (sent < len) {
         int n = send(s, data + sent, (int)(len - sent), 0);
@@ -841,7 +840,7 @@ static int agent_send(SOCKET s, const char *data) {
     if (g_tls_on) {
         rc = tls_send_bytes(s, framed, len);
     } else {
-        rc = raw_plain_send(s, (const char *)framed);
+        rc = raw_plain_send(s, (const char *)framed, len);
     }
     memset(framed, 0, sizeof(framed));
     return rc;
