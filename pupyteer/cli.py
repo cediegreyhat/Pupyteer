@@ -165,6 +165,13 @@ def _cmd_build_payload(args: argparse.Namespace) -> int:
             print(f"  - {p}", file=sys.stderr)
         return 2
 
+    # Dry-run stops at the gate above: it reports buildability without writing
+    # an artifact, invoking a compiler, or touching the audit trail.
+    if args.dry_run:
+        print(json.dumps(pcfg.to_dict(), indent=2, sort_keys=True, default=str))
+        print("\nConfiguration is buildable (dry-run: nothing was compiled).")
+        return 0
+
     metadata = asyncio.run(
         builder.build(pcfg, payload_id=builder.generate_payload_id(),
                       version=args.version, sign=args.sign)
@@ -263,6 +270,8 @@ def add_subcommands(parser: argparse.ArgumentParser) -> None:
     p_build.add_argument("--screenshot", action="store_true", help="Compile in screen capture")
     p_build.add_argument("--no-migration", action="store_true", help="Omit process migration")
     p_build.add_argument("--sign", action="store_true", help="Sign the artifact if signing is configured")
+    p_build.add_argument("--dry-run", action="store_true",
+                         help="Validate the config and print it; compile nothing")
     p_build.set_defaults(func=_cmd_build_payload)
 
     p_srv = sub.add_parser(

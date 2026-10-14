@@ -122,3 +122,32 @@ def test_build_payload_invalid_port(capsys):
     rc, _, err = _run(["build-payload", "x", "--port", "99999"], capsys)
     assert rc == 2
     assert "Invalid port" in err
+
+
+def test_build_payload_dry_run_validates_without_building(capsys, tmp_path, monkeypatch):
+    """A dry-run must report buildability but leave the machine untouched: no
+    artifact on disk, no audit entry. Otherwise a CI pre-check has side effects."""
+    import pupyteer.server.core.logging as logging_mod
+
+    calls = []
+    monkeypatch.setattr(logging_mod.AuditLogger, "log_event",
+                        lambda self, *a, **k: calls.append(a))
+
+    rc, out, _ = _run(
+        ["build-payload", "dryrun1", "--platform", "linux", "--arch", "x64",
+         "--transport", "tcp", "--dry-run"], capsys)
+    assert rc == 0
+    cfg = json.loads(out.split("\nConfiguration is buildable")[0])
+    assert cfg["platform"] == "linux"
+    assert cfg["name"] == "dryrun1"
+    assert "dry-run" in out
+    # No compiler ran, so nothing was written into the artifact tree.
+    assert not any(tmp_path.rglob("payloads/artifacts/*/dryrun1*"))
+    assert calls == []
+
+
+def test_build_payload_dry_run_invalid_still_nonzero(capsys):
+    rc, _, err = _run(
+        ["build-payload", "x", "--transport", "email", "--dry-run"], capsys)
+    assert rc == 2
+    assert "Invalid transport" in err

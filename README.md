@@ -92,6 +92,11 @@ terminal. `module-health` deliberately reports files that failed to load — for
 example `antiforensics.py`, which is gated off on purpose because it destroys
 evidence on a host.
 
+`build-payload --dry-run` validates the config and prints it but compiles
+nothing and writes nothing — no artifact, no audit entry — so a CI pre-check
+can confirm a payload is buildable (exit 0) or not (exit 2) before anyone
+touches a compiler.
+
 Every subcommand also accepts `-c/--config` and `-e/--environment`, matching the
 main entry point.
 
