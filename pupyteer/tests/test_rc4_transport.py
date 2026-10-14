@@ -139,9 +139,15 @@ def rc4_engine():
 
 
 def _send_rc4(sock: socket.socket, payload: dict, key: bytes) -> None:
-    """Encode exactly like pe_template.c sock_send: RC4(json+'\\n') + '\\n'."""
+    """Encode exactly like pe_template.c sock_send: RC4(json+'\n') + '\n'."""
     msg = (json.dumps(payload) + "\n").encode("utf-8")
     sock.sendall(_rc4(msg, key) + b"\n")
+
+
+def _send_rc4_frame(payload: dict, key: bytes) -> bytes:
+    """The same frame _send_rc4 writes, returned as bytes for comparison."""
+    msg = (json.dumps(payload) + "\n").encode("utf-8")
+    return _rc4(msg, key) + b"\n"
 
 
 def _recv_rc4(sock: socket.socket, key: bytes) -> dict:
@@ -221,3 +227,45 @@ class TestRC4TransportInterop:
         # But decrypting it yields valid JSON with a type field.
         dec = _rc4(raw.rstrip(b"\r\n"), key)
         assert b'"type"' in dec
+
+
+class TestRC4WireContract:
+    """The exact on-wire framing, pinned byte-for-byte.
+
+    The C agent (pe_template.c agent_send) and this test's _send_rc4 must agree
+    on every byte, because the listener's _rc4_extract RC4-decrypts the whole
+    buffer as one stream and pulls out balanced JSON. The subtle part an earlier
+    merge got wrong: the JSON's own trailing '\\n' is INSIDE the ciphertext (it
+    is the next byte of the RC4 stream, encrypted like any other), and only one
+    further '\\n' is appended raw outside it. Writing that inner '\\n' unencrypted
+    puts a literal 0x0a where the listener expects ciphertext.
+    """
+
+    KEY = bytes.fromhex(RC4_KEY_HEX)
+
+    def _frame(self, payload: dict) -> bytes:
+        # Exactly what pe_template.c agent_send must produce.
+        plain = (json.dumps(payload) + "\n").encode("utf-8")
+        return _rc4(plain, self.KEY) + b"\n"
+
+    def test_inner_newline_is_inside_the_ciphertext(self):
+        """The byte after the JSON (the '\\n') is encrypted, not a raw 0x0a."""
+        frame = self._frame({"type": "checkin", "session_id": "abc"})
+        # The last byte is the outer framing newline (raw).
+        assert frame[-1] == 0x0A
+        # The byte before it is the encrypted inner '\\n' — which is NOT 0x0A
+        # for this key/plaintext (a raw unencrypted 0x0a here was the bug).
+        inner_ct = frame[-2]
+        assert inner_ct != 0x0A, (
+            "the inner newline was appended unencrypted; the listener decrypts "
+            "the whole buffer as one RC4 stream and would read a wrong byte")
+        # Decrypting the whole frame (minus the outer framing newline) yields
+        # the JSON followed by its own '\\n'.
+        dec = _rc4(frame[:-1], self.KEY)
+        assert dec.endswith(b"\n")
+        assert json.loads(dec.decode("utf-8").strip())["type"] == "checkin"
+
+    def test_send_rc4_matches_the_c_framing(self):
+        """_send_rc4 (the test's stand-in for the C agent) == the pinned frame."""
+        payload = {"type": "register", "hostname": "win-box"}
+        assert _send_rc4_frame(payload, self.KEY) == self._frame(payload)
