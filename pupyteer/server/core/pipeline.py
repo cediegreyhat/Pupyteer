@@ -15,7 +15,6 @@ All methods are async and thread-safe.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 import os
 import time
@@ -27,8 +26,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from pupyteer.payloads.manager import PayloadConfig, PayloadMetadata
-from pupyteer.server.core.config import ConfigManager
-from pupyteer.server.core.logging import AuditLogger
 from pupyteer.server.evasion.models import (
     DetectionResult,
     EvasionTestConfig,
@@ -37,7 +34,7 @@ from pupyteer.server.evasion.models import (
     compute_file_hash,
 )
 from pupyteer.server.evasion.obfuscator import ObfuscationConfig, ObfuscationEngine
-from pupyteer.server.evasion.profiles import TestConfigurationProfile, get_profile
+from pupyteer.server.evasion.profiles import get_profile
 
 if TYPE_CHECKING:
     from pupyteer.server.core.engine import PupyteerEngine

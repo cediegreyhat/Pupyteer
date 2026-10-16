@@ -9,9 +9,9 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional
 
-from pupyteer.server.core.auth import AuthLayer, OperatorSession
+from pupyteer.server.core.auth import AuthLayer
 from pupyteer.server.core.rbac import PermissionChecker, Permission, AccessDenied
 
 logger = logging.getLogger("pupyteer.security.session_auth")

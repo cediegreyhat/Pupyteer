@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from pupyteer.server.modules.registry import PupyModule, ModuleCategory, ModuleRequirement
+from pupyteer.server.modules.registry import PupyModule, ModuleCategory
 
 
 class EvasionTestModule(PupyModule):

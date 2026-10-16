@@ -8,11 +8,10 @@ Covers:
 from __future__ import annotations
 
 import hashlib
-import json
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 
 class TestEnvironment(str, Enum):

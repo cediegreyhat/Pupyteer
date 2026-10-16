@@ -377,7 +377,7 @@ pupyteer/
 ├── tools/             # callback self-test (generated agent against a real listener)
 │
 └── docs/              # operator manual, developer docs, profile & module guides,
-                       # security notes, installation guide
+                       # security notes, installation guide, API reference
 ```
 
 Generated artifacts land in `./payloads/artifacts` and logs in `./logs` — both
@@ -398,7 +398,7 @@ git-ignored.
 .venv/bin/python -m pytest pupyteer/tests/integration/ -v
 ```
 
-**Current test count: 925 tests passing** (`pytest pupyteer/tests`)
+**Current test count: 1178 tests passing** (`pytest pupyteer/tests`)
 
 The suite runs against real engines and real listeners, and repoints every file a
 default-config server writes — the audit trail, the enrollment secret, the TLS
@@ -411,6 +411,20 @@ there for a human to find.
 listener on purpose: a self-test that drifts from the protocol reports PASS
 against a server that would refuse every payload built for it, which is worse than
 no self-test at all.
+
+---
+
+## 📚 Documentation
+
+| Document | Description |
+|----------|-------------|
+| [Operator Manual](docs/OPERATOR_MANUAL.md) | TUI usage, sessions, tasks, payloads, profiles, transports |
+| [Developer Documentation](docs/DEVELOPER_DOCUMENTATION.md) | Architecture, components, module system |
+| [Installation Guide](docs/INSTALLATION_GUIDE.md) | pipx, venv, dev install |
+| [Profile Documentation](docs/PROFILE_DOCUMENTATION.md) | C2 profile YAML/JSON format |
+| [Security Documentation](docs/SECURITY_DOCUMENTATION.md) | Security model and hardening |
+| [Module Development Guide](docs/MODULE_DEVELOPMENT_GUIDE.md) | Writing custom modules |
+| [API Reference](docs/API_REFERENCE.md) | Complete public API — all classes, methods, functions |
 
 ---
 

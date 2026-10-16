@@ -22,9 +22,14 @@ import socket
 import sys
 import threading
 import time
+import warnings
 from pathlib import Path
 
 import pytest
+
+# The listener internally uses rc4_crypt (deprecated) for RC4 transport.
+# These tests exercise that path intentionally — suppress the noise.
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="pupyteer.*")
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))

@@ -14,11 +14,8 @@ experiments. It wraps EvasionTestManager with obfuscation orchestration.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 import os
-import shutil
-import tempfile
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -28,7 +25,7 @@ from typing import Any, Dict, List, Optional
 
 from pupyteer.server.core.config import ConfigManager
 from pupyteer.server.core.logging import AuditLogger
-from pupyteer.server.evasion.litterbox_client import LitterboxClient, LitterboxError
+from pupyteer.server.evasion.litterbox_client import LitterboxClient
 from pupyteer.server.evasion.manager import EvasionTestManager
 from pupyteer.server.evasion.models import (
     ControlResult,

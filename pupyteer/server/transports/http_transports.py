@@ -12,8 +12,6 @@ Features:
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import hmac
 import logging
 import random
 import ssl

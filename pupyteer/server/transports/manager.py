@@ -11,7 +11,6 @@ callbacks over a plain TCP socket using a newline-delimited JSON protocol.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 

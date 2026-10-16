@@ -164,25 +164,34 @@ def _write_tmp(tmp_path: Path, data: bytes, name: str) -> str:
 
 
 def test_xor_crypt_roundtrip():
+    import warnings
     data = b"hello obfuscator world" * 3
     key = b"supersecretkey"
-    assert xor_crypt(data, key) != data
-    assert xor_crypt(xor_crypt(data, key), key) == data
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        assert xor_crypt(data, key) != data
+        assert xor_crypt(xor_crypt(data, key), key) == data
 
 
 def test_xor_crypt_empty_and_key_reuse():
-    assert xor_crypt(b"", b"k") == b""
-    # Single-byte key must not divide by zero
-    assert xor_crypt(b"abc", b"K") == bytes([ord("a") ^ ord("K"), ord("b") ^ ord("K"), ord("c") ^ ord("K")])
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        assert xor_crypt(b"", b"k") == b""
+        # Single-byte key must not divide by zero
+        assert xor_crypt(b"abc", b"K") == bytes([ord("a") ^ ord("K"), ord("b") ^ ord("K"), ord("c") ^ ord("K")])
 
 
 def test_rc4_roundtrip_and_ksa():
+    import warnings
     s = rc4_ksa(b"key")
     assert isinstance(s, list) and len(s) == 256 and sorted(s) == list(range(256))
     data = b"RC4 test payload" * 5
     key = b"anotherkey123"
-    assert rc4_crypt(data, key) != data
-    assert rc4_crypt(rc4_crypt(data, key), key) == data
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        assert rc4_crypt(data, key) != data
+        assert rc4_crypt(rc4_crypt(data, key), key) == data
 
 
 def test_aes_cbc_is_real_cipher_not_xor_fallback():
@@ -636,6 +645,7 @@ def test_engine_missing_input_raises(tmp_path):
 
 
 def test_engine_helper_methods_preserved():
+    import warnings
     engine = ObfuscationEngine.__new__(ObfuscationEngine)
     names = ObfuscationEngine.generate_random_section_names(3)
     assert len(names) == 3 and all(len(n) == 8 for n in names)
@@ -645,5 +655,7 @@ def test_engine_helper_methods_preserved():
     assert engine.generate_anti_analysis_stub("windows")
     assert engine.generate_import_hashtable(["kernel32.dll"]) != ""
     assert engine.generate_syscall_stubs(["NtAllocateVirtualMemory"]) != ""
-    code = engine.encrypt_agent_strings("x = 'secretvalue'\n")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        code = engine.encrypt_agent_strings("x = 'secretvalue'\n")
     assert "_d(" in code

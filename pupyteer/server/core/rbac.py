@@ -8,7 +8,7 @@ from __future__ import annotations
 import enum
 import functools
 import logging
-from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, Set
+from typing import TYPE_CHECKING, Any, Callable, Dict, Set
 
 if TYPE_CHECKING:
     # Only ever a name in an annotation. The layer that owns the credential file

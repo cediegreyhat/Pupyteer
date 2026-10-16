@@ -10,9 +10,7 @@ Provides TUI and CLI commands for:
 """
 from __future__ import annotations
 
-import json
-import sys
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from pupyteer.payloads.manager import (
     PayloadConfig,

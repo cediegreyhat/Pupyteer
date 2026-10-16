@@ -8,7 +8,6 @@ Each handler takes (tui: PupyteerTUI, args: list) -> dict result.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 

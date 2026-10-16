@@ -20,7 +20,6 @@ from __future__ import annotations
 import base64
 import ctypes
 import ctypes.util
-import hashlib
 import logging
 import math
 import os
@@ -32,7 +31,7 @@ import warnings
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("pupyteer.obfuscator")
 

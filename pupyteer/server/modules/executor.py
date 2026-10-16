@@ -17,8 +17,8 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pupyteer.server.modules.registry import ModuleRegistry, PupyModule
-from pupyteer.server.sessions.manager import SessionManager, SessionInfo, SessionState
+from pupyteer.server.modules.registry import ModuleRegistry
+from pupyteer.server.sessions.manager import SessionManager, SessionState
 
 logger = logging.getLogger("pupyteer.executor")
 

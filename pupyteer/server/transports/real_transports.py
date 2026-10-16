@@ -22,7 +22,6 @@ import asyncio
 import base64
 import hashlib
 import hmac
-import json
 import logging
 import os
 import random
@@ -31,10 +30,8 @@ import ssl
 import struct
 import time
 import urllib.parse
-from abc import abstractmethod
-from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
 
 from pupyteer.server.transports import (
     Transport,

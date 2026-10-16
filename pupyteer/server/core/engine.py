@@ -54,8 +54,8 @@ from pupyteer.payloads.manager import PayloadManager
 from pupyteer.server.modules.executor import ModuleExecutor
 from pupyteer.server.modules.registry import ModuleRegistry
 from pupyteer.server.profiles.manager import ProfileManager
-from pupyteer.server.sessions.manager import SessionInfo, SessionManager, SessionState
-from pupyteer.server.tasks.manager import TaskManager, TaskState
+from pupyteer.server.sessions.manager import SessionManager
+from pupyteer.server.tasks.manager import TaskManager
 from pupyteer.server.transports.manager import TransportManager
 from pupyteer.server.core.pipeline import PipelineManager
 
@@ -73,7 +73,7 @@ class EnginePhase(str, Enum):
     ERROR = "error"
 
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass

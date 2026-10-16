@@ -11,7 +11,7 @@ from __future__ import annotations
 import ipaddress
 import re
 import unicodedata
-from typing import Any, Dict, List, Optional, Set, Union
+from typing import Any, Dict, List, Set, Union
 
 # Allowed characters for various identifier types
 _RE_SESSION_ID = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$')

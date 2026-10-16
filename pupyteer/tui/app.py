@@ -17,7 +17,6 @@ except ImportError:
     # Windows ships no readline; the console falls back to plain input().
     readline = None  # type: ignore[assignment]
 
-from pupyteer.server.core.config import ConfigManager
 from pupyteer.server.core.engine import PupyteerEngine
 from pupyteer.server.core.enrollment import secret_fingerprint
 from pupyteer.server.core.operators import MIN_PASSWORD_CHARS, WeakCredential

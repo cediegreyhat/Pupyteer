@@ -6,10 +6,9 @@ Wire to TUI via app.py: evasion [status|run|list|stats|profiles|runner]
 """
 from __future__ import annotations
 
-import asyncio
 import os
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 
 async def evasion_status(tui: Any, args: List[str]) -> Dict[str, Any]:

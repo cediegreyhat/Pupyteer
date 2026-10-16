@@ -6,7 +6,7 @@ detailed, actionable error messages for each validation failure.
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set
 
 logger_name = "pupyteer.profiles.validator"
 

@@ -23,7 +23,6 @@ import time
 from typing import Any, Dict, List, Optional
 
 from pupyteer.server.sessions.capabilities import DEFAULT_MAX_LINE
-from pupyteer.server.sessions.manager import SessionState
 from pupyteer.server.sessions import transfer
 
 logger = logging.getLogger("pupyteer.tui.commands.sessions")

@@ -39,7 +39,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 try:
-    from jinja2 import Environment, BaseLoader, TemplateError
+    from jinja2 import Environment, BaseLoader
 
     def _do_render(template_src: str, ctx: dict) -> str:
         env = Environment(loader=BaseLoader(), autoescape=False, keep_trailing_newline=True)
