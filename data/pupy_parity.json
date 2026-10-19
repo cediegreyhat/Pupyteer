@@ -1,0 +1,551 @@
+{
+  "generated_from": "github.com/n1nj4sec/pupy @ pupy/modules + pupy/commands",
+  "pupy_module_count": 122,
+  "pupy_command_count": 16,
+  "pupyteer_module_count": 29,
+  "classification_counts": {
+    "AGENT_ACTION": 12,
+    "PY_DEP": 58,
+    "NATIVE": 38,
+    "PRESENT": 14
+  },
+  "pupyteer_modules": [
+    "assess",
+    "cat",
+    "credential_collect",
+    "discovery",
+    "download",
+    "evasion_config",
+    "evasion_test",
+    "exec",
+    "file_list",
+    "lateral_sim",
+    "migrate",
+    "netinfo",
+    "ping",
+    "post_cron",
+    "post_env",
+    "post_http_fetch",
+    "post_listeners",
+    "post_portscan",
+    "post_routes",
+    "post_shell_history",
+    "post_ssh_keys",
+    "post_sudo",
+    "post_suid",
+    "privesc",
+    "ps",
+    "screenshot",
+    "search",
+    "sysinfo",
+    "upload"
+  ],
+  "pupy_commands": [
+    "config",
+    "connect",
+    "creds",
+    "dnscnc",
+    "exit",
+    "exposed",
+    "gen",
+    "help",
+    "jobs",
+    "listen",
+    "logging",
+    "python",
+    "restart",
+    "run",
+    "sessions",
+    "tag"
+  ],
+  "modules": [
+    {
+      "name": "ad",
+      "class": "AGENT_ACTION"
+    },
+    {
+      "name": "alive",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "apps",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "become",
+      "class": "AGENT_ACTION"
+    },
+    {
+      "name": "beroot",
+      "class": "NATIVE"
+    },
+    {
+      "name": "bypassuac",
+      "class": "NATIVE"
+    },
+    {
+      "name": "call",
+      "class": "AGENT_ACTION"
+    },
+    {
+      "name": "cat",
+      "class": "PRESENT"
+    },
+    {
+      "name": "cd",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "check_vm",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "clear_logs",
+      "class": "PRESENT"
+    },
+    {
+      "name": "cloudinfo",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "contacts",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "cp",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "credcap",
+      "class": "NATIVE"
+    },
+    {
+      "name": "creddump",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "date",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "display",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "dns",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "download",
+      "class": "PRESENT"
+    },
+    {
+      "name": "drives",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "duplicate",
+      "class": "NATIVE"
+    },
+    {
+      "name": "echo",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "edit",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "env",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "exit",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "exploit_suggester",
+      "class": "AGENT_ACTION"
+    },
+    {
+      "name": "forward",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "get_hwuuid",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "get_info",
+      "class": "PRESENT"
+    },
+    {
+      "name": "getdomain",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "getpid",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "getppid",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "getprivs",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "getsystem",
+      "class": "NATIVE"
+    },
+    {
+      "name": "getuid",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "gpstracker",
+      "class": "NATIVE"
+    },
+    {
+      "name": "hashmon",
+      "class": "NATIVE"
+    },
+    {
+      "name": "hide_process",
+      "class": "NATIVE"
+    },
+    {
+      "name": "http",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "igd",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "impersonate",
+      "class": "NATIVE"
+    },
+    {
+      "name": "interactive_shell",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "inveigh",
+      "class": "NATIVE"
+    },
+    {
+      "name": "ip",
+      "class": "PRESENT"
+    },
+    {
+      "name": "isearch",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "keylogger",
+      "class": "NATIVE"
+    },
+    {
+      "name": "last",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "lazagne",
+      "class": "NATIVE"
+    },
+    {
+      "name": "linux_stealth",
+      "class": "NATIVE"
+    },
+    {
+      "name": "load_package",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "lock_screen",
+      "class": "NATIVE"
+    },
+    {
+      "name": "logs",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "loot_memory",
+      "class": "NATIVE"
+    },
+    {
+      "name": "ls",
+      "class": "PRESENT"
+    },
+    {
+      "name": "mapped",
+      "class": "NATIVE"
+    },
+    {
+      "name": "memory_exec",
+      "class": "NATIVE"
+    },
+    {
+      "name": "memstrings",
+      "class": "NATIVE"
+    },
+    {
+      "name": "migrate",
+      "class": "PRESENT"
+    },
+    {
+      "name": "mimikatz",
+      "class": "PRESENT"
+    },
+    {
+      "name": "mimipy",
+      "class": "NATIVE"
+    },
+    {
+      "name": "mimishell",
+      "class": "AGENT_ACTION"
+    },
+    {
+      "name": "mkdir",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "mouselogger",
+      "class": "NATIVE"
+    },
+    {
+      "name": "msgbox",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "mv",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "nbnsspoof",
+      "class": "NATIVE"
+    },
+    {
+      "name": "netcreds",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "netmon",
+      "class": "NATIVE"
+    },
+    {
+      "name": "netstat",
+      "class": "AGENT_ACTION"
+    },
+    {
+      "name": "odbc",
+      "class": "NATIVE"
+    },
+    {
+      "name": "outlook",
+      "class": "NATIVE"
+    },
+    {
+      "name": "persistence",
+      "class": "PRESENT"
+    },
+    {
+      "name": "pexec",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "pipecatcher",
+      "class": "NATIVE"
+    },
+    {
+      "name": "port_scan",
+      "class": "AGENT_ACTION"
+    },
+    {
+      "name": "portfwd",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "powerview",
+      "class": "NATIVE"
+    },
+    {
+      "name": "privesc_checker",
+      "class": "AGENT_ACTION"
+    },
+    {
+      "name": "process_kill",
+      "class": "AGENT_ACTION"
+    },
+    {
+      "name": "ps",
+      "class": "PRESENT"
+    },
+    {
+      "name": "psexec",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "psh",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "pwd",
+      "class": "AGENT_ACTION"
+    },
+    {
+      "name": "pyexec",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "pyshell",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "pywerview",
+      "class": "NATIVE"
+    },
+    {
+      "name": "rdesktop",
+      "class": "NATIVE"
+    },
+    {
+      "name": "rdp",
+      "class": "NATIVE"
+    },
+    {
+      "name": "record_mic",
+      "class": "NATIVE"
+    },
+    {
+      "name": "reg",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "rfs",
+      "class": "NATIVE"
+    },
+    {
+      "name": "rm",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "rwmic",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "scapy_shell",
+      "class": "NATIVE"
+    },
+    {
+      "name": "screenshot",
+      "class": "PRESENT"
+    },
+    {
+      "name": "search",
+      "class": "PRESENT"
+    },
+    {
+      "name": "services",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "shares",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "shell_exec",
+      "class": "PRESENT"
+    },
+    {
+      "name": "shellcode_exec",
+      "class": "NATIVE"
+    },
+    {
+      "name": "smb",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "smbspider",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "socks5proxy",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "ssh",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "sshell",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "stat",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "sudo_alias",
+      "class": "AGENT_ACTION"
+    },
+    {
+      "name": "tasks",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "tcpdump",
+      "class": "NATIVE"
+    },
+    {
+      "name": "text_to_speach",
+      "class": "NATIVE"
+    },
+    {
+      "name": "ttyrec",
+      "class": "AGENT_ACTION"
+    },
+    {
+      "name": "upload",
+      "class": "PRESENT"
+    },
+    {
+      "name": "users",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "usniper",
+      "class": "NATIVE"
+    },
+    {
+      "name": "vibrate",
+      "class": "NATIVE"
+    },
+    {
+      "name": "w",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "webcamsnap",
+      "class": "NATIVE"
+    },
+    {
+      "name": "wmic",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "write",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "x509",
+      "class": "PY_DEP"
+    },
+    {
+      "name": "zip",
+      "class": "PY_DEP"
+    }
+  ]
+}
