@@ -14,9 +14,9 @@ Regenerate by re-running the inventory against `pupy/modules` + `pupy/commands`.
 |---|---|
 | Upstream Pupy modules | **122** |
 | Upstream Pupy console commands | **16** |
-| Pupyteer registered modules | **30** |
-| Already covered | 15 |
-| Not yet ported | 107 |
+| Pupyteer registered modules | **31** |
+| Already covered | 16 |
+| Not yet ported | 106 |
 
 Parity is the goal; this table is the honest distance to it.
 
@@ -25,14 +25,14 @@ Parity is the goal; this table is the honest distance to it.
 Each upstream module falls into one of four buckets. The bucket decides the
 work, the risk, and which agent it can ever run on.
 
-### PRESENT — 15
+### PRESENT — 16
 Pupyteer already provides the capability, possibly under a different name
 (Pupy `ls` → Pupyteer `file_list`, Pupy `get_info` → `sysinfo`,
 Pupy `clear_logs` → `log_clear`).
 
 `cat`, `clear_logs`, `download`, `get_info`, `ip`, `ls`, `migrate`, `mimikatz`, `persistence`, `ps`, `screenshot`, `search`, `shell_exec`, `upload`
 
-### AGENT_ACTION — 12
+### AGENT_ACTION — 11
 Needs a new action on the implant. This is the **highest-risk** bucket: an action
 must be added to `agent/core/stub.py` **and** `agent/core/pe_template.c` **and**
 the `CAPABILITIES` list, or the listener refuses the task as undeclared. Editing
@@ -72,6 +72,7 @@ Upstream Pupy console commands, for parity tracking on the operator side
 | `cat` | `pupy/modules/cat.py` | Wraps `fs_get`; no agent change |
 | `search` | `pupy/modules/search.py`, `isearch.py` | Server-side BFS over `fs_list` |
 | `stat` | `pupy/modules/stat.py` | Derived from `fs_list` of the parent; no agent change |
+| `netstat` | `pupy/modules/netstat.py` | New action: declared in `capabilities.py`, **both** agents, and a module |
 
 ## Suggested tranche order
 

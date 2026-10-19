@@ -2,11 +2,11 @@
   "generated_from": "github.com/n1nj4sec/pupy @ pupy/modules + pupy/commands",
   "pupy_module_count": 122,
   "pupy_command_count": 16,
-  "pupyteer_module_count": 30,
+  "pupyteer_module_count": 31,
   "classification_counts": {
-    "AGENT_ACTION": 12,
+    "AGENT_ACTION": 11,
     "NATIVE": 38,
-    "PRESENT": 15,
+    "PRESENT": 16,
     "PY_DEP": 57
   },
   "pupyteer_modules": [
@@ -338,7 +338,7 @@
     },
     {
       "name": "netstat",
-      "class": "AGENT_ACTION"
+      "class": "PRESENT"
     },
     {
       "name": "odbc",

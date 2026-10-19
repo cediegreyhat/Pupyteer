@@ -458,3 +458,44 @@ class AssessmentUtilityModule(PupyModule):
             "check": check,
             "findings": [],
         }
+
+
+class NetstatModule(PupyModule):
+    """List network connections on the target.
+
+    Upstream Pupy's ``netstat``. The implant answers in whichever shape its host
+    allowed — parsed connections, or the raw text of the host's own netstat — so
+    both are surfaced rather than forcing one shape and inventing the other.
+    """
+
+    name = "netstat"
+    version = "1.0.0"
+    description = "List network connections on the target"
+    author = "Pupyteer Team"
+    category = ModuleCategory.RECON
+
+    async def execute(self, session: Any, args: Dict[str, Any]) -> Dict[str, Any]:
+        session_mgr = getattr(self, "_session_manager", None)
+        if not session_mgr:
+            return _no_agent(session)
+
+        reply = await transfer.run_action(
+            session_mgr, session.session_id, {"action": "netstat"},
+            timeout=_command_timeout(args))
+        if reply.get("error"):
+            return {"status": "error", "error": reply["error"]}
+
+        output = reply.get("output")
+        connections = reply.get("connections")
+        if not output and connections is None:
+            return {
+                "status": "error",
+                "error": f"agent returned no connection listing: {str(reply)[:200]}",
+            }
+        result: Dict[str, Any] = {"status": "ok", "source": reply.get("source")}
+        if connections is not None:
+            result["connections"] = connections
+            result["count"] = reply.get("count", len(connections))
+        if output:
+            result["output"] = output
+        return result
