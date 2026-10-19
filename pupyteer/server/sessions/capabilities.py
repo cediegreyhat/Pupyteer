@@ -68,6 +68,8 @@ TYPED_VERBS: Dict[str, str] = {
     "sysinfo": "sysinfo",
     "network": "network",
     "netstat": "netstat",
+    "kill": "process_kill",
+    "process_kill": "process_kill",
     "ps": "processes",
     "processes": "processes",
     "fs_list": "fs_list",

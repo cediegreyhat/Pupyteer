@@ -2,11 +2,11 @@
   "generated_from": "github.com/n1nj4sec/pupy @ pupy/modules + pupy/commands",
   "pupy_module_count": 122,
   "pupy_command_count": 16,
-  "pupyteer_module_count": 31,
+  "pupyteer_module_count": 32,
   "classification_counts": {
-    "AGENT_ACTION": 11,
+    "AGENT_ACTION": 10,
     "NATIVE": 38,
-    "PRESENT": 16,
+    "PRESENT": 17,
     "PY_DEP": 57
   },
   "pupyteer_modules": [
@@ -378,7 +378,7 @@
     },
     {
       "name": "process_kill",
-      "class": "AGENT_ACTION"
+      "class": "PRESENT"
     },
     {
       "name": "ps",

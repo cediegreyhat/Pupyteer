@@ -1221,7 +1221,7 @@ static int handle_register(SOCKET s) {
              "\"os\":\"windows\",\"arch\":\"x64\",\"username\":\"%s\","
              "\"agent_version\":\"%s\","
              "\"capabilities\":[\"exec\",\"ping\",\"sysinfo\",\"processes\","
-             "\"network\",\"netstat\",\"fs_list\",\"fs_get\",\"fs_put\",\"shutdown\"],"
+             "\"network\",\"netstat\",\"process_kill\",\"fs_list\",\"fs_get\",\"fs_put\",\"shutdown\"],"
              "\"max_line\":%d}",
              escaped_auth, escaped_host, escaped_user, g_agent_version,
              RECV_BUF_SIZE);
@@ -1806,6 +1806,16 @@ static int handle_action(SOCKET s, const char *task, const char *action, const c
     if (!strcmp(action, "shutdown")) {
         g_quit = 1;
         return send_literal(s, cmd_id, "{\"ok\":true,\"shutting_down\":true}");
+    }
+
+    /* Takes an argument, so shell_for() cannot carry it. */
+    if (!strcmp(action, "process_kill")) {
+        long long pid = 0;
+        if (!json_get_int(task, "pid", &pid) || pid <= 0)
+            return send_error(s, cmd_id, "process_kill needs a pid");
+        char kill_cmd[64];
+        snprintf(kill_cmd, sizeof(kill_cmd), "taskkill /F /PID %lld", pid);
+        return send_output(s, kill_cmd, cmd_id);
     }
 
     if (!strcmp(action, "exec")) {

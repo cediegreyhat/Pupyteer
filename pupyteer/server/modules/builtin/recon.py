@@ -499,3 +499,54 @@ class NetstatModule(PupyModule):
         if output:
             result["output"] = output
         return result
+
+
+class ProcessKillModule(PupyModule):
+    """Terminate a process on the target, by pid or by name.
+
+    Upstream Pupy's ``process_kill``. Destructive, so it reports success only on
+    the agent's explicit confirmation that the process is gone; a reply that is
+    merely well-formed is an error, because an operator who believes a process
+    is dead and is wrong draws the wrong conclusion about the host.
+    """
+
+    name = "process_kill"
+    version = "1.0.0"
+    description = "Terminate a process on the target (pid or name)"
+    author = "Pupyteer Team"
+    category = ModuleCategory.EXECUTION
+
+    async def execute(self, session: Any, args: Dict[str, Any]) -> Dict[str, Any]:
+        pid = args.get("pid")
+        name = str(args.get("name", "")).strip()
+        if not pid and not name:
+            return {"status": "error", "error": "a pid or a name is required"}
+
+        session_mgr = getattr(self, "_session_manager", None)
+        if not session_mgr:
+            return _no_agent(session)
+
+        task: Dict[str, Any] = {"action": "process_kill"}
+        if pid:
+            try:
+                task["pid"] = int(pid)
+            except (TypeError, ValueError):
+                return {"status": "error", "error": f"pid must be a number, got {pid!r}"}
+        if name:
+            task["name"] = name
+
+        reply = await transfer.run_action(
+            session_mgr, session.session_id, task, timeout=_command_timeout(args))
+        if reply.get("error"):
+            return {"status": "error", "error": reply["error"]}
+        if not reply.get("killed"):
+            return {
+                "status": "error",
+                "error": f"the agent did not confirm the kill: {str(reply)[:200]}",
+            }
+        return {"status": "ok", "pid": reply.get("pid"), "killed": True}
+
+    def validate_args(self, args: Dict[str, Any]) -> list[str]:
+        if not args.get("pid") and not str(args.get("name", "")).strip():
+            return ["Missing required argument: pid or name"]
+        return []
