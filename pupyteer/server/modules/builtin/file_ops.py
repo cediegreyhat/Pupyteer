@@ -10,6 +10,7 @@ Ported so far:
     cat     — read a remote file as text        (upstream pupy/modules/cat.py)
     search  — recursive filename search         (upstream pupy/modules/search.py,
                                                  isearch.py)
+    stat    — metadata for one remote path      (upstream pupy/modules/stat.py)
 
 ``cat`` needs no agent change: the implant already declares ``fs_get``, so this
 is a server-side wrapper that turns the agent's base64 blob into text an
@@ -179,4 +180,80 @@ class SearchModule(PupyModule):
     def validate_args(self, args: Dict[str, Any]) -> list[str]:
         if not str(args.get("pattern", "")).strip():
             return ["Missing required argument: pattern"]
+        return []
+
+
+class StatModule(PupyModule):
+    """Report metadata for a single remote path.
+
+    Upstream Pupy's ``stat``. The implant declares no ``stat`` action, but it
+    does answer ``fs_list`` for a directory, so this is derivable server-side:
+    list the parent and pick out the named entry.
+
+    That keeps it out of the agent contract entirely — no new action, no
+    ``CAPABILITIES`` change, and no risk of the two agents drifting apart. It
+    costs one directory listing, which is the right trade for an action that
+    would otherwise have to be implemented twice (Python and C).
+    """
+
+    name = "stat"
+    version = "1.0.0"
+    description = "Report metadata for a single remote path"
+    author = "Pupyteer Team"
+    category = ModuleCategory.FILE_OPS
+
+    async def execute(self, session: Any, args: Dict[str, Any]) -> Dict[str, Any]:
+        path = str(args.get("path", "")).strip()
+        if not path:
+            return {"status": "error", "error": "path is required"}
+
+        session_mgr = getattr(self, "_session_manager", None)
+        if not session_mgr:
+            return _no_agent(session)
+
+        # Split on the path's own separator: the target may be Windows while
+        # this server runs on Linux.
+        sep = "\\" if "\\" in path else "/"
+        trimmed = path.rstrip("/\\")
+        parent, _, name = trimmed.rpartition(sep)
+        if not parent:
+            parent = sep
+        if not name:
+            return {"status": "error", "error": f"cannot stat {path}", "path": path}
+
+        reply = await transfer.run_action(
+            session_mgr, session.session_id, {"action": "fs_list", "path": parent},
+            timeout=_command_timeout(args))
+        if reply.get("error"):
+            return {"status": "error", "error": reply["error"], "path": path}
+
+        entries = reply.get("entries")
+        if not isinstance(entries, list):
+            return {
+                "status": "error",
+                "error": f"agent sent no listing for {parent}",
+                "path": path,
+            }
+
+        for entry in entries:
+            if isinstance(entry, dict) and str(entry.get("name", "")) == name:
+                return {
+                    "status": "ok",
+                    "path": path,
+                    "name": name,
+                    "is_file": bool(entry.get("is_file")),
+                    "is_dir": bool(entry.get("is_dir")),
+                    "size": entry.get("size"),
+                    "mtime": entry.get("mtime"),
+                }
+
+        return {
+            "status": "error",
+            "error": f"{name} is not in the listing for {parent}",
+            "path": path,
+        }
+
+    def validate_args(self, args: Dict[str, Any]) -> list[str]:
+        if not str(args.get("path", "")).strip():
+            return ["Missing required argument: path"]
         return []

@@ -268,3 +268,86 @@ def test_search_reports_an_unreadable_directory_instead_of_hiding_it(config, aud
 
     assert result["status"] == "ok"
     assert result["errors"] and "locked" in result["errors"][0]
+
+
+# ─── Slice 3: stat ───────────────────────────────────────────────────
+# Upstream reference: pupy/modules/stat.py
+# Metadata for one remote path. The agent has no `stat` action, but it does
+# answer fs_list for a directory, so this is derivable server-side: list the
+# parent and pick out the named entry. No agent change, no contract risk.
+
+
+def test_stat_returns_metadata_for_a_named_entry(config, audit, monkeypatch):
+    _search_manager(monkeypatch)  # serves TREE via fs_list
+
+    from pupyteer.server.modules.builtin.file_ops import StatModule
+
+    mod = StatModule(config, audit)
+    mod._session_manager = TreeSessionManager(TREE)
+
+    result = asyncio.run(mod.execute(FakeSession(), {"path": "/root/notes.txt"}))
+
+    assert result["status"] == "ok"
+    assert result["path"] == "/root/notes.txt"
+    assert result["name"] == "notes.txt"
+    assert result["is_file"] is True
+    assert result["is_dir"] is False
+    assert result["size"] == 10
+
+
+def test_stat_only_lists_the_parent_directory(config, audit, monkeypatch):
+    """It must ask for the parent, not walk the tree."""
+    mgr = _search_manager(monkeypatch)
+
+    from pupyteer.server.modules.builtin.file_ops import StatModule
+
+    mod = StatModule(config, audit)
+    mod._session_manager = mgr
+
+    asyncio.run(mod.execute(FakeSession(), {"path": "/root/sub/deep_passwords.txt"}))
+
+    assert mgr.calls == [{"action": "fs_list", "path": "/root/sub"}]
+
+
+def test_stat_errors_when_the_entry_is_absent_from_its_parent(config, audit, monkeypatch):
+    """A missing file is an error, not a zero-byte success."""
+    _search_manager(monkeypatch)
+
+    from pupyteer.server.modules.builtin.file_ops import StatModule
+
+    mod = StatModule(config, audit)
+    mod._session_manager = TreeSessionManager(TREE)
+
+    result = asyncio.run(mod.execute(FakeSession(), {"path": "/root/ghost.txt"}))
+
+    assert result["status"] == "error"
+    assert "ghost.txt" in result["error"]
+
+
+def test_stat_requires_a_path(config, audit, monkeypatch):
+    mgr = _search_manager(monkeypatch)
+
+    from pupyteer.server.modules.builtin.file_ops import StatModule
+
+    mod = StatModule(config, audit)
+    mod._session_manager = mgr
+
+    result = asyncio.run(mod.execute(FakeSession(), {}))
+
+    assert result["status"] == "error"
+    assert "path" in result["error"].lower()
+    assert mgr.calls == []
+
+
+def test_stat_propagates_an_agent_error(config, audit, monkeypatch):
+    mgr = _search_manager(monkeypatch)
+
+    from pupyteer.server.modules.builtin.file_ops import StatModule
+
+    mod = StatModule(config, audit)
+    mod._session_manager = mgr
+
+    result = asyncio.run(mod.execute(FakeSession(), {"path": "/nope/thing.txt"}))
+
+    assert result["status"] == "error"
+    assert "/nope" in result["error"]

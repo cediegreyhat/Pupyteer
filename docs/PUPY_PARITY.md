@@ -14,9 +14,9 @@ Regenerate by re-running the inventory against `pupy/modules` + `pupy/commands`.
 |---|---|
 | Upstream Pupy modules | **122** |
 | Upstream Pupy console commands | **16** |
-| Pupyteer registered modules | **29** |
-| Already covered | 14 |
-| Not yet ported | 108 |
+| Pupyteer registered modules | **30** |
+| Already covered | 15 |
+| Not yet ported | 107 |
 
 Parity is the goal; this table is the honest distance to it.
 
@@ -25,7 +25,7 @@ Parity is the goal; this table is the honest distance to it.
 Each upstream module falls into one of four buckets. The bucket decides the
 work, the risk, and which agent it can ever run on.
 
-### PRESENT — 14
+### PRESENT — 15
 Pupyteer already provides the capability, possibly under a different name
 (Pupy `ls` → Pupyteer `file_list`, Pupy `get_info` → `sysinfo`,
 Pupy `clear_logs` → `log_clear`).
@@ -43,7 +43,7 @@ side lands they are straightforwardly testable.
 
 `ad`, `become`, `call`, `exploit_suggester`, `mimishell`, `netstat`, `port_scan`, `privesc_checker`, `process_kill`, `pwd`, `sudo_alias`, `ttyrec`
 
-### PY_DEP — 58
+### PY_DEP — 57
 Needs Pupy's vendored Python dependency tree (`pupy/packages/*`: impacket,
 paramiko, scapy, crypto) shipped inside the generated payload. **Reachable only
 from the Python agent** — `pe_template.c` is a compiled C binary with no
@@ -71,6 +71,7 @@ Upstream Pupy console commands, for parity tracking on the operator side
 |---|---|---|
 | `cat` | `pupy/modules/cat.py` | Wraps `fs_get`; no agent change |
 | `search` | `pupy/modules/search.py`, `isearch.py` | Server-side BFS over `fs_list` |
+| `stat` | `pupy/modules/stat.py` | Derived from `fs_list` of the parent; no agent change |
 
 ## Suggested tranche order
 

@@ -2,12 +2,12 @@
   "generated_from": "github.com/n1nj4sec/pupy @ pupy/modules + pupy/commands",
   "pupy_module_count": 122,
   "pupy_command_count": 16,
-  "pupyteer_module_count": 29,
+  "pupyteer_module_count": 30,
   "classification_counts": {
     "AGENT_ACTION": 12,
-    "PY_DEP": 58,
     "NATIVE": 38,
-    "PRESENT": 14
+    "PRESENT": 15,
+    "PY_DEP": 57
   },
   "pupyteer_modules": [
     "assess",
@@ -37,6 +37,7 @@
     "ps",
     "screenshot",
     "search",
+    "stat",
     "sysinfo",
     "upload"
   ],
@@ -485,7 +486,7 @@
     },
     {
       "name": "stat",
-      "class": "PY_DEP"
+      "class": "PRESENT"
     },
     {
       "name": "sudo_alias",
