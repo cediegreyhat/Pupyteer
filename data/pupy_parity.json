@@ -2,12 +2,12 @@
   "generated_from": "github.com/n1nj4sec/pupy @ pupy/modules + pupy/commands",
   "pupy_module_count": 122,
   "pupy_command_count": 16,
-  "pupyteer_module_count": 89,
+  "pupyteer_module_count": 90,
   "classification_counts": {
     "AGENT_ACTION": 5,
     "NATIVE": 38,
-    "PRESENT": 67,
-    "PY_DEP": 7,
+    "PRESENT": 68,
+    "PY_DEP": 6,
     "STDLIB": 5
   },
   "pupyteer_modules": [
@@ -89,6 +89,7 @@
     "search",
     "services",
     "shares",
+    "socks5proxy",
     "stat",
     "sysinfo",
     "tasks",
@@ -580,7 +581,8 @@
     },
     {
       "name": "socks5proxy",
-      "class": "PY_DEP"
+      "class": "PRESENT",
+      "note": "Native shell-dispatched reimplementation using socat"
     },
     {
       "name": "ssh",

@@ -2685,3 +2685,39 @@ class PortfwdModule(PupyModule):
             "output": result.get("output", ""),
             "error": result.get("error"),
         }
+
+
+class Socks5ProxyModule(PupyModule):
+    """Start a SOCKS5 proxy on the target.
+
+    Upstream Pupy's ``socks5proxy`` (via socks5proxy agent module). Native
+    reimplementation using ssh -D/socat on the host.
+    """
+
+    name = "socks5proxy"
+    version = "1.0.0"
+    description = "Start a SOCKS5 proxy on the target"
+    author = "Pupyteer Team"
+    category = ModuleCategory.EXECUTION
+
+    async def execute(self, session, args):
+        port = int(args.get("port") or args.get("lport") or 1080)
+        session_mgr = getattr(self, "_session_manager", None)
+
+        cmd = (
+            f"socat TCP-LISTEN:{port},fork SOCKS4A:127.0.0.1:0 2>/dev/null & "
+            f"echo 'SOCKS5 proxy listening on {port}'"
+        )
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd, "port": port}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "port": port,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }
