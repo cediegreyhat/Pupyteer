@@ -2581,3 +2581,55 @@ class PyshellModule(PupyModule):
         if not (args.get("code") or args.get("script")):
             return ["Missing required argument: code"]
         return []
+
+
+class PexecModule(PupyModule):
+    """Execute a command on a remote host.
+
+    Upstream Pupy's ``pexec`` (via pexec agent module). Native
+    reimplementation using psexec/wmiexec/ssh on the host.
+    """
+
+    name = "pexec"
+    version = "1.0.0"
+    description = "Execute a command on a remote host"
+    author = "Pupyteer Team"
+    category = ModuleCategory.EXECUTION
+
+    async def execute(self, session, args):
+        target = str(args.get("target") or args.get("host") or "").strip()
+        if not target:
+            return {"status": "error", "error": "target argument is required"}
+        command = str(args.get("command") or args.get("cmd") or "").strip()
+        if not command:
+            return {"status": "error", "error": "command argument is required"}
+        user = str(args.get("user") or "").strip()
+        password = str(args.get("password") or "").strip()
+
+        session_mgr = getattr(self, "_session_manager", None)
+
+        if user and password:
+            cmd = f'psexec \\{target} -u {user} -p {password} {command} 2>/dev/null || wmiexec.py {user}:{password}@{target} "{command}"'
+        else:
+            cmd = f'ssh {target} "{command}" 2>/dev/null || echo "provide credentials or ssh key"'
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd, "target": target}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "target": target,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }
+
+    def validate_args(self, args):
+        errs = []
+        if not (args.get("target") or args.get("host")):
+            errs.append("Missing required argument: target")
+        if not (args.get("command") or args.get("cmd")):
+            errs.append("Missing required argument: command")
+        return errs

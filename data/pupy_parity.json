@@ -2,12 +2,12 @@
   "generated_from": "github.com/n1nj4sec/pupy @ pupy/modules + pupy/commands",
   "pupy_module_count": 122,
   "pupy_command_count": 16,
-  "pupyteer_module_count": 87,
+  "pupyteer_module_count": 88,
   "classification_counts": {
     "AGENT_ACTION": 5,
     "NATIVE": 38,
-    "PRESENT": 65,
-    "PY_DEP": 9,
+    "PRESENT": 66,
+    "PY_DEP": 8,
     "STDLIB": 5
   },
   "pupyteer_modules": [
@@ -60,6 +60,7 @@
     "netcreds",
     "netinfo",
     "netstat",
+    "pexec",
     "ping",
     "post_cron",
     "post_env",
@@ -446,7 +447,8 @@
     },
     {
       "name": "pexec",
-      "class": "PY_DEP"
+      "class": "PRESENT",
+      "note": "Native shell-dispatched reimplementation using psexec/wmiexec/ssh"
     },
     {
       "name": "pipecatcher",
