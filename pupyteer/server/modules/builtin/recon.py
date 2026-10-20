@@ -2373,3 +2373,52 @@ class SharesModule(PupyModule):
             "output": result.get("output", ""),
             "error": result.get("error"),
         }
+
+
+class RwmicModule(PupyModule):
+    """Run WMI commands on a remote target.
+
+    Upstream Pupy's ``rwmic`` (via rwmic agent module). Native
+    reimplementation using wmic/Invoke-WmiMethod on the host.
+    """
+
+    name = "rwmic"
+    version = "1.0.0"
+    description = "Run WMI commands on a remote target"
+    author = "Pupyteer Team"
+    category = ModuleCategory.EXECUTION
+
+    async def execute(self, session, args):
+        target = str(args.get("target") or args.get("host") or "").strip()
+        if not target:
+            return {"status": "error", "error": "target argument is required"}
+        query = str(args.get("query") or args.get("command") or "SELECT * FROM Win32_OperatingSystem").strip()
+        user = str(args.get("user") or "").strip()
+        password = str(args.get("password") or "").strip()
+
+        session_mgr = getattr(self, "_session_manager", None)
+        os_name = getattr(session, "os", "").lower()
+
+        if "win" in os_name:
+            auth = f' /user:"{user}" /password:"{password}"' if user else ""
+            cmd = f'wmic /node:"{target}"{auth} {query}'
+        else:
+            cmd = f'echo "rwmic requires Windows host; use wmic via wine or impacket"'
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd, "target": target}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "target": target,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }
+
+    def validate_args(self, args):
+        if not (args.get("target") or args.get("host")):
+            return ["Missing required argument: target"]
+        return []
