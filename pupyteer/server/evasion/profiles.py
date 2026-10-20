@@ -185,6 +185,29 @@ PROFILE_STEALTH_FULL = TestConfigurationProfile(
 )
 
 
+PROFILE_NETWORK_EVASION = TestConfigurationProfile(
+    name="network_evasion",
+    description="Network-focused evasion: encrypted C2 channel, domain fronting, traffic shaping",
+    obfuscation=ObfuscationConfig(
+        scheme=EncodingScheme.AES_GCM,
+        xor_key_size=32,
+        aes_key_size=32,
+        encrypt_strings=True,
+        obfuscate_imports=True,
+        randomize_pe_sections=True,
+        strip_pe_debug=True,
+        modify_pe_timestamp=True,
+        anti_sandbox=True,
+        anti_debug=True,
+        anti_vm=True,
+        injection_enabled=False,
+        injection_method="",
+    ),
+    controls=["firewall", "ids", "ips", "proxy", "dpi", "nta"],
+    tags=["network", "c2", "traffic", "modern"],
+)
+
+
 # Registry of all built-in profiles
 BUILTIN_PROFILES: Dict[str, TestConfigurationProfile] = {
     p.name: p for p in [
@@ -194,6 +217,7 @@ BUILTIN_PROFILES: Dict[str, TestConfigurationProfile] = {
         PROFILE_ANTI_ANALYSIS,
         PROFILE_ANTI_INJECTION,
         PROFILE_STEALTH_FULL,
+        PROFILE_NETWORK_EVASION,
     ]
 }
 
