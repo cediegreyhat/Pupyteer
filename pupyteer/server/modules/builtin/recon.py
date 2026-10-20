@@ -1993,3 +1993,56 @@ class EchoModule(PupyModule):
         if not args.get("host"):
             return ["Missing required argument: host"]
         return []
+
+
+class ISearchModule(PupyModule):
+    """Indexed search for files on the target.
+
+    Upstream Pupy's ``isearch`` (via isearch agent module). Native
+    reimplementation using find/grep.
+    """
+
+    name = "isearch"
+    version = "1.0.0"
+    description = "Indexed search for files by name/content on the target"
+    author = "Pupyteer Team"
+    category = ModuleCategory.RECON
+
+    async def execute(self, session, args):
+        pattern = str(args.get("pattern") or args.get("query") or "").strip()
+        if not pattern:
+            return {"status": "error", "error": "pattern argument is required"}
+        path = str(args.get("path") or ".").strip()
+        kind = str(args.get("kind") or "name").lower().strip()
+
+        session_mgr = getattr(self, "_session_manager", None)
+        os_name = getattr(session, "os", "").lower()
+
+        if "win" in os_name:
+            if kind == "content":
+                cmd = f'findstr /s /i /m "{pattern}" "{path}\\*" 2>nul'
+            else:
+                cmd = f'dir /s /b "{path}\\*{pattern}*" 2>nul'
+        else:
+            if kind == "content":
+                cmd = f'grep -rl "{pattern}" "{path}" 2>/dev/null'
+            else:
+                cmd = f'find "{path}" -iname "*{pattern}*" 2>/dev/null'
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd, "pattern": pattern}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "pattern": pattern,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }
+
+    def validate_args(self, args):
+        if not (args.get("pattern") or args.get("query")):
+            return ["Missing required argument: pattern"]
+        return []
