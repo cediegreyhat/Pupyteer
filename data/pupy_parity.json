@@ -2,13 +2,13 @@
   "generated_from": "github.com/n1nj4sec/pupy @ pupy/modules + pupy/commands",
   "pupy_module_count": 122,
   "pupy_command_count": 16,
-  "pupyteer_module_count": 71,
+  "pupyteer_module_count": 72,
   "classification_counts": {
     "AGENT_ACTION": 5,
     "NATIVE": 38,
-    "PRESENT": 49,
+    "PRESENT": 50,
     "PY_DEP": 18,
-    "STDLIB": 12
+    "STDLIB": 11
   },
   "pupyteer_modules": [
     "alive",
@@ -41,6 +41,7 @@
     "getprivs",
     "getuid",
     "http",
+    "igd",
     "last",
     "lateral_sim",
     "load_package",
@@ -288,8 +289,8 @@
     },
     {
       "name": "igd",
-      "class": "STDLIB",
-      "note": "defusedxml -> stdlib xml.etree (with entity-expansion care)"
+      "class": "PRESENT",
+      "note": "Native shell-dispatched reimplementation using upnpc"
     },
     {
       "name": "impersonate",

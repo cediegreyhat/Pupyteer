@@ -1906,3 +1906,38 @@ class DisplayModule(PupyModule):
             "output": result.get("output", ""),
             "error": result.get("error"),
         }
+
+
+class IgdModule(PupyModule):
+    """Query UPnP IGD (router) configuration on the target.
+
+    Upstream Pupy's ``igd`` (via network.lib.igd). Native reimplementation
+    using upnpc/miniupnpc when available.
+    """
+
+    name = "igd"
+    version = "1.0.0"
+    description = "Query UPnP IGD router configuration on the target"
+    author = "Pupyteer Team"
+    category = ModuleCategory.RECON
+
+    async def execute(self, session, args):
+        session_mgr = getattr(self, "_session_manager", None)
+        os_name = getattr(session, "os", "").lower()
+
+        if "win" in os_name:
+            cmd = "upnpc -l 2>nul || echo 'upnpc not available'"
+        else:
+            cmd = "upnpc -l 2>/dev/null || (command -v miniupnpc >/dev/null && miniupnpc) || echo 'upnpc not available'"
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }
