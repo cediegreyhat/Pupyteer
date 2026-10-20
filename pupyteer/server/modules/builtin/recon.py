@@ -2537,3 +2537,47 @@ class PshModule(PupyModule):
         if not (args.get("command") or args.get("cmd")):
             return ["Missing required argument: command"]
         return []
+
+
+class PyshellModule(PupyModule):
+    """Run Python code on the target.
+
+    Upstream Pupy's ``pyshell`` (via pyshell agent module). Native
+    reimplementation using python on the host.
+    """
+
+    name = "pyshell"
+    version = "1.0.0"
+    description = "Run Python code on the target"
+    author = "Pupyteer Team"
+    category = ModuleCategory.EXECUTION
+
+    async def execute(self, session, args):
+        code = str(args.get("code") or args.get("script") or "").strip()
+        if not code:
+            return {"status": "error", "error": "code argument is required"}
+
+        session_mgr = getattr(self, "_session_manager", None)
+        os_name = getattr(session, "os", "").lower()
+
+        if "win" in os_name:
+            cmd = f'python -c "{code}"'
+        else:
+            cmd = f'python3 -c "{code}" 2>/dev/null || python -c "{code}"'
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }
+
+    def validate_args(self, args):
+        if not (args.get("code") or args.get("script")):
+            return ["Missing required argument: code"]
+        return []
