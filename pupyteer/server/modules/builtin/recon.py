@@ -582,3 +582,37 @@ class PwdModule(PupyModule):
                 "error": f"the agent did not report a working directory: {str(reply)[:200]}",
             }
         return {"status": "ok", "cwd": cwd, "platform": reply.get("platform")}
+
+
+class HwUuidModule(PupyModule):
+    """Report the target's hardware or installation identifier.
+
+    Upstream Pupy's ``get_hwuuid``. Classified PY_DEP in the manifest but not
+    actually blocked -- the lookup is pure stdlib, so it does not wait on the
+    package-loading mechanism.
+    """
+
+    name = "get_hwuuid"
+    version = "1.0.0"
+    description = "Report the target's hardware/installation identifier"
+    author = "Pupyteer Team"
+    category = ModuleCategory.RECON
+
+    async def execute(self, session: Any, args: Dict[str, Any]) -> Dict[str, Any]:
+        session_mgr = getattr(self, "_session_manager", None)
+        if not session_mgr:
+            return _no_agent(session)
+
+        reply = await transfer.run_action(
+            session_mgr, session.session_id, {"action": "get_hwuuid"},
+            timeout=_command_timeout(args))
+        if reply.get("error"):
+            return {"status": "error", "error": reply["error"]}
+
+        hwuuid = reply.get("hwuuid")
+        if not hwuuid:
+            return {
+                "status": "error",
+                "error": f"the agent reported no hardware identifier: {str(reply)[:200]}",
+            }
+        return {"status": "ok", "hwuuid": hwuuid, "source": reply.get("source")}

@@ -2,12 +2,12 @@
   "generated_from": "github.com/n1nj4sec/pupy @ pupy/modules + pupy/commands",
   "pupy_module_count": 122,
   "pupy_command_count": 16,
-  "pupyteer_module_count": 33,
+  "pupyteer_module_count": 34,
   "classification_counts": {
     "AGENT_ACTION": 6,
     "NATIVE": 38,
-    "PRESENT": 21,
-    "PY_DEP": 57
+    "PRESENT": 22,
+    "PY_DEP": 56
   },
   "pupyteer_modules": [
     "assess",
@@ -174,7 +174,8 @@
     },
     {
       "name": "get_hwuuid",
-      "class": "PY_DEP"
+      "class": "PRESENT",
+      "note": "PY_DEP misclassification: lookup is pure stdlib"
     },
     {
       "name": "get_info",

@@ -69,6 +69,7 @@ TYPED_VERBS: Dict[str, str] = {
     "network": "network",
     "netstat": "netstat",
     "pwd": "pwd",
+    "get_hwuuid": "get_hwuuid",
     "kill": "process_kill",
     "process_kill": "process_kill",
     "ps": "processes",

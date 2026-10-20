@@ -14,9 +14,9 @@ Regenerate by re-running the inventory against `pupy/modules` + `pupy/commands`.
 |---|---|
 | Upstream Pupy modules | **122** |
 | Upstream Pupy console commands | **16** |
-| Pupyteer registered modules | **33** |
-| Already covered | 21 |
-| Not yet ported | 101 |
+| Pupyteer registered modules | **34** |
+| Already covered | 22 |
+| Not yet ported | 100 |
 
 Parity is the goal; this table is the honest distance to it.
 
@@ -25,7 +25,7 @@ Parity is the goal; this table is the honest distance to it.
 Each upstream module falls into one of four buckets. The bucket decides the
 work, the risk, and which agent it can ever run on.
 
-### PRESENT — 21
+### PRESENT — 22
 Pupyteer already provides the capability, possibly under a different name
 (Pupy `ls` → Pupyteer `file_list`, Pupy `get_info` → `sysinfo`,
 Pupy `clear_logs` → `log_clear`).
@@ -43,7 +43,7 @@ side lands they are straightforwardly testable.
 
 `ad`, `become`, `call`, `exploit_suggester`, `mimishell`, `netstat`, `port_scan`, `privesc_checker`, `process_kill`, `pwd`, `sudo_alias`, `ttyrec`
 
-### PY_DEP — 57
+### PY_DEP — 56
 Needs Pupy's vendored Python dependency tree (`pupy/packages/*`: impacket,
 paramiko, scapy, crypto) shipped inside the generated payload. **Reachable only
 from the Python agent** — `pe_template.c` is a compiled C binary with no
@@ -75,6 +75,7 @@ Upstream Pupy console commands, for parity tracking on the operator side
 | `netstat` | `pupy/modules/netstat.py` | New action: declared in `capabilities.py`, **both** agents, and a module |
 | `process_kill` | `pupy/modules/process_kill.py` | New action taking a pid arg; C side uses `taskkill /F /PID` |
 | `pwd` | `pupy/modules/pwd.py` | New bare-verb action; the cwd was not exposed by anything else |
+| `get_hwuuid` | `pupy/modules/get_hwuuid.py` | Misclassified as PY_DEP; the lookup is pure stdlib |
 
 ### Reclassified as already covered
 

