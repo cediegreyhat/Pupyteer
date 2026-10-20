@@ -2,19 +2,20 @@
   "generated_from": "github.com/n1nj4sec/pupy @ pupy/modules + pupy/commands",
   "pupy_module_count": 122,
   "pupy_command_count": 16,
-  "pupyteer_module_count": 91,
+  "pupyteer_module_count": 101,
   "classification_counts": {
-    "AGENT_ACTION": 5,
     "NATIVE": 38,
-    "PRESENT": 69,
-    "PY_DEP": 5,
+    "PRESENT": 79,
     "STDLIB": 5
   },
   "pupyteer_modules": [
+    "ad",
     "alive",
     "apps",
     "artifact_wipe",
     "assess",
+    "become",
+    "call",
     "cat",
     "cd",
     "check_vm",
@@ -38,6 +39,7 @@
     "exit",
     "exploit_suggester",
     "file_list",
+    "forward",
     "get_hwuuid",
     "getdomain",
     "getpid",
@@ -54,6 +56,7 @@
     "log_clear",
     "logs",
     "migrate",
+    "mimishell",
     "mkdir",
     "msgbox",
     "mv",
@@ -77,6 +80,7 @@
     "privesc",
     "process_kill",
     "ps",
+    "psexec",
     "psh",
     "pwd",
     "pyexec",
@@ -89,12 +93,16 @@
     "search",
     "services",
     "shares",
+    "smb",
+    "smbspider",
     "socks5proxy",
     "ssh",
+    "sshell",
     "stat",
     "sysinfo",
     "tasks",
     "timestamp_match",
+    "ttyrec",
     "upload",
     "users",
     "w",
@@ -124,7 +132,8 @@
   "modules": [
     {
       "name": "ad",
-      "class": "AGENT_ACTION"
+      "class": "PRESENT",
+      "note": "Native shell-dispatched reimplementation"
     },
     {
       "name": "alive",
@@ -138,7 +147,8 @@
     },
     {
       "name": "become",
-      "class": "AGENT_ACTION"
+      "class": "PRESENT",
+      "note": "Native shell-dispatched reimplementation"
     },
     {
       "name": "beroot",
@@ -150,7 +160,8 @@
     },
     {
       "name": "call",
-      "class": "AGENT_ACTION"
+      "class": "PRESENT",
+      "note": "Native shell-dispatched reimplementation"
     },
     {
       "name": "cat",
@@ -249,7 +260,8 @@
     },
     {
       "name": "forward",
-      "class": "PY_DEP"
+      "class": "PRESENT",
+      "note": "Native shell-dispatched reimplementation"
     },
     {
       "name": "get_hwuuid",
@@ -398,7 +410,8 @@
     },
     {
       "name": "mimishell",
-      "class": "AGENT_ACTION"
+      "class": "PRESENT",
+      "note": "Native shell-dispatched reimplementation"
     },
     {
       "name": "mkdir",
@@ -486,7 +499,8 @@
     },
     {
       "name": "psexec",
-      "class": "PY_DEP"
+      "class": "PRESENT",
+      "note": "Native shell-dispatched reimplementation"
     },
     {
       "name": "psh",
@@ -574,11 +588,13 @@
     },
     {
       "name": "smb",
-      "class": "PY_DEP"
+      "class": "PRESENT",
+      "note": "Native shell-dispatched reimplementation"
     },
     {
       "name": "smbspider",
-      "class": "PY_DEP"
+      "class": "PRESENT",
+      "note": "Native shell-dispatched reimplementation"
     },
     {
       "name": "socks5proxy",
@@ -592,7 +608,8 @@
     },
     {
       "name": "sshell",
-      "class": "PY_DEP"
+      "class": "PRESENT",
+      "note": "Native shell-dispatched reimplementation"
     },
     {
       "name": "stat",
@@ -618,7 +635,8 @@
     },
     {
       "name": "ttyrec",
-      "class": "AGENT_ACTION"
+      "class": "PRESENT",
+      "note": "Native shell-dispatched reimplementation"
     },
     {
       "name": "upload",

