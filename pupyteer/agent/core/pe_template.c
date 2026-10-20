@@ -1222,7 +1222,7 @@ static int handle_register(SOCKET s) {
              "\"os\":\"windows\",\"arch\":\"x64\",\"username\":\"%s\","
              "\"agent_version\":\"%s\","
              "\"capabilities\":[\"exec\",\"ping\",\"sysinfo\",\"processes\","
-             "\"network\",\"netstat\",\"process_kill\",\"pwd\",\"get_hwuuid\",\"env\",\"date\",\"alive\",\"getpid\",\"getuid\",\"getppid\",\"fs_list\",\"fs_get\",\"fs_put\",\"shutdown\"],"
+             "\"network\",\"netstat\",\"process_kill\",\"pwd\",\"get_hwuuid\",\"env\",\"date\",\"alive\",\"getpid\",\"getuid\",\"getppid\",\"getdomain\",\"check_vm\",\"fs_list\",\"fs_get\",\"fs_put\",\"shutdown\"],"
              "\"max_line\":%d}",
              escaped_auth, escaped_host, escaped_user, g_agent_version,
              RECV_BUF_SIZE);
@@ -1793,6 +1793,11 @@ static const char *shell_for(const char *action) {
     if (!strcmp(action, "env")) return "set";   /* cmd prints the environment */
     if (!strcmp(action, "date")) return "date /t & time /t";
     if (!strcmp(action, "getuid")) return "whoami";
+    /* Empty on a workgroup host, which is itself a real answer. */
+    if (!strcmp(action, "getdomain")) return "echo %USERDNSDOMAIN%";
+    /* The model/manufacturer strings are what name a hypervisor. */
+    if (!strcmp(action, "check_vm"))
+        return "systeminfo | findstr /C:\"System Model\" /C:\"System Manufacturer\"";
     if (!strcmp(action, "netstat")) return "netstat -ano";
     if (!strcmp(action, "pwd")) return "cd";   /* cmd prints the cwd */
     /* wmic is deprecated on modern Windows; reg query works everywhere. */
@@ -1912,6 +1917,8 @@ static const char *bare_verb_action(const char *line) {
     if (!strcmp(word, "getpid")) return "getpid";
     if (!strcmp(word, "getuid")) return "getuid";
     if (!strcmp(word, "getppid")) return "getppid";
+    if (!strcmp(word, "getdomain")) return "getdomain";
+    if (!strcmp(word, "check_vm")) return "check_vm";
     if (!strcmp(word, "ps") || !strcmp(word, "processes")) return "processes";
     if (!strcmp(word, "fs_list")) return "fs_list";
     if (!strcmp(word, "exit") || !strcmp(word, "shutdown")) return "shutdown";

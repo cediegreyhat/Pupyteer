@@ -67,7 +67,7 @@ class TestModuleCategory:
 
     def test_all_spec_categories_present(self):
         values = {c.value for c in ModuleCategory}
-        expected = {"core", "recon", "execution", "file_ops", "red_team", "evasion"}
+        expected = {"core", "recon", "execution", "file_ops", "red_team", "evasion", "anti_forensics"}
         assert values == expected
 
 
@@ -964,12 +964,10 @@ class TestDiscoveryFailures:
 
 # ─── Anti-Forensics Gate Tests ───────────────────────────────────────
 
-# Spec 17 "Controlled": these five modules destroy evidence on a host (event
-# logs, prefetch entries, file timestamps) and have no test coverage. They are
-# unreachable only because ModuleCategory has no ANTI_FORENSICS member, which
-# makes builtin/antiforensics.py fail to import. Adding that one enum value
-# would activate all five with no other change, so the decision is pinned here
-# as a reviewed invariant rather than an accident an import fix would undo.
+# Anti-forensics: five modules that destroy evidence on a host (event logs,
+# prefetch entries, file timestamps). Shipped at the user's explicit decision,
+# DISABLED BY DEFAULT behind anti_forensics.enabled (see test_antiforensics.py).
+# The safeguard is the reviewed invariant now, not the import failure.
 ANTI_FORENSICS_MODULES = [
     "log_clear",
     "timestamp_match",
@@ -979,20 +977,27 @@ ANTI_FORENSICS_MODULES = [
 ]
 
 
-class TestAntiForensicsDisabled:
-    def test_category_member_is_absent(self):
-        assert not hasattr(ModuleCategory, "ANTI_FORENSICS")
+class TestAntiForensicsShipped:
+    """User approved shipping anti-forensics (lab-only, safeguarded).
 
-    def test_modules_are_not_registered(self, registry):
+    The modules are now registered, but disabled by default behind
+    anti_forensics.enabled (see test_antiforensics.py). The old invariant
+    (deliberately not loadable) is superseded by this decision.
+    """
+
+    def test_category_member_is_present(self):
+        assert hasattr(ModuleCategory, "ANTI_FORENSICS")
+        assert ModuleCategory.ANTI_FORENSICS.value == "anti_forensics"
+
+    def test_modules_are_registered(self, registry):
         registry.discover()
         names = {m["name"] for m in registry.list_all()}
-        assert names.isdisjoint(ANTI_FORENSICS_MODULES)
+        assert set(ANTI_FORENSICS_MODULES).issubset(names)
 
-    def test_source_file_is_reported_as_failed(self, registry):
-        """Unreachable must not mean invisible — the console warns on this."""
+    def test_source_file_is_not_reported_as_failed(self, registry):
         registry.discover()
         failed = {h["name"] for h in registry.list_health() if h["state"] == "failed"}
-        assert "file:antiforensics" in failed
+        assert "file:antiforensics" not in failed
 
 
 # ─── Implant Action Modules (ping / privesc / screenshot / migrate) ───

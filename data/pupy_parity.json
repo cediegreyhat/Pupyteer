@@ -2,27 +2,41 @@
   "generated_from": "github.com/n1nj4sec/pupy @ pupy/modules + pupy/commands",
   "pupy_module_count": 122,
   "pupy_command_count": 16,
-  "pupyteer_module_count": 42,
+  "pupyteer_module_count": 49,
   "classification_counts": {
     "AGENT_ACTION": 5,
     "NATIVE": 38,
-    "PRESENT": 25,
+    "PRESENT": 27,
     "PY_DEP": 25,
-    "STDLIB": 29
+    "STDLIB": 27
   },
   "pupyteer_modules": [
+    "alive",
+    "artifact_wipe",
     "assess",
     "cat",
+    "check_vm",
+    "cp",
     "credential_collect",
+    "date",
     "discovery",
     "download",
+    "env",
     "evasion_config",
     "evasion_test",
     "exec",
+    "exploit_suggester",
     "file_list",
+    "get_hwuuid",
+    "getdomain",
+    "getpid",
+    "getppid",
+    "getuid",
     "lateral_sim",
+    "log_clear",
     "migrate",
     "netinfo",
+    "netstat",
     "ping",
     "post_cron",
     "post_env",
@@ -34,12 +48,17 @@
     "post_ssh_keys",
     "post_sudo",
     "post_suid",
+    "prefetch_delete",
     "privesc",
+    "process_kill",
     "ps",
+    "pwd",
+    "recycle_clear",
     "screenshot",
     "search",
     "stat",
     "sysinfo",
+    "timestamp_match",
     "upload"
   ],
   "pupy_commands": [
@@ -102,8 +121,8 @@
     },
     {
       "name": "check_vm",
-      "class": "STDLIB",
-      "note": "stdlib-only upstream; no third-party tree"
+      "class": "PRESENT",
+      "note": "Server-side over agent action; stdlib-only upstream"
     },
     {
       "name": "clear_logs",
@@ -201,8 +220,8 @@
     },
     {
       "name": "getdomain",
-      "class": "STDLIB",
-      "note": "stdlib-only upstream; no third-party tree"
+      "class": "PRESENT",
+      "note": "Server-side over agent action; stdlib-only upstream"
     },
     {
       "name": "getpid",

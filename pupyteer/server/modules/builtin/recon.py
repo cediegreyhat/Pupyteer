@@ -843,3 +843,81 @@ class GetppidModule(PupyModule):
             if extra in reply:
                 result[extra] = reply[extra]
         return result
+
+
+class GetdomainModule(PupyModule):
+    """Report the DNS/AD domain the host belongs to.
+
+    Upstream Pupy's ``getdomain``. Stdlib-only upstream, so covered by the
+    native-reimplementation strategy rather than a dependency.
+    """
+
+    name = "getdomain"
+    version = "1.0.0"
+    description = "Report the DNS/AD domain the host belongs to"
+    author = "Pupyteer Team"
+    category = ModuleCategory.RECON
+
+    async def execute(self, session: Any, args: Dict[str, Any]) -> Dict[str, Any]:
+        session_mgr = getattr(self, "_session_manager", None)
+        if not session_mgr:
+            return _no_agent(session)
+
+        reply = await transfer.run_action(
+            session_mgr, session.session_id, {"action": "getdomain"},
+            timeout=_command_timeout(args))
+        if reply.get("error"):
+            return {"status": "error", "error": reply["error"]}
+
+        value = reply.get("domain")
+        # Presence, not truthiness: domain may legitimately be an empty string
+        # (workgroup) or False (not a VM), and both are real answers.
+        if value is None or value == "":
+            return {
+                "status": "error",
+                "error": f"the agent returned no answer for getdomain: {str(reply)[:200]}",
+            }
+        result: Dict[str, Any] = {"status": "ok", "domain": value}
+        for extra in ("indicators", "joined"):
+            if extra in reply:
+                result[extra] = reply[extra]
+        return result
+
+
+class CheckVmModule(PupyModule):
+    """Report whether the host looks virtualised.
+
+    Upstream Pupy's ``check_vm``. Stdlib-only upstream, so covered by the
+    native-reimplementation strategy rather than a dependency.
+    """
+
+    name = "check_vm"
+    version = "1.0.0"
+    description = "Report whether the host looks virtualised"
+    author = "Pupyteer Team"
+    category = ModuleCategory.RECON
+
+    async def execute(self, session: Any, args: Dict[str, Any]) -> Dict[str, Any]:
+        session_mgr = getattr(self, "_session_manager", None)
+        if not session_mgr:
+            return _no_agent(session)
+
+        reply = await transfer.run_action(
+            session_mgr, session.session_id, {"action": "check_vm"},
+            timeout=_command_timeout(args))
+        if reply.get("error"):
+            return {"status": "error", "error": reply["error"]}
+
+        value = reply.get("is_vm")
+        # Presence, not truthiness: is_vm may legitimately be an empty string
+        # (workgroup) or False (not a VM), and both are real answers.
+        if value is None:
+            return {
+                "status": "error",
+                "error": f"the agent returned no answer for check_vm: {str(reply)[:200]}",
+            }
+        result: Dict[str, Any] = {"status": "ok", "is_vm": value}
+        for extra in ("indicators", "joined"):
+            if extra in reply:
+                result[extra] = reply[extra]
+        return result

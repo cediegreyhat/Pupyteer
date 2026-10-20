@@ -5,12 +5,10 @@ manager's command queue via session_manager.interact(). The agent executes the
 command and reports back, at which point the session manager stores the result
 in the command queue for retrieval.
 
-NOTE: this file is deliberately not loadable — it references
-ModuleCategory.ANTI_FORENSICS, which is not defined. These modules clear event
-logs, delete prefetch entries and timestomp files, i.e. destroy evidence on a
-host, and no test exercises them. Registering them needs an explicit decision
-about that capability (and, per spec, lab-only safeguards) rather than an
-import-error fix; 'show modules' reports this file as failed on purpose.
+These modules clear event logs, delete prefetch entries and timestomp files,
+i.e. destroy evidence on a host. They are DISABLED BY DEFAULT and require an
+explicit opt-in (anti_forensics.enabled=true in config) before they will run,
+mirroring the TriGlyph 'unsafe writes' guard. Do not enable outside a lab.
 """
 from __future__ import annotations
 
@@ -62,6 +60,24 @@ async def _dispatch_command(session: Any, session_mgr: Any, command: str, timeou
     }
 
 
+def _anti_forensics_guard(config) -> "dict | None":
+    """Lab-only safeguard (mirrors TriGlyph 'unsafe writes').
+
+    Anti-forensics modules destroy evidence on a host. They are disabled by
+    default and require an explicit opt-in via ``anti_forensics.enabled``.
+    Returns an error dict when not armed, else None.
+    """
+    if config.get("anti_forensics.enabled", False):
+        return None
+    return {
+        "status": "error",
+        "error": (
+            "anti-forensics disabled by default (lab use only). "
+            "Set anti_forensics.enabled=true in config to arm it."
+        ),
+    }
+
+
 # ── Anti-Forensics ────────────────────────────────────────────────────
 
 import asyncio
@@ -79,10 +95,9 @@ class LogClearModule(PupyModule):
     compatible_systems: list[str] = []  # all platforms
 
     async def execute(self, session: Any, args: Dict[str, Any]) -> Dict[str, Any]:
-        session_mgr = getattr(self, '_session_manager', None)
-        if not session_mgr:
-            return {"status": "error", "error": "No session manager available"}
-
+        _guard = _anti_forensics_guard(self.config)
+        if _guard is not None:
+            return _guard
         os_name = getattr(session, "os", "").lower()
 
         if "win" in os_name:
@@ -102,6 +117,15 @@ class LogClearModule(PupyModule):
                 "journalctl --vacuum-time=1s 2>/dev/null; "
                 "echo 'logs cleared'"
             )
+
+        session_mgr = getattr(self, '_session_manager', None)
+        if not session_mgr:
+            return {
+                "status": "ok",
+                "mode": "offline",
+                "platform": "windows" if "win" in os_name else "linux",
+                "command": cmd,
+            }
 
         result = await _dispatch_command(session, session_mgr, cmd)
         return {
@@ -123,6 +147,9 @@ class TimestampMatchModule(PupyModule):
     compatible_systems: list[str] = []
 
     async def execute(self, session: Any, args: Dict[str, Any]) -> Dict[str, Any]:
+        _guard = _anti_forensics_guard(self.config)
+        if _guard is not None:
+            return _guard
         session_mgr = getattr(self, '_session_manager', None)
         target_file = args.get("target_file", "")
         reference_file = args.get("reference_file", "")
@@ -187,6 +214,9 @@ class ArtifactWipeModule(PupyModule):
     compatible_systems: list[str] = []
 
     async def execute(self, session: Any, args: Dict[str, Any]) -> Dict[str, Any]:
+        _guard = _anti_forensics_guard(self.config)
+        if _guard is not None:
+            return _guard
         session_mgr = getattr(self, '_session_manager', None)
         file_path = args.get("file_path", "")
         passes = int(args.get("passes", 3))
@@ -263,6 +293,9 @@ class PrefetchDeleteModule(PupyModule):
     compatible_systems: list[str] = ["windows"]
 
     async def execute(self, session: Any, args: Dict[str, Any]) -> Dict[str, Any]:
+        _guard = _anti_forensics_guard(self.config)
+        if _guard is not None:
+            return _guard
         session_mgr = getattr(self, '_session_manager', None)
         target = args.get("target", "")
 
@@ -301,6 +334,9 @@ class RecycleClearModule(PupyModule):
     compatible_systems: list[str] = ["windows"]
 
     async def execute(self, session: Any, args: Dict[str, Any]) -> Dict[str, Any]:
+        _guard = _anti_forensics_guard(self.config)
+        if _guard is not None:
+            return _guard
         session_mgr = getattr(self, '_session_manager', None)
 
         # PowerShell to clear all recycle bin items

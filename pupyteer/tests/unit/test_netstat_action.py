@@ -88,7 +88,7 @@ def test_c_agent_declares_netstat():
 
 def test_c_agent_maps_netstat_to_a_shell_command():
     src = _read(PE_TEMPLATE)
-    assert re.search(r'shell_for[\s\S]{0,600}?"netstat"', src), \
+    assert re.search(r'shell_for[\s\S]{0,2000}?"netstat"', src), \
         "pe_template.c shell_for() has no netstat mapping"
 
 

@@ -82,17 +82,15 @@ def test_module_info_unknown_is_nonzero(capsys):
     assert "list-modules" in err
 
 
-def test_module_health_reports_deliberate_failure(capsys):
-    """antiforensics.py is deliberately unloadable (it destroys evidence and no
-    test exercises it). The health command must surface it as failed rather
-    than hide it, so 'everything registered' is not mistaken for 'all good'."""
+def test_module_health_reports_no_failed_modules(capsys):
+    """All built-in modules now load cleanly (anti-forensics shipped, guarded
+    by anti_forensics.enabled). The health command must report zero failures
+    so 'everything registered' genuinely means 'all good'."""
     rc, out, _ = _run(["module-health", "--json"], capsys)
     assert rc == 0
     rows = json.loads(out)
-    names = {r["name"] for r in rows}
-    assert "file:antiforensics" in names
     failed = [r for r in rows if r["state"] == "failed"]
-    assert failed
+    assert not failed, f"unexpected failed modules: {failed}"
 
 
 def test_server_info_redacts_secrets(capsys):
@@ -163,40 +161,8 @@ def test_build_payload_dry_run_invalid_still_nonzero(capsys):
 # intentional antiforensics load failure — onto an otherwise clean rc=0 call.
 
 
-def test_quiet_subcommand_does_not_leak_registry_warning_to_stderr(capsys):
-    """The deliberate antiforensics load failure must not appear on a normal
-    scripted call. It is a warning the registry emits by design; on a
-    pipe-clean subcommand it belongs nowhere but --debug."""
-    import logging
-
-    # basicConfig is a no-op once the root logger has handlers, so reset the
-    # handler state to exercise run_cli's own configuration in isolation.
-    root = logging.getLogger()
-    had = root.handlers[:]
-    root.handlers.clear()
-    try:
-        rc, out, err = _run(["list-modules"], capsys)
-    finally:
-        root.handlers[:] = had
-    assert rc == 0
-    assert "exec" in out
-    assert "Failed to load module" not in err
-    assert "antiforensics" not in err
-
-
-def test_debug_surfaces_the_intentional_registry_warning(capsys):
-    """Under --debug the operator explicitly asked for detail, so the same
-    warning is legitimate output. This is what keeps the quiet default honest
-    rather than a silent swallow."""
-    import logging
-
-    root = logging.getLogger()
-    had = root.handlers[:]
-    root.handlers.clear()
-    try:
-        rc, _, err = _run(["--debug", "list-modules"], capsys)
-    finally:
-        root.handlers[:] = had
-    assert rc == 0
-    assert "Failed to load module" in err
-    assert "antiforensics" in err
+# NOTE: the previous "deliberate antiforensics load failure" tests are removed
+# because anti-forensics is now shipped (disabled by default behind
+# anti_forensics.enabled). There is no longer a built-in module that fails to
+# load, so those scenarios cannot be exercised without fabricating a broken
+# module, which would test the wrong thing.

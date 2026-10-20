@@ -67,6 +67,7 @@ class ModuleCategory(str, Enum):
     FILE_OPS = "file_ops"
     RED_TEAM = "red_team"
     EVASION = "evasion"
+    ANTI_FORENSICS = "anti_forensics"
 
 
 @dataclass

@@ -76,6 +76,8 @@ TYPED_VERBS: Dict[str, str] = {
     "getpid": "getpid",
     "getuid": "getuid",
     "getppid": "getppid",
+    "getdomain": "getdomain",
+    "check_vm": "check_vm",
     "kill": "process_kill",
     "process_kill": "process_kill",
     "ps": "processes",
