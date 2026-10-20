@@ -2,19 +2,20 @@
   "generated_from": "github.com/n1nj4sec/pupy @ pupy/modules + pupy/commands",
   "pupy_module_count": 122,
   "pupy_command_count": 16,
-  "pupyteer_module_count": 60,
+  "pupyteer_module_count": 62,
   "classification_counts": {
     "AGENT_ACTION": 5,
     "NATIVE": 38,
-    "PRESENT": 38,
+    "PRESENT": 40,
     "PY_DEP": 25,
-    "STDLIB": 16
+    "STDLIB": 14
   },
   "pupyteer_modules": [
     "alive",
     "artifact_wipe",
     "assess",
     "cat",
+    "cd",
     "check_vm",
     "cloudinfo",
     "cp",
@@ -37,6 +38,7 @@
     "getppid",
     "getprivs",
     "getuid",
+    "http",
     "last",
     "lateral_sim",
     "log_clear",
@@ -127,8 +129,8 @@
     },
     {
       "name": "cd",
-      "class": "STDLIB",
-      "note": "stdlib-only upstream; no third-party tree"
+      "class": "PRESENT",
+      "note": "Native shell-dispatched reimplementation; no agent change"
     },
     {
       "name": "check_vm",
@@ -272,8 +274,8 @@
     },
     {
       "name": "http",
-      "class": "STDLIB",
-      "note": "pygments used only for display formatting; core data is stdlib"
+      "class": "PRESENT",
+      "note": "Native shell-dispatched reimplementation; no agent change"
     },
     {
       "name": "igd",

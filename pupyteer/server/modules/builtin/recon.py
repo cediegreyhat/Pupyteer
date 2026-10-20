@@ -1368,3 +1368,103 @@ class ExitModule(PupyModule):
         if not (args.get("yes") or args.get("confirm")):
             return ["Missing confirmation: pass yes=true"]
         return []
+
+
+class HttpModule(PupyModule):
+    """Make an HTTP request from the target.
+
+    Upstream Pupy's ``http`` (via network.lib.tinyhttp). Native reimplementation
+    using curl/wget on the host, so no agent-side package is needed.
+    """
+
+    name = "http"
+    version = "1.0.0"
+    description = "Make an HTTP GET/POST request from the target"
+    author = "Pupyteer Team"
+    category = ModuleCategory.RECON
+
+    async def execute(self, session, args):
+        url = str(args.get("url") or "").strip()
+        if not url:
+            return {"status": "error", "error": "url argument is required"}
+        if "://" not in url:
+            url = "http://" + url
+
+        session_mgr = getattr(self, "_session_manager", None)
+        os_name = getattr(session, "os", "").lower()
+
+        headers = args.get("headers") or args.get("header") or []
+        if isinstance(headers, str):
+            headers = [headers]
+        header_flags = " ".join(f'-H "{h}"' for h in headers)
+
+        data = args.get("data")
+        method_flag = ""
+        if data:
+            if isinstance(data, list):
+                data = " ".join(str(d) for d in data)
+            method_flag = f" -X POST -d '{data}'"
+
+        follow = "-L " if args.get("follow_redirects") or args.get("follow") else ""
+        out_file = args.get("output")
+        save_flag = f' -o "{out_file}"' if out_file else ""
+
+        cmd = f'curl -sS {follow}{header_flags}{method_flag}{save_flag} "{url}"'
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd, "url": url}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "url": url,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }
+
+    def validate_args(self, args):
+        if not args.get("url"):
+            return ["Missing required argument: url"]
+        return []
+
+
+class CdModule(PupyModule):
+    """Change/report the working directory on the target.
+
+    Upstream Pupy's ``cd`` (via pupyutils.basic_cmds). Native reimplementation
+    that changes directory and reports the new cwd in one shot.
+    """
+
+    name = "cd"
+    version = "1.0.0"
+    description = "Change or report the working directory on the target"
+    author = "Pupyteer Team"
+    category = ModuleCategory.FILE_OPS
+
+    async def execute(self, session, args):
+        path = str(args.get("path") or args.get("dir") or "").strip()
+
+        session_mgr = getattr(self, "_session_manager", None)
+        os_name = getattr(session, "os", "").lower()
+
+        if path:
+            if "win" in os_name:
+                cmd = f'cd /d "{path}" && cd'
+            else:
+                cmd = f'cd "{path}" && pwd'
+        else:
+            cmd = "cd" if "win" in os_name else "pwd"
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }
