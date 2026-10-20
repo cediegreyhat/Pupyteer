@@ -2,12 +2,12 @@
   "generated_from": "github.com/n1nj4sec/pupy @ pupy/modules + pupy/commands",
   "pupy_module_count": 122,
   "pupy_command_count": 16,
-  "pupyteer_module_count": 68,
+  "pupyteer_module_count": 69,
   "classification_counts": {
     "AGENT_ACTION": 5,
     "NATIVE": 38,
-    "PRESENT": 46,
-    "PY_DEP": 20,
+    "PRESENT": 47,
+    "PY_DEP": 19,
     "STDLIB": 13
   },
   "pupyteer_modules": [
@@ -67,6 +67,7 @@
     "process_kill",
     "ps",
     "pwd",
+    "pyexec",
     "recycle_clear",
     "reg",
     "rm",
@@ -472,7 +473,8 @@
     },
     {
       "name": "pyexec",
-      "class": "PY_DEP"
+      "class": "PRESENT",
+      "note": "Python-agent-only; agent execs code with stdout capture"
     },
     {
       "name": "pyshell",

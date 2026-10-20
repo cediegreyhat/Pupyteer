@@ -1773,3 +1773,51 @@ class RegModule(PupyModule):
         if action == "query" and not (args.get("key") or args.get("path")):
             return ["Missing required argument: key"]
         return []
+
+
+class PyexecModule(PupyModule):
+    """Execute Python code on the target agent.
+
+    Upstream Pupy's ``pyexec``. Native reimplementation: the Python agent
+    executes the code with stdout/stderr captured and returns the output.
+    Python-agent only -- the C agent cannot run Python and returns an error.
+    """
+
+    name = "pyexec"
+    version = "1.0.0"
+    description = "Execute Python code on the target agent"
+    author = "Pupyteer Team"
+    category = ModuleCategory.EXECUTION
+
+    async def execute(self, session, args):
+        code = args.get("code")
+        if args.get("file"):
+            try:
+                with open(args["file"], "r", encoding="utf-8") as f:
+                    code = f.read()
+            except OSError as e:
+                return {"status": "error", "error": f"cannot read file: {e}"}
+        if not code:
+            return {"status": "error", "error": "code or file argument is required"}
+
+        session_mgr = getattr(self, "_session_manager", None)
+        if not session_mgr:
+            return _no_agent(session)
+
+        reply = await transfer.run_action(
+            session_mgr, session.session_id,
+            {"action": "pyexec", "code": code,
+             "redirected": not bool(args.get("no_redirected_stdio", False))},
+            timeout=_command_timeout(args))
+        if reply.get("error") or reply.get("ok") is False:
+            return {"status": "error", "error": reply.get("error", "execution failed")}
+        return {
+            "status": "ok",
+            "output": reply.get("output", ""),
+            "error": reply.get("error"),
+        }
+
+    def validate_args(self, args):
+        if not (args.get("code") or args.get("file")):
+            return ["Missing required argument: code or file"]
+        return []

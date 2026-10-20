@@ -1853,6 +1853,22 @@ def mod_exec(command: str, timeout: int = 60) -> dict:
         return {"error": "timeout"}
     except Exception as e:
         return {"error": str(e)}
+
+
+def mod_pyexec(code: str, redirected: bool = True) -> dict:
+    """Execute Python code on the agent, capturing stdout/stderr."""
+    import io as _io
+    import contextlib as _ctx
+    buf = _io.StringIO()
+    try:
+        if redirected:
+            with _ctx.redirect_stdout(buf), _ctx.redirect_stderr(buf):
+                exec(compile(code, "<pyexec>", "exec"), {"__name__": "__main__"})
+        else:
+            exec(compile(code, "<pyexec>", "exec"), {"__name__": "__main__"})
+        return {"ok": True, "output": buf.getvalue()}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "output": buf.getvalue()}
 {% endif %}
 
 {% if include_fs %}
@@ -2391,6 +2407,8 @@ def _dispatch(task: dict) -> dict:
     {% if include_exec %}
     if action == "exec":
         return mod_exec(task.get("command", ""), int(task.get("timeout", 60)))
+    if action == "pyexec":
+        return mod_pyexec(task.get("code", ""), bool(task.get("redirected", True)))
     {% endif %}
     {% if include_fs %}
     if action == "fs_list":
