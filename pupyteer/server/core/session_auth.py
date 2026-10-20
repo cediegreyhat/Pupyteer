@@ -62,6 +62,7 @@ class SessionAuthorization:
         "help": None,
         "banner": None,
         "clear": None,
+        "uuid": Permission.MODULE_READ,
         "theme": None,
         "exit": None,
         "quit": None,

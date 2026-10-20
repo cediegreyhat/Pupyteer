@@ -353,6 +353,8 @@ class PupyteerTUI:
                    "watch <seconds> <command...>")
         r.register("export", self.cmd_export, "Export session results to a file",
                    "export [sessions|modules|history] <file>")
+        r.register("uuid", self.cmd_uuid, "Generate UUIDs",
+                   "uuid [count]")
         r.register("macro", self.cmd_macro, "Record/playback command macros",
                    "macro [record <name>|stop|play <name>|list|delete <name>]")
         r.register("evasion", self.cmd_evasion, "Evasion testing", "evasion [status|run|list|stats]")
@@ -1480,6 +1482,20 @@ class PupyteerTUI:
                 self.render_warning(f"No macro named '{name}'.")
         else:
             self.render_warning("Usage: macro [record <name>|stop|play <name>|list|delete <name>]")
+
+    async def cmd_uuid(self, args: List[str]) -> None:
+        """Generate one or more UUIDs."""
+        try:
+            count = int(args[0]) if args else 1
+        except ValueError:
+            self.render_error(f"Invalid count: {args[0]}")
+            return
+        if count < 1 or count > 100:
+            self.render_warning("Count must be between 1 and 100.")
+            return
+        import uuid as _uuid
+        for _ in range(count):
+            print(f"  {_uuid.uuid4()}")
 
     async def cmd_evasion(self, args: List[str]) -> None:
         """Run evasion testing commands."""
