@@ -2,12 +2,12 @@
   "generated_from": "github.com/n1nj4sec/pupy @ pupy/modules + pupy/commands",
   "pupy_module_count": 122,
   "pupy_command_count": 16,
-  "pupyteer_module_count": 80,
+  "pupyteer_module_count": 81,
   "classification_counts": {
     "AGENT_ACTION": 5,
     "NATIVE": 38,
-    "PRESENT": 58,
-    "PY_DEP": 16,
+    "PRESENT": 59,
+    "PY_DEP": 15,
     "STDLIB": 5
   },
   "pupyteer_modules": [
@@ -81,6 +81,7 @@
     "rm",
     "screenshot",
     "search",
+    "services",
     "stat",
     "sysinfo",
     "tasks",
@@ -539,7 +540,8 @@
     },
     {
       "name": "services",
-      "class": "PY_DEP"
+      "class": "PRESENT",
+      "note": "Native shell-dispatched reimplementation using sc/systemctl"
     },
     {
       "name": "shares",
