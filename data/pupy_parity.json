@@ -7,8 +7,8 @@
     "AGENT_ACTION": 5,
     "NATIVE": 38,
     "PRESENT": 24,
-    "PY_DEP": 41,
-    "STDLIB": 14
+    "PY_DEP": 25,
+    "STDLIB": 30
   },
   "pupyteer_modules": [
     "assess",
@@ -72,7 +72,8 @@
     },
     {
       "name": "apps",
-      "class": "PY_DEP"
+      "class": "STDLIB",
+      "note": "stdlib-only upstream; no third-party tree"
     },
     {
       "name": "become",
@@ -96,11 +97,13 @@
     },
     {
       "name": "cd",
-      "class": "PY_DEP"
+      "class": "STDLIB",
+      "note": "stdlib-only upstream; no third-party tree"
     },
     {
       "name": "check_vm",
-      "class": "PY_DEP"
+      "class": "STDLIB",
+      "note": "stdlib-only upstream; no third-party tree"
     },
     {
       "name": "clear_logs",
@@ -108,15 +111,18 @@
     },
     {
       "name": "cloudinfo",
-      "class": "PY_DEP"
+      "class": "STDLIB",
+      "note": "pygments used only for display formatting; core data is stdlib"
     },
     {
       "name": "contacts",
-      "class": "PY_DEP"
+      "class": "STDLIB",
+      "note": "stdlib-only upstream; no third-party tree"
     },
     {
       "name": "cp",
-      "class": "PY_DEP"
+      "class": "STDLIB",
+      "note": "stdlib-only upstream; no third-party tree"
     },
     {
       "name": "credcap",
@@ -124,7 +130,8 @@
     },
     {
       "name": "creddump",
-      "class": "PY_DEP"
+      "class": "STDLIB",
+      "note": "stdlib-only upstream; no third-party tree"
     },
     {
       "name": "date",
@@ -138,7 +145,8 @@
     },
     {
       "name": "dns",
-      "class": "PY_DEP"
+      "class": "STDLIB",
+      "note": "netaddr -> stdlib ipaddress"
     },
     {
       "name": "download",
@@ -160,7 +168,8 @@
     },
     {
       "name": "edit",
-      "class": "PY_DEP"
+      "class": "STDLIB",
+      "note": "stdlib-only upstream; no third-party tree"
     },
     {
       "name": "env",
@@ -169,7 +178,8 @@
     },
     {
       "name": "exit",
-      "class": "PY_DEP"
+      "class": "STDLIB",
+      "note": "stdlib-only upstream; no third-party tree"
     },
     {
       "name": "exploit_suggester",
@@ -191,7 +201,8 @@
     },
     {
       "name": "getdomain",
-      "class": "PY_DEP"
+      "class": "STDLIB",
+      "note": "stdlib-only upstream; no third-party tree"
     },
     {
       "name": "getpid",
@@ -231,11 +242,13 @@
     },
     {
       "name": "http",
-      "class": "PY_DEP"
+      "class": "STDLIB",
+      "note": "pygments used only for display formatting; core data is stdlib"
     },
     {
       "name": "igd",
-      "class": "PY_DEP"
+      "class": "STDLIB",
+      "note": "defusedxml -> stdlib xml.etree (with entity-expansion care)"
     },
     {
       "name": "impersonate",
@@ -243,7 +256,8 @@
     },
     {
       "name": "interactive_shell",
-      "class": "PY_DEP"
+      "class": "STDLIB",
+      "note": "stdlib-only upstream; no third-party tree"
     },
     {
       "name": "inveigh",
@@ -255,7 +269,8 @@
     },
     {
       "name": "isearch",
-      "class": "PY_DEP"
+      "class": "STDLIB",
+      "note": "stdlib-only upstream; no third-party tree"
     },
     {
       "name": "keylogger",
@@ -325,7 +340,8 @@
     },
     {
       "name": "mkdir",
-      "class": "PY_DEP"
+      "class": "STDLIB",
+      "note": "stdlib-only upstream; no third-party tree"
     },
     {
       "name": "mouselogger",
