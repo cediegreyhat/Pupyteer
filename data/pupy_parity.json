@@ -2,12 +2,12 @@
   "generated_from": "github.com/n1nj4sec/pupy @ pupy/modules + pupy/commands",
   "pupy_module_count": 122,
   "pupy_command_count": 16,
-  "pupyteer_module_count": 63,
+  "pupyteer_module_count": 64,
   "classification_counts": {
     "AGENT_ACTION": 5,
     "NATIVE": 38,
-    "PRESENT": 41,
-    "PY_DEP": 25,
+    "PRESENT": 42,
+    "PY_DEP": 24,
     "STDLIB": 13
   },
   "pupyteer_modules": [
@@ -42,6 +42,7 @@
     "http",
     "last",
     "lateral_sim",
+    "load_package",
     "log_clear",
     "logs",
     "migrate",
@@ -324,7 +325,8 @@
     },
     {
       "name": "load_package",
-      "class": "PY_DEP"
+      "class": "PRESENT",
+      "note": "Native reimplementation over fs_put + agent import; unblocks PY_DEP modules"
     },
     {
       "name": "lock_screen",

