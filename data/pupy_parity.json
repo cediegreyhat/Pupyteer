@@ -2,13 +2,13 @@
   "generated_from": "github.com/n1nj4sec/pupy @ pupy/modules + pupy/commands",
   "pupy_module_count": 122,
   "pupy_command_count": 16,
-  "pupyteer_module_count": 74,
+  "pupyteer_module_count": 75,
   "classification_counts": {
     "AGENT_ACTION": 5,
     "NATIVE": 38,
-    "PRESENT": 52,
+    "PRESENT": 53,
     "PY_DEP": 18,
-    "STDLIB": 9
+    "STDLIB": 8
   },
   "pupyteer_modules": [
     "alive",
@@ -43,6 +43,7 @@
     "getuid",
     "http",
     "igd",
+    "interactive_shell",
     "isearch",
     "last",
     "lateral_sim",
@@ -300,8 +301,8 @@
     },
     {
       "name": "interactive_shell",
-      "class": "STDLIB",
-      "note": "stdlib-only upstream; no third-party tree"
+      "class": "PRESENT",
+      "note": "Native shell-dispatched reimplementation using tmux/screen/nohup"
     },
     {
       "name": "inveigh",

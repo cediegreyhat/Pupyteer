@@ -2046,3 +2046,49 @@ class ISearchModule(PupyModule):
         if not (args.get("pattern") or args.get("query")):
             return ["Missing required argument: pattern"]
         return []
+
+
+class InteractiveShellModule(PupyModule):
+    """Spawn an interactive shell on the target.
+
+    Upstream Pupy's ``interactive_shell`` (via interactive_shell agent
+    module). Native reimplementation using script/screen/tmux to allocate
+    a PTY and run a shell, returning a handle.
+    """
+
+    name = "interactive_shell"
+    version = "1.0.0"
+    description = "Spawn an interactive shell (PTY) on the target"
+    author = "Pupyteer Team"
+    category = ModuleCategory.EXECUTION
+
+    async def execute(self, session, args):
+        shell = str(args.get("shell") or "").strip()
+        session_mgr = getattr(self, "_session_manager", None)
+        os_name = getattr(session, "os", "").lower()
+
+        if "win" in os_name:
+            cmd = "cmd.exe /c start cmd.exe" if not shell else f'cmd.exe /c start {shell}'
+        else:
+            if shell:
+                cmd = f"nohup {shell} >/tmp/ishell.log 2>&1 & echo $!"
+            else:
+                cmd = (
+                    "if command -v tmux >/dev/null 2>&1; then "
+                    "tmux new-session -d -s pupyteer-shell 'bash -i' && echo 'tmux:pupyteer-shell'; "
+                    "elif command -v screen >/dev/null 2>&1; then "
+                    "screen -dmS pupyteer-shell bash -i && echo 'screen:pupyteer-shell'; "
+                    "else nohup bash -i >/tmp/ishell.log 2>&1 & echo $!; fi"
+                )
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }
