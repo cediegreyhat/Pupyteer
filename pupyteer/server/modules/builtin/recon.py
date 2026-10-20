@@ -729,3 +729,117 @@ class AliveModule(PupyModule):
             if extra in reply:
                 result[extra] = reply[extra]
         return result
+
+
+class GetpidModule(PupyModule):
+    """Report the agent process's own pid.
+
+    Upstream Pupy's ``getpid``. Stdlib-only upstream, so covered by the
+    native-reimplementation strategy rather than a dependency.
+    """
+
+    name = "getpid"
+    version = "1.0.0"
+    description = "Report the agent process's own pid"
+    author = "Pupyteer Team"
+    category = ModuleCategory.RECON
+
+    async def execute(self, session: Any, args: Dict[str, Any]) -> Dict[str, Any]:
+        session_mgr = getattr(self, "_session_manager", None)
+        if not session_mgr:
+            return _no_agent(session)
+
+        reply = await transfer.run_action(
+            session_mgr, session.session_id, {"action": "getpid"},
+            timeout=_command_timeout(args))
+        if reply.get("error"):
+            return {"status": "error", "error": reply["error"]}
+
+        value = reply.get("pid")
+        # pid/ppid 0 is "no answer", not a valid one.
+        if value is None or value == "" or (isinstance(value, int) and value == 0):
+            return {
+                "status": "error",
+                "error": f"the agent returned no answer for getpid: {str(reply)[:200]}",
+            }
+        result: Dict[str, Any] = {"status": "ok", "pid": value}
+        for extra in ("uid", "gid"):
+            if extra in reply:
+                result[extra] = reply[extra]
+        return result
+
+
+class GetuidModule(PupyModule):
+    """Report the identity the agent runs as.
+
+    Upstream Pupy's ``getuid``. Stdlib-only upstream, so covered by the
+    native-reimplementation strategy rather than a dependency.
+    """
+
+    name = "getuid"
+    version = "1.0.0"
+    description = "Report the identity the agent runs as"
+    author = "Pupyteer Team"
+    category = ModuleCategory.RECON
+
+    async def execute(self, session: Any, args: Dict[str, Any]) -> Dict[str, Any]:
+        session_mgr = getattr(self, "_session_manager", None)
+        if not session_mgr:
+            return _no_agent(session)
+
+        reply = await transfer.run_action(
+            session_mgr, session.session_id, {"action": "getuid"},
+            timeout=_command_timeout(args))
+        if reply.get("error"):
+            return {"status": "error", "error": reply["error"]}
+
+        value = reply.get("user")
+        # pid/ppid 0 is "no answer", not a valid one.
+        if value is None or value == "" or (isinstance(value, int) and value == 0):
+            return {
+                "status": "error",
+                "error": f"the agent returned no answer for getuid: {str(reply)[:200]}",
+            }
+        result: Dict[str, Any] = {"status": "ok", "user": value}
+        for extra in ("uid", "gid"):
+            if extra in reply:
+                result[extra] = reply[extra]
+        return result
+
+
+class GetppidModule(PupyModule):
+    """Report the agent's parent pid.
+
+    Upstream Pupy's ``getppid``. Stdlib-only upstream, so covered by the
+    native-reimplementation strategy rather than a dependency.
+    """
+
+    name = "getppid"
+    version = "1.0.0"
+    description = "Report the agent's parent pid"
+    author = "Pupyteer Team"
+    category = ModuleCategory.RECON
+
+    async def execute(self, session: Any, args: Dict[str, Any]) -> Dict[str, Any]:
+        session_mgr = getattr(self, "_session_manager", None)
+        if not session_mgr:
+            return _no_agent(session)
+
+        reply = await transfer.run_action(
+            session_mgr, session.session_id, {"action": "getppid"},
+            timeout=_command_timeout(args))
+        if reply.get("error"):
+            return {"status": "error", "error": reply["error"]}
+
+        value = reply.get("ppid")
+        # pid/ppid 0 is "no answer", not a valid one.
+        if value is None or value == "" or (isinstance(value, int) and value == 0):
+            return {
+                "status": "error",
+                "error": f"the agent returned no answer for getppid: {str(reply)[:200]}",
+            }
+        result: Dict[str, Any] = {"status": "ok", "ppid": value}
+        for extra in ("uid", "gid"):
+            if extra in reply:
+                result[extra] = reply[extra]
+        return result

