@@ -2,12 +2,12 @@
   "generated_from": "github.com/n1nj4sec/pupy @ pupy/modules + pupy/commands",
   "pupy_module_count": 122,
   "pupy_command_count": 16,
-  "pupyteer_module_count": 84,
+  "pupyteer_module_count": 85,
   "classification_counts": {
     "AGENT_ACTION": 5,
     "NATIVE": 38,
-    "PRESENT": 62,
-    "PY_DEP": 12,
+    "PRESENT": 63,
+    "PY_DEP": 11,
     "STDLIB": 5
   },
   "pupyteer_modules": [
@@ -92,6 +92,7 @@
     "upload",
     "users",
     "w",
+    "wmic",
     "write",
     "x509",
     "zip"
@@ -635,7 +636,8 @@
     },
     {
       "name": "wmic",
-      "class": "PY_DEP"
+      "class": "PRESENT",
+      "note": "Native shell-dispatched reimplementation using wmic"
     },
     {
       "name": "write",
