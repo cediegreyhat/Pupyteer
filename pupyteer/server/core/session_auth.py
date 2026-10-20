@@ -71,6 +71,7 @@ class SessionAuthorization:
         "ip": Permission.MODULE_READ,
         "encode": Permission.MODULE_READ,
         "decode": Permission.MODULE_READ,
+        "echo": Permission.MODULE_READ,
         "theme": None,
         "exit": None,
         "quit": None,

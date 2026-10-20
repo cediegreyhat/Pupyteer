@@ -371,6 +371,8 @@ class PupyteerTUI:
                    "encode [url|html] <text>")
         r.register("decode", self.cmd_decode, "URL/HTML decode text",
                    "decode [url|html] <text>")
+        r.register("echo", self.cmd_echo, "Echo text",
+                   "echo <text>")
         r.register("macro", self.cmd_macro, "Record/playback command macros",
                    "macro [record <name>|stop|play <name>|list|delete <name>]")
         r.register("evasion", self.cmd_evasion, "Evasion testing", "evasion [status|run|list|stats]")
@@ -1662,6 +1664,10 @@ class PupyteerTUI:
                 self.render_warning("Mode must be 'url' or 'html'.")
         except Exception as e:
             self.render_error(f"decode failed: {e}")
+
+    async def cmd_echo(self, args: List[str]) -> None:
+        """Echo text to the console."""
+        print("  " + " ".join(args))
 
     async def cmd_evasion(self, args: List[str]) -> None:
         """Run evasion testing commands."""
