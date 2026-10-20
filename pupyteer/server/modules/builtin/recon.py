@@ -1941,3 +1941,55 @@ class IgdModule(PupyModule):
             "output": result.get("output", ""),
             "error": result.get("error"),
         }
+
+
+class EchoModule(PupyModule):
+    """Test egress connectivity using a remote echo server.
+
+    Upstream Pupy's ``echo`` (via network.lib.echo). Native reimplementation
+    using nc/socat to send a probe and read the echo back.
+    """
+
+    name = "echo"
+    version = "1.0.0"
+    description = "Test egress (TCP/UDP) using a remote echo server"
+    author = "Pupyteer Team"
+    category = ModuleCategory.RECON
+
+    async def execute(self, session, args):
+        host = str(args.get("host") or "").strip()
+        if not host:
+            return {"status": "error", "error": "host argument is required"}
+        port = int(args.get("port") or 7)
+        amount = int(args.get("amount") or 4)
+
+        session_mgr = getattr(self, "_session_manager", None)
+        os_name = getattr(session, "os", "").lower()
+
+        if "win" in os_name:
+            cmd = f'powershell -Command "Test-NetConnection -ComputerName {host} -Port {port}"'
+        else:
+            cmd = (
+                f'for i in $(seq 1 {amount}); do '
+                f'echo "probe-$i" | nc -w 2 {host} {port} 2>/dev/null; '
+                f'done'
+            )
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd, "host": host, "port": port}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "host": host,
+            "port": port,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }
+
+    def validate_args(self, args):
+        if not args.get("host"):
+            return ["Missing required argument: host"]
+        return []

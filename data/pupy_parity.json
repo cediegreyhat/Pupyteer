@@ -2,13 +2,13 @@
   "generated_from": "github.com/n1nj4sec/pupy @ pupy/modules + pupy/commands",
   "pupy_module_count": 122,
   "pupy_command_count": 16,
-  "pupyteer_module_count": 72,
+  "pupyteer_module_count": 73,
   "classification_counts": {
     "AGENT_ACTION": 5,
     "NATIVE": 38,
-    "PRESENT": 50,
+    "PRESENT": 51,
     "PY_DEP": 18,
-    "STDLIB": 11
+    "STDLIB": 10
   },
   "pupyteer_modules": [
     "alive",
@@ -26,6 +26,7 @@
     "dns",
     "download",
     "drives",
+    "echo",
     "edit",
     "env",
     "evasion_config",
@@ -205,8 +206,8 @@
     },
     {
       "name": "echo",
-      "class": "STDLIB",
-      "note": "audited: no third-party imports, portable without the tree"
+      "class": "PRESENT",
+      "note": "Native shell-dispatched reimplementation using nc/socat"
     },
     {
       "name": "edit",
