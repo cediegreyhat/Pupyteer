@@ -1684,6 +1684,13 @@ class PupyteerTUI:
                 cmd_name = parts[0]
                 cmd_args = parts[1:]
 
+                # Expand aliases
+                aliases = getattr(self, "_aliases", None) or {}
+                if cmd_name in aliases:
+                    expanded = shlex.split(aliases[cmd_name])
+                    cmd_name = expanded[0]
+                    cmd_args = expanded[1:] + cmd_args
+
                 cmd = self._registry.get(cmd_name)
                 if cmd:
                     if not await self._authorize(cmd_name, cmd_args):
