@@ -14,9 +14,9 @@ Regenerate by re-running the inventory against `pupy/modules` + `pupy/commands`.
 |---|---|
 | Upstream Pupy modules | **122** |
 | Upstream Pupy console commands | **16** |
-| Pupyteer registered modules | **41** |
-| Already covered | 24 |
-| Not yet ported | 98 |
+| Pupyteer registered modules | **42** |
+| Already covered | 25 |
+| Not yet ported | 97 |
 
 Parity is the goal; this table is the honest distance to it.
 
@@ -85,6 +85,7 @@ Upstream Pupy console commands, for parity tracking on the operator side
 | `pwd` | `pupy/modules/pwd.py` | New bare-verb action; the cwd was not exposed by anything else |
 | `get_hwuuid` | `pupy/modules/get_hwuuid.py` | Misclassified as PY_DEP; the lookup is pure stdlib |
 | `exploit_suggester` | `pupy/modules/exploit_suggester.py` | Server-side over `sysinfo`; bundled dataset, no phone-home |
+| `cp` | `pupy/modules/cp.py` | Server-side over fs_get+fs_put; chunked, no agent change |
 | `env` | `pupy/modules/env.py` | First module under the native-reimplementation strategy; stdlib one-liner |
 
 ### Reclassified as already covered

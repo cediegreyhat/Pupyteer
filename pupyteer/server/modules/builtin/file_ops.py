@@ -21,6 +21,7 @@ from __future__ import annotations
 import base64
 import binascii
 import os
+import tempfile
 from collections import deque
 from typing import Any, Dict, List
 
@@ -257,3 +258,77 @@ class StatModule(PupyModule):
         if not str(args.get("path", "")).strip():
             return ["Missing required argument: path"]
         return []
+
+
+class CpModule(PupyModule):
+    """Copy a file on the target, remote to remote.
+
+    Upstream Pupy's ``cp``. Server-side, like ``stat``: the implant already
+    declares ``fs_get`` and ``fs_put``, so this is pull-to-temp then push. No
+    agent action, no capability change, and nothing to keep in sync across the
+    two agents.
+
+    It goes through ``transfer.pull``/``push`` rather than raw ``fs_get``/
+    ``fs_put`` deliberately: those size each chunk against the agent's declared
+    ``max_line`` and the line-framing allowance, so a file bigger than the
+    agent's read buffer copies correctly instead of being silently truncated --
+    which is the one failure mode an operator would not notice.
+
+    A failed read aborts before anything is written, so a partial copy never
+    lands on the destination looking like a complete one.
+    """
+
+    name = "cp"
+    version = "1.0.0"
+    description = "Copy a file on the target (remote to remote)"
+    author = "Pupyteer Team"
+    category = ModuleCategory.FILE_OPS
+
+    async def execute(self, session: Any, args: Dict[str, Any]) -> Dict[str, Any]:
+        src = str(args.get("src", "")).strip()
+        dst = str(args.get("dst", "")).strip()
+        if not src or not dst:
+            return {"status": "error", "error": "both src and dst are required"}
+
+        session_mgr = getattr(self, "_session_manager", None)
+        if not session_mgr:
+            return _no_agent(session)
+
+        timeout = _command_timeout(args)
+        fd, staged = tempfile.mkstemp(prefix="pupyteer-cp-", suffix=".bin")
+        try:
+            with os.fdopen(fd, "wb") as sink:
+                pulled = await transfer.pull(
+                    session_mgr, session.session_id, src, sink, timeout=timeout)
+            if pulled.get("error") or pulled.get("status") == "error":
+                return {
+                    "status": "error",
+                    "error": pulled.get("error", "the read failed"),
+                    "src": src,
+                }
+
+            pushed = await transfer.push(
+                session_mgr, session.session_id, staged, dst, timeout=timeout)
+            if pushed.get("error") or pushed.get("status") == "error":
+                return {
+                    "status": "error",
+                    "error": pushed.get("error", "the write failed"),
+                    "dst": dst,
+                }
+
+            return {
+                "status": "ok",
+                "src": src,
+                "dst": dst,
+                "bytes_read": pulled.get("bytes"),
+                "bytes_written": pushed.get("bytes"),
+            }
+        finally:
+            try:
+                os.unlink(staged)
+            except OSError:
+                pass
+
+    def validate_args(self, args: Dict[str, Any]) -> list[str]:
+        missing = [k for k in ("src", "dst") if not str(args.get(k, "")).strip()]
+        return [f"Missing required argument: {m}" for m in missing]
