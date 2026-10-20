@@ -2,13 +2,13 @@
   "generated_from": "github.com/n1nj4sec/pupy @ pupy/modules + pupy/commands",
   "pupy_module_count": 122,
   "pupy_command_count": 16,
-  "pupyteer_module_count": 62,
+  "pupyteer_module_count": 63,
   "classification_counts": {
     "AGENT_ACTION": 5,
     "NATIVE": 38,
-    "PRESENT": 40,
+    "PRESENT": 41,
     "PY_DEP": 25,
-    "STDLIB": 14
+    "STDLIB": 13
   },
   "pupyteer_modules": [
     "alive",
@@ -25,6 +25,7 @@
     "dns",
     "download",
     "drives",
+    "edit",
     "env",
     "evasion_config",
     "evasion_test",
@@ -200,8 +201,8 @@
     },
     {
       "name": "edit",
-      "class": "STDLIB",
-      "note": "stdlib-only upstream; no third-party tree"
+      "class": "PRESENT",
+      "note": "Native reimplementation over fs_get/fs_put transfer primitives"
     },
     {
       "name": "env",

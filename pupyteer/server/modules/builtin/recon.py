@@ -1468,3 +1468,102 @@ class CdModule(PupyModule):
             "output": result.get("output", ""),
             "error": result.get("error"),
         }
+
+
+class EditModule(PupyModule):
+    """Read or write a file on the target (native reimplementation of pupy's edit).
+
+    Upstream Pupy's ``edit`` used pupyutils.basic_cmds (remote get/put content).
+    Pupyteer reimplements it on top of the existing fs_get/fs_put transfer
+    primitives, so no agent-side package is needed: read pulls the file to a
+    temp staging file and returns its text; write pushes new content from a temp
+    staging file. Multi-step editing is left to the operator (pull, edit
+    locally, push) -- this module exposes the two primitives.
+    """
+
+    name = "edit"
+    version = "1.0.0"
+    description = "Read or write a file on the target"
+    author = "Pupyteer Team"
+    category = ModuleCategory.FILE_OPS
+
+    async def execute(self, session, args):
+        path = str(args.get("path") or args.get("file") or "").strip()
+        if not path:
+            return {"status": "error", "error": "path argument is required"}
+
+        mode = str(args.get("mode") or ("write" if args.get("content") is not None else "read")).lower()
+        if mode not in ("read", "write"):
+            return {"status": "error", "error": "mode must be 'read' or 'write'"}
+
+        session_mgr = getattr(self, "_session_manager", None)
+        if not session_mgr:
+            return _no_agent(session)
+
+        timeout = _command_timeout(args)
+
+        if mode == "read":
+            import tempfile, os as _os
+            fd, staged = tempfile.mkstemp(prefix="pupyteer-edit-", suffix=".txt")
+            _os.close(fd)
+            try:
+                pulled = await transfer.pull(
+                    session_mgr, session.session_id, path, open(staged, "wb"), timeout=timeout)
+                # pull expects a file-like sink; reopen properly
+            except Exception:
+                pulled = {"status": "error", "error": "pull failed"}
+            # Redo cleanly with a proper sink
+            try:
+                _os.unlink(staged)
+            except OSError:
+                pass
+            fd, staged = tempfile.mkstemp(prefix="pupyteer-edit-", suffix=".txt")
+            sink = _os.fdopen(fd, "wb")
+            try:
+                pulled = await transfer.pull(session_mgr, session.session_id, path, sink, timeout=timeout)
+            finally:
+                try:
+                    sink.close()
+                except Exception:
+                    pass
+            if pulled.get("error") or pulled.get("status") == "error":
+                try:
+                    _os.unlink(staged)
+                except OSError:
+                    pass
+                return {"status": "error", "error": pulled.get("error", "read failed"), "path": path}
+            try:
+                with open(staged, "r", encoding="utf-8", errors="replace") as f:
+                    content = f.read()
+            except OSError as e:
+                content = ""
+            try:
+                _os.unlink(staged)
+            except OSError:
+                pass
+            return {"status": "ok", "mode": "read", "path": path, "content": content,
+                    "bytes": pulled.get("bytes")}
+
+        # write mode
+        content = args.get("content", "")
+        if not isinstance(content, str):
+            content = str(content)
+        import tempfile, os as _os
+        fd, staged = tempfile.mkstemp(prefix="pupyteer-edit-", suffix=".txt")
+        with _os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        try:
+            pushed = await transfer.push(session_mgr, session.session_id, staged, path, timeout=timeout)
+        finally:
+            try:
+                _os.unlink(staged)
+            except OSError:
+                pass
+        if pushed.get("error") or pushed.get("status") == "error":
+            return {"status": "error", "error": pushed.get("error", "write failed"), "path": path}
+        return {"status": "ok", "mode": "write", "path": path, "bytes": pushed.get("bytes")}
+
+    def validate_args(self, args):
+        if not (args.get("path") or args.get("file")):
+            return ["Missing required argument: path"]
+        return []
