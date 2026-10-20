@@ -361,6 +361,8 @@ class PupyteerTUI:
                    "hash [md5|sha1|sha256] <text>")
         r.register("time", self.cmd_time, "Show current time",
                    "time [utc|local|epoch]")
+        r.register("random", self.cmd_random, "Generate random strings",
+                   "random [length] [count]")
         r.register("macro", self.cmd_macro, "Record/playback command macros",
                    "macro [record <name>|stop|play <name>|list|delete <name>]")
         r.register("evasion", self.cmd_evasion, "Evasion testing", "evasion [status|run|list|stats]")
@@ -1558,6 +1560,27 @@ class PupyteerTUI:
             local = now.astimezone()
             print(f"  Local: {local.strftime('%Y-%m-%d %H:%M:%S %Z')}")
             print(f"  UTC:   {now.strftime('%Y-%m-%d %H:%M:%S')}")
+
+    async def cmd_random(self, args: List[str]) -> None:
+        """Generate random alphanumeric strings."""
+        try:
+            length = int(args[0]) if args else 16
+        except ValueError:
+            self.render_error(f"Invalid length: {args[0]}")
+            return
+        try:
+            count = int(args[1]) if len(args) > 1 else 1
+        except ValueError:
+            self.render_error(f"Invalid count: {args[1]}")
+            return
+        if length < 1 or length > 256 or count < 1 or count > 50:
+            self.render_warning("length 1-256, count 1-50.")
+            return
+        import secrets as _sec
+        import string as _str
+        alphabet = _str.ascii_letters + _str.digits
+        for _ in range(count):
+            print(f"  {''.join(_sec.choice(alphabet) for _ in range(length))}")
 
     async def cmd_evasion(self, args: List[str]) -> None:
         """Run evasion testing commands."""

@@ -66,6 +66,7 @@ class SessionAuthorization:
         "b64": Permission.MODULE_READ,
         "hash": Permission.MODULE_READ,
         "time": Permission.MODULE_READ,
+        "random": Permission.MODULE_READ,
         "theme": None,
         "exit": None,
         "quit": None,
