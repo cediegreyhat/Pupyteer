@@ -2,22 +2,24 @@
   "generated_from": "github.com/n1nj4sec/pupy @ pupy/modules + pupy/commands",
   "pupy_module_count": 122,
   "pupy_command_count": 16,
-  "pupyteer_module_count": 76,
+  "pupyteer_module_count": 78,
   "classification_counts": {
     "AGENT_ACTION": 5,
     "NATIVE": 38,
-    "PRESENT": 54,
+    "PRESENT": 56,
     "PY_DEP": 18,
-    "STDLIB": 7
+    "STDLIB": 5
   },
   "pupyteer_modules": [
     "alive",
+    "apps",
     "artifact_wipe",
     "assess",
     "cat",
     "cd",
     "check_vm",
     "cloudinfo",
+    "contacts",
     "cp",
     "creddump",
     "credential_collect",
@@ -118,8 +120,8 @@
     },
     {
       "name": "apps",
-      "class": "STDLIB",
-      "note": "stdlib-only upstream; no third-party tree"
+      "class": "PRESENT",
+      "note": "Native shell-dispatched reimplementation"
     },
     {
       "name": "become",
@@ -162,8 +164,8 @@
     },
     {
       "name": "contacts",
-      "class": "STDLIB",
-      "note": "stdlib-only upstream; no third-party tree"
+      "class": "PRESENT",
+      "note": "Native shell-dispatched reimplementation"
     },
     {
       "name": "cp",

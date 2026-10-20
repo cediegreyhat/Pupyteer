@@ -2137,3 +2137,75 @@ class CreddumpModule(PupyModule):
             "output": result.get("output", ""),
             "error": result.get("error"),
         }
+
+
+class AppsModule(PupyModule):
+    """List installed applications on the target (Android).
+
+    Upstream Pupy's ``apps`` (via apps agent module). Native reimplementation
+    using pm list packages on Android.
+    """
+
+    name = "apps"
+    version = "1.0.0"
+    description = "List installed applications on the target (Android)"
+    author = "Pupyteer Team"
+    category = ModuleCategory.RECON
+
+    async def execute(self, session, args):
+        session_mgr = getattr(self, "_session_manager", None)
+        os_name = getattr(session, "os", "").lower()
+
+        if "android" in os_name:
+            cmd = "pm list packages -f 2>/dev/null || pm list packages"
+        elif "win" in os_name:
+            cmd = "Get-AppxPackage | Select-Object Name,PackageFullName | Format-Table -AutoSize"
+        else:
+            cmd = "ls /usr/share/applications 2>/dev/null; dpkg -l 2>/dev/null | head -50"
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }
+
+
+class ContactsModule(PupyModule):
+    """Dump contacts from the target (Android).
+
+    Upstream Pupy's ``contacts`` (via contacts agent module). Native
+    reimplementation using content query on Android.
+    """
+
+    name = "contacts"
+    version = "1.0.0"
+    description = "Dump contacts from the target (Android)"
+    author = "Pupyteer Team"
+    category = ModuleCategory.RECON
+
+    async def execute(self, session, args):
+        session_mgr = getattr(self, "_session_manager", None)
+        os_name = getattr(session, "os", "").lower()
+
+        if "android" in os_name:
+            cmd = "content query --uri content://com.android.contacts/contacts 2>/dev/null || content query --uri content://contacts/contacts"
+        else:
+            cmd = "echo 'contacts dump only supported on Android targets'"
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }
