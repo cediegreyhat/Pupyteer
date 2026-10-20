@@ -347,6 +347,8 @@ class PupyteerTUI:
                    "history [search <term>|export <file>|clear]")
         r.register("bookmark", self.cmd_bookmark, "Bookmark a session for quick access",
                    "bookmark [add <id> <name>|list|remove <name>|jump <name>]")
+        r.register("alias", self.cmd_alias, "Define a command alias",
+                   "alias [name=command|list|remove <name>]")
         r.register("evasion", self.cmd_evasion, "Evasion testing", "evasion [status|run|list|stats]")
         r.register("pipeline", self.cmd_pipeline, "Unified payload-to-evasion pipeline", "pipeline [run|build|test|auto|status|history]")
         r.register("theme", self.cmd_theme, "Change TUI theme", "theme [dark|list]")
@@ -1286,6 +1288,56 @@ class PupyteerTUI:
                 print(f"  {name.ljust(16)} -> {sid}")
         else:
             self.render_warning("Usage: bookmark [add <id> <name>|list|remove <name>|jump <name>]")
+
+    async def cmd_alias(self, args: List[str]) -> None:
+        """Define, list, or remove command aliases."""
+        aliases = getattr(self, "_aliases", None)
+        if aliases is None:
+            aliases = {}
+            self._aliases = aliases
+
+        if not args:
+            if not aliases:
+                self.render_info("No aliases defined. Use: alias name=command")
+                return
+            for name, cmd in aliases.items():
+                print(f"  {name.ljust(16)} -> {cmd}")
+            self.render_info(f"{len(aliases)} alias(es).")
+            return
+
+        if args[0].lower() == "list":
+            if not aliases:
+                self.render_info("No aliases defined.")
+                return
+            for name, cmd in aliases.items():
+                print(f"  {name.ljust(16)} -> {cmd}")
+            return
+
+        if args[0].lower() == "remove":
+            if len(args) < 2:
+                self.render_warning("Usage: alias remove <name>")
+                return
+            name = args[1]
+            if name in aliases:
+                del aliases[name]
+                self.render_success(f"Removed alias '{name}'.")
+            else:
+                self.render_warning(f"No alias named '{name}'.")
+            return
+
+        # name=command form
+        joined = " ".join(args)
+        if "=" in joined:
+            name, cmd = joined.split("=", 1)
+            name = name.strip()
+            cmd = cmd.strip()
+            if not name or not cmd:
+                self.render_warning("Usage: alias name=command")
+                return
+            aliases[name] = cmd
+            self.render_success(f"Alias '{name}' -> '{cmd}'.")
+        else:
+            self.render_warning("Usage: alias name=command | alias list | alias remove <name>")
 
     async def cmd_evasion(self, args: List[str]) -> None:
         """Run evasion testing commands."""
