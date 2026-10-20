@@ -68,6 +68,7 @@ class SessionAuthorization:
         "time": Permission.MODULE_READ,
         "random": Permission.MODULE_READ,
         "calc": Permission.MODULE_READ,
+        "ip": Permission.MODULE_READ,
         "theme": None,
         "exit": None,
         "quit": None,

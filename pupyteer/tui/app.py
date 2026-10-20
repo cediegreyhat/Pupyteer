@@ -365,6 +365,8 @@ class PupyteerTUI:
                    "random [length] [count]")
         r.register("calc", self.cmd_calc, "Evaluate a math expression",
                    "calc <expression>")
+        r.register("ip", self.cmd_ip, "Show IP addresses",
+                   "ip [local|public]")
         r.register("macro", self.cmd_macro, "Record/playback command macros",
                    "macro [record <name>|stop|play <name>|list|delete <name>]")
         r.register("evasion", self.cmd_evasion, "Evasion testing", "evasion [status|run|list|stats]")
@@ -1599,6 +1601,25 @@ class PupyteerTUI:
             print(f"  {expr} = {result}")
         except Exception as e:
             self.render_error(f"calc failed: {e}")
+
+    async def cmd_ip(self, args: List[str]) -> None:
+        """Show local (and optionally public) IP addresses."""
+        mode = (args[0].lower() if args else "local")
+        import socket as _sock
+        try:
+            hostname = _sock.gethostname()
+            local_ip = _sock.gethostbyname(hostname)
+            print(f"  Hostname: {hostname}")
+            print(f"  Local IP: {local_ip}")
+        except Exception as e:
+            self.render_error(f"Could not resolve local IP: {e}")
+        if mode == "public":
+            try:
+                import urllib.request as _ur
+                with _ur.urlopen("https://api.ipify.org", timeout=5) as resp:
+                    print(f"  Public IP: {resp.read().decode().strip()}")
+            except Exception as e:
+                self.render_error(f"Could not fetch public IP: {e}")
 
     async def cmd_evasion(self, args: List[str]) -> None:
         """Run evasion testing commands."""
