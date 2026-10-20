@@ -70,6 +70,7 @@ class SessionAuthorization:
         "calc": Permission.MODULE_READ,
         "ip": Permission.MODULE_READ,
         "encode": Permission.MODULE_READ,
+        "decode": Permission.MODULE_READ,
         "theme": None,
         "exit": None,
         "quit": None,

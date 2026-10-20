@@ -369,6 +369,8 @@ class PupyteerTUI:
                    "ip [local|public]")
         r.register("encode", self.cmd_encode, "URL/HTML encode text",
                    "encode [url|html] <text>")
+        r.register("decode", self.cmd_decode, "URL/HTML decode text",
+                   "decode [url|html] <text>")
         r.register("macro", self.cmd_macro, "Record/playback command macros",
                    "macro [record <name>|stop|play <name>|list|delete <name>]")
         r.register("evasion", self.cmd_evasion, "Evasion testing", "evasion [status|run|list|stats]")
@@ -1641,6 +1643,25 @@ class PupyteerTUI:
                 self.render_warning("Mode must be 'url' or 'html'.")
         except Exception as e:
             self.render_error(f"encode failed: {e}")
+
+    async def cmd_decode(self, args: List[str]) -> None:
+        """URL or HTML decode text."""
+        if len(args) < 2:
+            self.render_warning("Usage: decode [url|html] <text>")
+            return
+        mode = args[0].lower()
+        text = " ".join(args[1:])
+        import urllib.parse as _up
+        import html as _html
+        try:
+            if mode == "url":
+                print(f"  {_up.unquote(text)}")
+            elif mode == "html":
+                print(f"  {_html.unescape(text)}")
+            else:
+                self.render_warning("Mode must be 'url' or 'html'.")
+        except Exception as e:
+            self.render_error(f"decode failed: {e}")
 
     async def cmd_evasion(self, args: List[str]) -> None:
         """Run evasion testing commands."""
