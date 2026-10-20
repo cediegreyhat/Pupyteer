@@ -1330,3 +1330,41 @@ class DnsModule(PupyModule):
         if not (args.get("name") or args.get("host") or args.get("domain")):
             return ["Missing required argument: name"]
         return []
+
+
+class ExitModule(PupyModule):
+    """Exit the agent on the target.
+
+    Upstream Pupy's exit. The implant already answers shutdown, so this is a
+    server-side wrapper gated on an explicit confirmation flag (mirroring
+    upstream's --yes) to prevent an accidental kill.
+    """
+
+    name = "exit"
+    version = "1.0.0"
+    description = "Exit the agent on the target (requires --yes)"
+    author = "Pupyteer Team"
+    category = ModuleCategory.EXECUTION
+
+    async def execute(self, session, args):
+        if not (args.get("yes") or args.get("confirm")):
+            return {
+                "status": "error",
+                "error": "refusing to exit without confirmation; pass yes=true",
+            }
+
+        session_mgr = getattr(self, "_session_manager", None)
+        if not session_mgr:
+            return _no_agent(session)
+
+        reply = await transfer.run_action(
+            session_mgr, session.session_id, {"action": "shutdown"},
+            timeout=_command_timeout(args))
+        if reply.get("error"):
+            return {"status": "error", "error": reply["error"]}
+        return {"status": "ok", "message": "exit requested", "reply": reply}
+
+    def validate_args(self, args):
+        if not (args.get("yes") or args.get("confirm")):
+            return ["Missing confirmation: pass yes=true"]
+        return []

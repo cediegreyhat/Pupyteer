@@ -2,13 +2,13 @@
   "generated_from": "github.com/n1nj4sec/pupy @ pupy/modules + pupy/commands",
   "pupy_module_count": 122,
   "pupy_command_count": 16,
-  "pupyteer_module_count": 59,
+  "pupyteer_module_count": 60,
   "classification_counts": {
     "AGENT_ACTION": 5,
     "NATIVE": 38,
-    "PRESENT": 37,
+    "PRESENT": 38,
     "PY_DEP": 25,
-    "STDLIB": 17
+    "STDLIB": 16
   },
   "pupyteer_modules": [
     "alive",
@@ -28,6 +28,7 @@
     "evasion_config",
     "evasion_test",
     "exec",
+    "exit",
     "exploit_suggester",
     "file_list",
     "get_hwuuid",
@@ -207,8 +208,8 @@
     },
     {
       "name": "exit",
-      "class": "STDLIB",
-      "note": "stdlib-only upstream; no third-party tree"
+      "class": "PRESENT",
+      "note": "Server-side wrapper over shutdown action; gated on yes=true"
     },
     {
       "name": "exploit_suggester",
