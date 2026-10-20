@@ -616,3 +616,42 @@ class HwUuidModule(PupyModule):
                 "error": f"the agent reported no hardware identifier: {str(reply)[:200]}",
             }
         return {"status": "ok", "hwuuid": hwuuid, "source": reply.get("source")}
+
+
+class EnvModule(PupyModule):
+    """Report the agent's environment variables.
+
+    Upstream Pupy's ``env``. The agent withholds values whose name looks like a
+    credential and names the keys it withheld, so this surfaces both rather than
+    presenting a partial environment as a complete one.
+    """
+
+    name = "env"
+    version = "1.0.0"
+    description = "Report the agent's environment variables (credentials redacted)"
+    author = "Pupyteer Team"
+    category = ModuleCategory.RECON
+
+    async def execute(self, session: Any, args: Dict[str, Any]) -> Dict[str, Any]:
+        session_mgr = getattr(self, "_session_manager", None)
+        if not session_mgr:
+            return _no_agent(session)
+
+        reply = await transfer.run_action(
+            session_mgr, session.session_id, {"action": "env"},
+            timeout=_command_timeout(args))
+        if reply.get("error"):
+            return {"status": "error", "error": reply["error"]}
+
+        variables = reply.get("variables")
+        if not isinstance(variables, dict):
+            return {
+                "status": "error",
+                "error": f"the agent reported no environment variables: {str(reply)[:200]}",
+            }
+        return {
+            "status": "ok",
+            "variables": variables,
+            "redacted": reply.get("redacted", []),
+            "count": len(variables),
+        }

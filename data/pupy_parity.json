@@ -2,12 +2,12 @@
   "generated_from": "github.com/n1nj4sec/pupy @ pupy/modules + pupy/commands",
   "pupy_module_count": 122,
   "pupy_command_count": 16,
-  "pupyteer_module_count": 34,
+  "pupyteer_module_count": 35,
   "classification_counts": {
     "AGENT_ACTION": 6,
     "NATIVE": 38,
-    "PRESENT": 22,
-    "PY_DEP": 56
+    "PRESENT": 23,
+    "PY_DEP": 55
   },
   "pupyteer_modules": [
     "assess",
@@ -158,7 +158,8 @@
     },
     {
       "name": "env",
-      "class": "PY_DEP"
+      "class": "PRESENT",
+      "note": "PY_DEP misclassification: stdlib one-liner"
     },
     {
       "name": "exit",
