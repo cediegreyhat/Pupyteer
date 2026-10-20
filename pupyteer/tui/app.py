@@ -355,6 +355,8 @@ class PupyteerTUI:
                    "export [sessions|modules|history] <file>")
         r.register("uuid", self.cmd_uuid, "Generate UUIDs",
                    "uuid [count]")
+        r.register("b64", self.cmd_b64, "Base64 encode/decode",
+                   "b64 [encode|decode] <text>")
         r.register("macro", self.cmd_macro, "Record/playback command macros",
                    "macro [record <name>|stop|play <name>|list|delete <name>]")
         r.register("evasion", self.cmd_evasion, "Evasion testing", "evasion [status|run|list|stats]")
@@ -1496,6 +1498,26 @@ class PupyteerTUI:
         import uuid as _uuid
         for _ in range(count):
             print(f"  {_uuid.uuid4()}")
+
+    async def cmd_b64(self, args: List[str]) -> None:
+        """Base64 encode or decode text."""
+        if len(args) < 2:
+            self.render_warning("Usage: b64 [encode|decode] <text>")
+            return
+        mode = args[0].lower()
+        text = " ".join(args[1:])
+        import base64 as _b64
+        try:
+            if mode == "encode":
+                out = _b64.b64encode(text.encode()).decode()
+            elif mode == "decode":
+                out = _b64.b64decode(text.encode()).decode()
+            else:
+                self.render_warning("Mode must be 'encode' or 'decode'.")
+                return
+            print(f"  {out}")
+        except Exception as e:
+            self.render_error(f"b64 failed: {e}")
 
     async def cmd_evasion(self, args: List[str]) -> None:
         """Run evasion testing commands."""
