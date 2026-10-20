@@ -1866,3 +1866,43 @@ class X509Module(PupyModule):
 
     def validate_args(self, args):
         return []
+
+
+class DisplayModule(PupyModule):
+    """Inspect/attach X11 display on the target.
+
+    Upstream Pupy's ``display`` (via the display agent module). Native
+    reimplementation using the host's own X11 tooling.
+    """
+
+    name = "display"
+    version = "1.0.0"
+    description = "Inspect X11 display configuration on the target"
+    author = "Pupyteer Team"
+    category = ModuleCategory.RECON
+
+    async def execute(self, session, args):
+        session_mgr = getattr(self, "_session_manager", None)
+        os_name = getattr(session, "os", "").lower()
+
+        if "win" in os_name or "darwin" in os_name or "mac" in os_name:
+            cmd = "echo 'display inspection not applicable on this platform'"
+        else:
+            cmd = (
+                'echo "DISPLAY=$DISPLAY"; '
+                'xdpyinfo 2>/dev/null | head -20; '
+                'xhost 2>/dev/null; '
+                'ls -la /tmp/.X11-unix/ 2>/dev/null'
+            )
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }

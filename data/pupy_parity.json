@@ -2,13 +2,13 @@
   "generated_from": "github.com/n1nj4sec/pupy @ pupy/modules + pupy/commands",
   "pupy_module_count": 122,
   "pupy_command_count": 16,
-  "pupyteer_module_count": 70,
+  "pupyteer_module_count": 71,
   "classification_counts": {
     "AGENT_ACTION": 5,
     "NATIVE": 38,
-    "PRESENT": 48,
+    "PRESENT": 49,
     "PY_DEP": 18,
-    "STDLIB": 13
+    "STDLIB": 12
   },
   "pupyteer_modules": [
     "alive",
@@ -22,6 +22,7 @@
     "credential_collect",
     "date",
     "discovery",
+    "display",
     "dns",
     "download",
     "drives",
@@ -180,8 +181,8 @@
     },
     {
       "name": "display",
-      "class": "STDLIB",
-      "note": "audited: no third-party imports, portable without the tree"
+      "class": "PRESENT",
+      "note": "Native shell-dispatched reimplementation (xdpyinfo/xhost)"
     },
     {
       "name": "dns",
