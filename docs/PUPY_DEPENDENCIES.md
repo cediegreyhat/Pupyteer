@@ -52,7 +52,60 @@ This is a **project, not a slice** — on the order of building and distributing
 Python runtime bundle, which is a different thing from the module ports done so
 far.
 
-## The right mechanism: port `load_package` first
+## REVISED STRATEGY (2026-10, user directive): reimplement natively
+
+The user's direction supersedes the `load_package` plan below: **for any feature
+that would need the third-party tree, write a C or Python implementation that
+integrates directly into Pupyteer.** The upstream projects are open source, so
+they are the *specification*, not a dependency to ship.
+
+This dissolves the blocker. Re-reading the tree with that lens, most of the
+"needs a dependency" classification was wrong — the packages were an
+implementation detail of how *Pupy* solved it, not an inherent requirement.
+
+### Three ways a PY_DEP feature actually gets implemented
+
+**1. Pure-stdlib / pure-socket reimplementation** — the real workhorse.
+A dependency was only ever a convenience here:
+
+| Feature | Pupy's dep | Native implementation |
+|---|---|---|
+| `socks5proxy` | (none, sockets) | SOCKS5 handshake over `socket` — ~200 lines |
+| `portfwd` | (none, sockets) | TCP relay over `socket` |
+| `dns` | `dnslib` | DNS query over `socket` — the wire format is small |
+| `http` | `requests` | `urllib.request` (stdlib) |
+| `zip` | `pylzma` | `zipfile` / `zlib` (stdlib) |
+| `isearch` | (none) | regex over the file walk already implemented |
+| `stat`, `env`, `date`, `getpid`… | — | stdlib one-liners |
+
+**2. Host-tool wrapper** — the pattern the C agent already uses for recon
+verbs. No code to port, just a mapping:
+
+| Feature | Wraps |
+|---|---|
+| `reg` | `reg query` / `reg add` |
+| `services` | `sc query` |
+| `tasks` | `schtasks /query` |
+| `users` | `net user` |
+| `drives` | `wmic logicaldisk` or `GetLogicalDrives` |
+| `logs` | `wevtutil` (Windows) / `journalctl` (Linux) |
+| `ssh` | the host's own `ssh` client |
+
+**3. Genuinely native payload** — the 38 NATIVE modules. These really do need
+compiled code (`mimikatz`, `keylogger` via `SetWindowsHookEx`, reflective
+loaders), and they stay in that bucket. But they are C, which is what the PE
+agent is for.
+
+### Consequence for the plan
+
+`load_package` is **deprioritised** — it was the answer to a problem we no
+longer have. The work becomes ordinary module ports again, with the agent side
+written natively. That puts most of PY_DEP back in reach without a runtime
+bundle, and it keeps the payload self-contained.
+
+---
+
+## Superseded: the `load_package` plan
 
 Pupy already answers this question. It ships a `load_package` module whose whole
 purpose is **loading additional Python packages into a running agent** at
