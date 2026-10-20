@@ -655,3 +655,77 @@ class EnvModule(PupyModule):
             "redacted": reply.get("redacted", []),
             "count": len(variables),
         }
+
+
+class DateModule(PupyModule):
+    """Read the target host's clock (UTC and local).
+
+    Upstream Pupy's ``date``. Classified PY_DEP in the manifest, which was
+    wrong: the upstream source has no third-party imports.
+    """
+
+    name = "date"
+    version = "1.0.0"
+    description = "Read the target host's clock (UTC and local)"
+    author = "Pupyteer Team"
+    category = ModuleCategory.RECON
+
+    async def execute(self, session: Any, args: Dict[str, Any]) -> Dict[str, Any]:
+        session_mgr = getattr(self, "_session_manager", None)
+        if not session_mgr:
+            return _no_agent(session)
+
+        reply = await transfer.run_action(
+            session_mgr, session.session_id, {"action": "date"},
+            timeout=_command_timeout(args))
+        if reply.get("error"):
+            return {"status": "error", "error": reply["error"]}
+
+        value = reply.get("utc")
+        if not value:
+            return {
+                "status": "error",
+                "error": f"the agent returned no answer for date: {str(reply)[:200]}",
+            }
+        result: Dict[str, Any] = {"status": "ok", "utc": value}
+        for extra in ("count", "local", "tzname", "id"):
+            if extra in reply:
+                result[extra] = reply[extra]
+        return result
+
+
+class AliveModule(PupyModule):
+    """Liveness check distinct from ping.
+
+    Upstream Pupy's ``alive``. Classified PY_DEP in the manifest, which was
+    wrong: the upstream source has no third-party imports.
+    """
+
+    name = "alive"
+    version = "1.0.0"
+    description = "Liveness check distinct from ping"
+    author = "Pupyteer Team"
+    category = ModuleCategory.RECON
+
+    async def execute(self, session: Any, args: Dict[str, Any]) -> Dict[str, Any]:
+        session_mgr = getattr(self, "_session_manager", None)
+        if not session_mgr:
+            return _no_agent(session)
+
+        reply = await transfer.run_action(
+            session_mgr, session.session_id, {"action": "alive"},
+            timeout=_command_timeout(args))
+        if reply.get("error"):
+            return {"status": "error", "error": reply["error"]}
+
+        value = reply.get("alive")
+        if not value:
+            return {
+                "status": "error",
+                "error": f"the agent returned no answer for alive: {str(reply)[:200]}",
+            }
+        result: Dict[str, Any] = {"status": "ok", "alive": value}
+        for extra in ("count", "local", "tzname", "id"):
+            if extra in reply:
+                result[extra] = reply[extra]
+        return result

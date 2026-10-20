@@ -71,6 +71,8 @@ TYPED_VERBS: Dict[str, str] = {
     "pwd": "pwd",
     "get_hwuuid": "get_hwuuid",
     "env": "env",
+    "date": "date",
+    "alive": "alive",
     "kill": "process_kill",
     "process_kill": "process_kill",
     "ps": "processes",
