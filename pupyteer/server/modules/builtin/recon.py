@@ -1821,3 +1821,48 @@ class PyexecModule(PupyModule):
         if not (args.get("code") or args.get("file")):
             return ["Missing required argument: code or file"]
         return []
+
+
+class X509Module(PupyModule):
+    """Generate a self-signed X.509 certificate on the target.
+
+    Upstream Pupy's ``x509`` (via pupyutils.basic_cmds cat). Native
+    reimplementation using openssl on the host.
+    """
+
+    name = "x509"
+    version = "1.0.0"
+    description = "Generate a self-signed X.509 certificate on the target"
+    author = "Pupyteer Team"
+    category = ModuleCategory.RECON
+
+    async def execute(self, session, args):
+        cn = str(args.get("cn") or args.get("common_name") or "localhost").strip()
+        days = int(args.get("days") or 365)
+        key_path = str(args.get("key") or "/tmp/x509.key").strip()
+        cert_path = str(args.get("cert") or "/tmp/x509.crt").strip()
+
+        session_mgr = getattr(self, "_session_manager", None)
+        cmd = (
+            f'openssl req -x509 -newkey rsa:2048 -keyout "{key_path}" '
+            f'-out "{cert_path}" -days {days} -nodes '
+            f'-subj "/CN={cn}" 2>&1 && echo "generated: {cert_path}"'
+        )
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd, "cn": cn}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "cn": cn,
+            "cert_path": cert_path,
+            "key_path": key_path,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }
+
+    def validate_args(self, args):
+        return []
