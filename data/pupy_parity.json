@@ -2,13 +2,13 @@
   "generated_from": "github.com/n1nj4sec/pupy @ pupy/modules + pupy/commands",
   "pupy_module_count": 122,
   "pupy_command_count": 16,
-  "pupyteer_module_count": 49,
+  "pupyteer_module_count": 52,
   "classification_counts": {
     "AGENT_ACTION": 5,
     "NATIVE": 38,
-    "PRESENT": 27,
+    "PRESENT": 30,
     "PY_DEP": 25,
-    "STDLIB": 27
+    "STDLIB": 24
   },
   "pupyteer_modules": [
     "alive",
@@ -21,6 +21,7 @@
     "date",
     "discovery",
     "download",
+    "drives",
     "env",
     "evasion_config",
     "evasion_test",
@@ -31,6 +32,7 @@
     "getdomain",
     "getpid",
     "getppid",
+    "getprivs",
     "getuid",
     "lateral_sim",
     "log_clear",
@@ -59,7 +61,8 @@
     "stat",
     "sysinfo",
     "timestamp_match",
-    "upload"
+    "upload",
+    "users"
   ],
   "pupy_commands": [
     "config",
@@ -173,8 +176,8 @@
     },
     {
       "name": "drives",
-      "class": "STDLIB",
-      "note": "audited: no third-party imports, portable without the tree"
+      "class": "PRESENT",
+      "note": "Native shell-dispatched reimplementation; no agent change"
     },
     {
       "name": "duplicate",
@@ -235,8 +238,8 @@
     },
     {
       "name": "getprivs",
-      "class": "STDLIB",
-      "note": "audited: no third-party imports, portable without the tree"
+      "class": "PRESENT",
+      "note": "Native shell-dispatched reimplementation; no agent change"
     },
     {
       "name": "getsystem",
@@ -568,8 +571,8 @@
     },
     {
       "name": "users",
-      "class": "STDLIB",
-      "note": "audited: no third-party imports, portable without the tree"
+      "class": "PRESENT",
+      "note": "Native shell-dispatched reimplementation; no agent change"
     },
     {
       "name": "usniper",

