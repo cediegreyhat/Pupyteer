@@ -373,6 +373,8 @@ class PupyteerTUI:
                    "decode [url|html] <text>")
         r.register("echo", self.cmd_echo, "Echo text",
                    "echo <text>")
+        r.register("sleep", self.cmd_sleep, "Sleep for N seconds",
+                   "sleep <seconds>")
         r.register("macro", self.cmd_macro, "Record/playback command macros",
                    "macro [record <name>|stop|play <name>|list|delete <name>]")
         r.register("evasion", self.cmd_evasion, "Evasion testing", "evasion [status|run|list|stats]")
@@ -1668,6 +1670,23 @@ class PupyteerTUI:
     async def cmd_echo(self, args: List[str]) -> None:
         """Echo text to the console."""
         print("  " + " ".join(args))
+
+    async def cmd_sleep(self, args: List[str]) -> None:
+        """Sleep for N seconds."""
+        if not args:
+            self.render_warning("Usage: sleep <seconds>")
+            return
+        try:
+            secs = float(args[0])
+        except ValueError:
+            self.render_error(f"Invalid seconds: {args[0]}")
+            return
+        if secs < 0 or secs > 3600:
+            self.render_warning("Seconds must be 0-3600.")
+            return
+        import asyncio as _a
+        await _a.sleep(secs)
+        self.render_info(f"Slept {secs}s.")
 
     async def cmd_evasion(self, args: List[str]) -> None:
         """Run evasion testing commands."""
