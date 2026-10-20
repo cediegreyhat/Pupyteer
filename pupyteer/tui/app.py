@@ -345,6 +345,8 @@ class PupyteerTUI:
         r.register("logs", self.cmd_logs, "View recent audit logs")
         r.register("history", self.cmd_history, "Search/export command history",
                    "history [search <term>|export <file>|clear]")
+        r.register("bookmark", self.cmd_bookmark, "Bookmark a session for quick access",
+                   "bookmark [add <id> <name>|list|remove <name>|jump <name>]")
         r.register("evasion", self.cmd_evasion, "Evasion testing", "evasion [status|run|list|stats]")
         r.register("pipeline", self.cmd_pipeline, "Unified payload-to-evasion pipeline", "pipeline [run|build|test|auto|status|history]")
         r.register("theme", self.cmd_theme, "Change TUI theme", "theme [dark|list]")
@@ -1229,6 +1231,61 @@ class PupyteerTUI:
                 self.render_error(f"Clear failed: {e}")
         else:
             self.render_warning("Usage: history [search <term>|export <file>|clear]")
+
+    async def cmd_bookmark(self, args: List[str]) -> None:
+        """Bookmark sessions for quick access."""
+        bookmarks = getattr(self, "_bookmarks", None)
+        if bookmarks is None:
+            bookmarks = {}
+            self._bookmarks = bookmarks
+
+        if not args:
+            if not bookmarks:
+                self.render_info("No bookmarks. Use: bookmark add <session_id> <name>")
+                return
+            for name, sid in bookmarks.items():
+                print(f"  {name.ljust(16)} -> {sid}")
+            self.render_info(f"{len(bookmarks)} bookmark(s).")
+            return
+
+        sub = args[0].lower()
+        if sub == "add":
+            if len(args) < 3:
+                self.render_warning("Usage: bookmark add <session_id> <name>")
+                return
+            sid, name = args[1], args[2]
+            bookmarks[name] = sid
+            self.render_success(f"Bookmarked session {sid} as '{name}'.")
+        elif sub == "remove":
+            if len(args) < 2:
+                self.render_warning("Usage: bookmark remove <name>")
+                return
+            name = args[1]
+            if name in bookmarks:
+                del bookmarks[name]
+                self.render_success(f"Removed bookmark '{name}'.")
+            else:
+                self.render_warning(f"No bookmark named '{name}'.")
+        elif sub == "jump":
+            if len(args) < 2:
+                self.render_warning("Usage: bookmark jump <name>")
+                return
+            name = args[1]
+            if name in bookmarks:
+                sid = bookmarks[name]
+                self.render_info(f"Jumping to session {sid} ('{name}').")
+                # Delegate to sessions interact
+                await self.cmd_sessions(["interact", sid])
+            else:
+                self.render_warning(f"No bookmark named '{name}'.")
+        elif sub == "list":
+            if not bookmarks:
+                self.render_info("No bookmarks.")
+                return
+            for name, sid in bookmarks.items():
+                print(f"  {name.ljust(16)} -> {sid}")
+        else:
+            self.render_warning("Usage: bookmark [add <id> <name>|list|remove <name>|jump <name>]")
 
     async def cmd_evasion(self, args: List[str]) -> None:
         """Run evasion testing commands."""
