@@ -1567,3 +1567,209 @@ class EditModule(PupyModule):
         if not (args.get("path") or args.get("file")):
             return ["Missing required argument: path"]
         return []
+
+
+class MvModule(PupyModule):
+    """Move/rename a file on the target.
+
+    Upstream Pupy's ``mv`` (via pupyutils.basic_cmds). Native reimplementation
+    using the host's own move command.
+    """
+
+    name = "mv"
+    version = "1.0.0"
+    description = "Move or rename a file on the target"
+    author = "Pupyteer Team"
+    category = ModuleCategory.FILE_OPS
+
+    async def execute(self, session, args):
+        src = str(args.get("src") or args.get("source") or "").strip()
+        dst = str(args.get("dst") or args.get("destination") or "").strip()
+        if not src or not dst:
+            return {"status": "error", "error": "both src and dst are required"}
+
+        session_mgr = getattr(self, "_session_manager", None)
+        os_name = getattr(session, "os", "").lower()
+
+        if "win" in os_name:
+            cmd = f'move /Y "{src}" "{dst}"'
+        else:
+            cmd = f'mv -f "{src}" "{dst}" && echo "moved: {src} -> {dst}"'
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd, "src": src, "dst": dst}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "src": src,
+            "dst": dst,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }
+
+    def validate_args(self, args):
+        missing = [k for k in ("src", "dst") if not str(args.get(k) or args.get({"src": "source", "dst": "destination"}[k]) or "").strip()]
+        # simpler check
+        src = args.get("src") or args.get("source")
+        dst = args.get("dst") or args.get("destination")
+        if not src or not dst:
+            return ["Missing required argument: src and/or dst"]
+        return []
+
+
+class RmModule(PupyModule):
+    """Remove a file on the target.
+
+    Upstream Pupy's ``rm`` (via pupyutils.basic_cmds). Native reimplementation
+    using the host's own remove command.
+    """
+
+    name = "rm"
+    version = "1.0.0"
+    description = "Remove a file on the target"
+    author = "Pupyteer Team"
+    category = ModuleCategory.FILE_OPS
+
+    async def execute(self, session, args):
+        path = str(args.get("path") or args.get("file") or "").strip()
+        if not path:
+            return {"status": "error", "error": "path argument is required"}
+
+        recursive = bool(args.get("recursive") or args.get("r", False))
+        force = bool(args.get("force") or args.get("f", False))
+
+        session_mgr = getattr(self, "_session_manager", None)
+        os_name = getattr(session, "os", "").lower()
+
+        if "win" in os_name:
+            if recursive:
+                cmd = f'rmdir /S /Q "{path}" 2>nul || del /F /Q "{path}"'
+            else:
+                cmd = f'del /F /Q "{path}"'
+        else:
+            flags = "-rf" if recursive else "-f"
+            cmd = f'rm {flags} "{path}" && echo "removed: {path}"'
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd, "path": path}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "path": path,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }
+
+    def validate_args(self, args):
+        if not (args.get("path") or args.get("file")):
+            return ["Missing required argument: path"]
+        return []
+
+
+class WriteModule(PupyModule):
+    """Write content to a file on the target (native reimplementation).
+
+    Upstream Pupy's ``write`` (via pupyutils.basic_cmds fputcontent). Native
+    reimplementation using the fs_put transfer primitive, which is binary-safe
+    and chunked.
+    """
+
+    name = "write"
+    version = "1.0.0"
+    description = "Write content to a file on the target"
+    author = "Pupyteer Team"
+    category = ModuleCategory.FILE_OPS
+
+    async def execute(self, session, args):
+        path = str(args.get("path") or args.get("file") or "").strip()
+        content = args.get("content", "")
+        if not path:
+            return {"status": "error", "error": "path argument is required"}
+        if content is None:
+            content = ""
+        if not isinstance(content, str):
+            content = str(content)
+
+        session_mgr = getattr(self, "_session_manager", None)
+        if not session_mgr:
+            return _no_agent(session)
+
+        import tempfile, os as _os
+        fd, staged = tempfile.mkstemp(prefix="pupyteer-write-", suffix=".bin")
+        with _os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        try:
+            pushed = await transfer.push(session_mgr, session.session_id, staged, path,
+                                       timeout=_command_timeout(args))
+        finally:
+            try:
+                _os.unlink(staged)
+            except OSError:
+                pass
+        if pushed.get("error") or pushed.get("status") == "error":
+            return {"status": "error", "error": pushed.get("error", "write failed"), "path": path}
+        return {"status": "ok", "path": path, "bytes": pushed.get("bytes")}
+
+    def validate_args(self, args):
+        if not (args.get("path") or args.get("file")):
+            return ["Missing required argument: path"]
+        return []
+
+
+class RegModule(PupyModule):
+    """Query/modify the Windows registry on the target.
+
+    Upstream Pupy's ``reg`` (via pupyutils.rreg). Native reimplementation
+    using the host's reg.exe, which is available on every Windows install.
+    """
+
+    name = "reg"
+    version = "1.0.0"
+    description = "Query or modify the Windows registry on the target"
+    author = "Pupyteer Team"
+    category = ModuleCategory.RECON
+
+    async def execute(self, session, args):
+        action = str(args.get("action") or args.get("op") or "query").lower()
+        key = str(args.get("key") or args.get("path") or "").strip()
+        if action == "query" and not key:
+            return {"status": "error", "error": "key argument is required for query"}
+
+        session_mgr = getattr(self, "_session_manager", None)
+        os_name = getattr(session, "os", "").lower()
+
+        if action == "query":
+            cmd = f'reg query "{key}"'
+        elif action == "add":
+            value = args.get("value", "")
+            vtype = args.get("type", "REG_SZ")
+            cmd = f'reg add "{key}" /ve /t {vtype} /d "{value}" /f'
+        elif action == "delete":
+            cmd = f'reg delete "{key}" /f'
+        else:
+            return {"status": "error", "error": f"unknown action: {action}"}
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd, "action": action}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "action": action,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }
+
+    def validate_args(self, args):
+        action = str(args.get("action") or args.get("op") or "query").lower()
+        if action == "query" and not (args.get("key") or args.get("path")):
+            return ["Missing required argument: key"]
+        return []

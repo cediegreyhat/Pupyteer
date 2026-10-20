@@ -2,12 +2,12 @@
   "generated_from": "github.com/n1nj4sec/pupy @ pupy/modules + pupy/commands",
   "pupy_module_count": 122,
   "pupy_command_count": 16,
-  "pupyteer_module_count": 64,
+  "pupyteer_module_count": 68,
   "classification_counts": {
     "AGENT_ACTION": 5,
     "NATIVE": 38,
-    "PRESENT": 42,
-    "PY_DEP": 24,
+    "PRESENT": 46,
+    "PY_DEP": 20,
     "STDLIB": 13
   },
   "pupyteer_modules": [
@@ -48,6 +48,7 @@
     "migrate",
     "mkdir",
     "msgbox",
+    "mv",
     "netinfo",
     "netstat",
     "ping",
@@ -67,6 +68,8 @@
     "ps",
     "pwd",
     "recycle_clear",
+    "reg",
+    "rm",
     "screenshot",
     "search",
     "stat",
@@ -74,7 +77,8 @@
     "timestamp_match",
     "upload",
     "users",
-    "w"
+    "w",
+    "write"
   ],
   "pupy_commands": [
     "config",
@@ -389,7 +393,8 @@
     },
     {
       "name": "mv",
-      "class": "PY_DEP"
+      "class": "PRESENT",
+      "note": "Native shell-dispatched (mv/rm/reg) or fs_put (write) reimplementation"
     },
     {
       "name": "nbnsspoof",
@@ -491,7 +496,8 @@
     },
     {
       "name": "reg",
-      "class": "PY_DEP"
+      "class": "PRESENT",
+      "note": "Native shell-dispatched (mv/rm/reg) or fs_put (write) reimplementation"
     },
     {
       "name": "rfs",
@@ -499,7 +505,8 @@
     },
     {
       "name": "rm",
-      "class": "PY_DEP"
+      "class": "PRESENT",
+      "note": "Native shell-dispatched (mv/rm/reg) or fs_put (write) reimplementation"
     },
     {
       "name": "rwmic",
@@ -610,7 +617,8 @@
     },
     {
       "name": "write",
-      "class": "PY_DEP"
+      "class": "PRESENT",
+      "note": "Native shell-dispatched (mv/rm/reg) or fs_put (write) reimplementation"
     },
     {
       "name": "x509",
