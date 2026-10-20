@@ -359,6 +359,8 @@ class PupyteerTUI:
                    "b64 [encode|decode] <text>")
         r.register("hash", self.cmd_hash, "Hash text (md5/sha1/sha256)",
                    "hash [md5|sha1|sha256] <text>")
+        r.register("time", self.cmd_time, "Show current time",
+                   "time [utc|local|epoch]")
         r.register("macro", self.cmd_macro, "Record/playback command macros",
                    "macro [record <name>|stop|play <name>|list|delete <name>]")
         r.register("evasion", self.cmd_evasion, "Evasion testing", "evasion [status|run|list|stats]")
@@ -1542,6 +1544,20 @@ class PupyteerTUI:
             print(f"  {algo}: {h}")
         except Exception as e:
             self.render_error(f"hash failed: {e}")
+
+    async def cmd_time(self, args: List[str]) -> None:
+        """Show current time in various formats."""
+        import datetime as _dt
+        mode = (args[0].lower() if args else "local")
+        now = _dt.datetime.now(_dt.timezone.utc)
+        if mode == "utc":
+            print(f"  UTC:   {now.strftime('%Y-%m-%d %H:%M:%S')}")
+        elif mode == "epoch":
+            print(f"  Epoch: {int(now.timestamp())}")
+        else:
+            local = now.astimezone()
+            print(f"  Local: {local.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+            print(f"  UTC:   {now.strftime('%Y-%m-%d %H:%M:%S')}")
 
     async def cmd_evasion(self, args: List[str]) -> None:
         """Run evasion testing commands."""
