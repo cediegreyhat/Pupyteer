@@ -74,6 +74,7 @@ class SessionAuthorization:
         "bookmark": Permission.SESSION_READ,
         "alias": Permission.MODULE_READ,
         "watch": Permission.MODULE_READ,
+        "export": Permission.SESSION_READ,
         "transports": Permission.SESSION_READ,
         "jobs": Permission.JOB_READ,           # refined by subcommand
         "tasks": Permission.TASK_READ,         # refined by subcommand

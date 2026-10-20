@@ -351,6 +351,8 @@ class PupyteerTUI:
                    "alias [name=command|list|remove <name>]")
         r.register("watch", self.cmd_watch, "Repeat a command at an interval",
                    "watch <seconds> <command...>")
+        r.register("export", self.cmd_export, "Export session results to a file",
+                   "export [sessions|modules|history] <file>")
         r.register("evasion", self.cmd_evasion, "Evasion testing", "evasion [status|run|list|stats]")
         r.register("pipeline", self.cmd_pipeline, "Unified payload-to-evasion pipeline", "pipeline [run|build|test|auto|status|history]")
         r.register("theme", self.cmd_theme, "Change TUI theme", "theme [dark|list]")
@@ -1371,6 +1373,40 @@ class PupyteerTUI:
                 await _a.sleep(interval)
         except (KeyboardInterrupt, asyncio.CancelledError):
             self.render_info("Watch stopped.")
+
+    async def cmd_export(self, args: List[str]) -> None:
+        """Export session results, modules, or history to a file."""
+        if not args:
+            self.render_warning("Usage: export [sessions|modules|history] <file>")
+            return
+        kind = args[0].lower()
+        path = args[1] if len(args) > 1 else f"pupyteer_{kind}.txt"
+        try:
+            if kind == "sessions":
+                sessions = self._engine.sessions.list_all() if hasattr(self._engine, "sessions") else []
+                with open(path, "w") as f:
+                    for s in sessions:
+                        f.write(f"{getattr(s, 'session_id', s)}\n")
+                self.render_success(f"Exported {len(sessions)} session(s) to {path}.")
+            elif kind == "modules":
+                mods = self._registry.list_commands() if hasattr(self, "_registry") else []
+                with open(path, "w") as f:
+                    for m in mods:
+                        f.write(m + "\n")
+                self.render_success(f"Exported {len(mods)} module(s) to {path}.")
+            elif kind == "history":
+                import readline
+                n = readline.get_current_history_length()
+                entries = [readline.get_history_item(i) for i in range(1, n + 1)]
+                entries = [e for e in entries if e]
+                with open(path, "w") as f:
+                    for e in entries:
+                        f.write(e + "\n")
+                self.render_success(f"Exported {len(entries)} history entries to {path}.")
+            else:
+                self.render_warning(f"Unknown export kind: {kind}. Use sessions|modules|history.")
+        except Exception as e:
+            self.render_error(f"Export failed: {e}")
 
     async def cmd_evasion(self, args: List[str]) -> None:
         """Run evasion testing commands."""
