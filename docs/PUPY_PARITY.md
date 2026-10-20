@@ -14,9 +14,9 @@ Regenerate by re-running the inventory against `pupy/modules` + `pupy/commands`.
 |---|---|
 | Upstream Pupy modules | **122** |
 | Upstream Pupy console commands | **16** |
-| Pupyteer registered modules | **35** |
-| Already covered | 23 |
-| Not yet ported | 99 |
+| Pupyteer registered modules | **41** |
+| Already covered | 24 |
+| Not yet ported | 98 |
 
 Parity is the goal; this table is the honest distance to it.
 
@@ -32,7 +32,7 @@ Pupy `clear_logs` → `log_clear`).
 
 `cat`, `clear_logs`, `download`, `get_info`, `ip`, `ls`, `migrate`, `mimikatz`, `persistence`, `ps`, `screenshot`, `search`, `shell_exec`, `upload`
 
-### AGENT_ACTION — 6
+### AGENT_ACTION — 5
 Needs a new action on the implant. This is the **highest-risk** bucket: an action
 must be added to `agent/core/stub.py` **and** `agent/core/pe_template.c` **and**
 the `CAPABILITIES` list, or the listener refuses the task as undeclared. Editing
@@ -84,6 +84,7 @@ Upstream Pupy console commands, for parity tracking on the operator side
 | `process_kill` | `pupy/modules/process_kill.py` | New action taking a pid arg; C side uses `taskkill /F /PID` |
 | `pwd` | `pupy/modules/pwd.py` | New bare-verb action; the cwd was not exposed by anything else |
 | `get_hwuuid` | `pupy/modules/get_hwuuid.py` | Misclassified as PY_DEP; the lookup is pure stdlib |
+| `exploit_suggester` | `pupy/modules/exploit_suggester.py` | Server-side over `sysinfo`; bundled dataset, no phone-home |
 | `env` | `pupy/modules/env.py` | First module under the native-reimplementation strategy; stdlib one-liner |
 
 ### Reclassified as already covered

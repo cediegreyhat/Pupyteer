@@ -2,11 +2,11 @@
   "generated_from": "github.com/n1nj4sec/pupy @ pupy/modules + pupy/commands",
   "pupy_module_count": 122,
   "pupy_command_count": 16,
-  "pupyteer_module_count": 35,
+  "pupyteer_module_count": 41,
   "classification_counts": {
-    "AGENT_ACTION": 6,
+    "AGENT_ACTION": 5,
     "NATIVE": 38,
-    "PRESENT": 23,
+    "PRESENT": 24,
     "PY_DEP": 41,
     "STDLIB": 14
   },
@@ -173,7 +173,8 @@
     },
     {
       "name": "exploit_suggester",
-      "class": "AGENT_ACTION"
+      "class": "PRESENT",
+      "note": "Server-side over sysinfo; no agent change"
     },
     {
       "name": "forward",
