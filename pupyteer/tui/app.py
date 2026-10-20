@@ -363,6 +363,8 @@ class PupyteerTUI:
                    "time [utc|local|epoch]")
         r.register("random", self.cmd_random, "Generate random strings",
                    "random [length] [count]")
+        r.register("calc", self.cmd_calc, "Evaluate a math expression",
+                   "calc <expression>")
         r.register("macro", self.cmd_macro, "Record/playback command macros",
                    "macro [record <name>|stop|play <name>|list|delete <name>]")
         r.register("evasion", self.cmd_evasion, "Evasion testing", "evasion [status|run|list|stats]")
@@ -1581,6 +1583,22 @@ class PupyteerTUI:
         alphabet = _str.ascii_letters + _str.digits
         for _ in range(count):
             print(f"  {''.join(_sec.choice(alphabet) for _ in range(length))}")
+
+    async def cmd_calc(self, args: List[str]) -> None:
+        """Evaluate a math expression safely."""
+        if not args:
+            self.render_warning("Usage: calc <expression>")
+            return
+        expr = " ".join(args)
+        try:
+            # Safe eval: only math operations
+            import math as _math
+            allowed = {k: getattr(_math, k) for k in dir(_math) if not k.startswith("_")}
+            allowed.update({"abs": abs, "round": round, "min": min, "max": max, "pow": pow})
+            result = eval(expr, {"__builtins__": {}}, allowed)
+            print(f"  {expr} = {result}")
+        except Exception as e:
+            self.render_error(f"calc failed: {e}")
 
     async def cmd_evasion(self, args: List[str]) -> None:
         """Run evasion testing commands."""
