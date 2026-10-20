@@ -7,7 +7,8 @@
     "AGENT_ACTION": 6,
     "NATIVE": 38,
     "PRESENT": 23,
-    "PY_DEP": 55
+    "PY_DEP": 41,
+    "STDLIB": 14
   },
   "pupyteer_modules": [
     "assess",
@@ -66,7 +67,8 @@
     },
     {
       "name": "alive",
-      "class": "PY_DEP"
+      "class": "STDLIB",
+      "note": "audited: no third-party imports, portable without the tree"
     },
     {
       "name": "apps",
@@ -126,11 +128,13 @@
     },
     {
       "name": "date",
-      "class": "PY_DEP"
+      "class": "STDLIB",
+      "note": "audited: no third-party imports, portable without the tree"
     },
     {
       "name": "display",
-      "class": "PY_DEP"
+      "class": "STDLIB",
+      "note": "audited: no third-party imports, portable without the tree"
     },
     {
       "name": "dns",
@@ -142,7 +146,8 @@
     },
     {
       "name": "drives",
-      "class": "PY_DEP"
+      "class": "STDLIB",
+      "note": "audited: no third-party imports, portable without the tree"
     },
     {
       "name": "duplicate",
@@ -150,7 +155,8 @@
     },
     {
       "name": "echo",
-      "class": "PY_DEP"
+      "class": "STDLIB",
+      "note": "audited: no third-party imports, portable without the tree"
     },
     {
       "name": "edit",
@@ -188,15 +194,18 @@
     },
     {
       "name": "getpid",
-      "class": "PY_DEP"
+      "class": "STDLIB",
+      "note": "audited: no third-party imports, portable without the tree"
     },
     {
       "name": "getppid",
-      "class": "PY_DEP"
+      "class": "STDLIB",
+      "note": "audited: no third-party imports, portable without the tree"
     },
     {
       "name": "getprivs",
-      "class": "PY_DEP"
+      "class": "STDLIB",
+      "note": "audited: no third-party imports, portable without the tree"
     },
     {
       "name": "getsystem",
@@ -204,7 +213,8 @@
     },
     {
       "name": "getuid",
-      "class": "PY_DEP"
+      "class": "STDLIB",
+      "note": "audited: no third-party imports, portable without the tree"
     },
     {
       "name": "gpstracker",
@@ -252,7 +262,8 @@
     },
     {
       "name": "last",
-      "class": "PY_DEP"
+      "class": "STDLIB",
+      "note": "audited: no third-party imports, portable without the tree"
     },
     {
       "name": "lazagne",
@@ -272,7 +283,8 @@
     },
     {
       "name": "logs",
-      "class": "PY_DEP"
+      "class": "STDLIB",
+      "note": "audited: no third-party imports, portable without the tree"
     },
     {
       "name": "loot_memory",
@@ -320,7 +332,8 @@
     },
     {
       "name": "msgbox",
-      "class": "PY_DEP"
+      "class": "STDLIB",
+      "note": "audited: no third-party imports, portable without the tree"
     },
     {
       "name": "mv",
@@ -519,7 +532,8 @@
     },
     {
       "name": "users",
-      "class": "PY_DEP"
+      "class": "STDLIB",
+      "note": "audited: no third-party imports, portable without the tree"
     },
     {
       "name": "usniper",
@@ -531,7 +545,8 @@
     },
     {
       "name": "w",
-      "class": "PY_DEP"
+      "class": "STDLIB",
+      "note": "audited: no third-party imports, portable without the tree"
     },
     {
       "name": "webcamsnap",
@@ -553,5 +568,12 @@
       "name": "zip",
       "class": "PY_DEP"
     }
-  ]
+  ],
+  "classes": {
+    "PRESENT": "already provided by Pupyteer",
+    "STDLIB": "no third-party tree needed; portable now, just not written yet",
+    "AGENT_ACTION": "needs a new action in both agents + CAPABILITIES",
+    "PY_DEP": "genuinely needs a third-party library (reimplement natively)",
+    "NATIVE": "needs a native payload, not Python"
+  }
 }

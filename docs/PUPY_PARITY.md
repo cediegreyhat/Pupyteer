@@ -43,7 +43,15 @@ side lands they are straightforwardly testable.
 
 `ad`, `become`, `call`, `exploit_suggester`, `mimishell`, `netstat`, `port_scan`, `privesc_checker`, `process_kill`, `pwd`, `sudo_alias`, `ttyrec`
 
-### PY_DEP — 55
+### STDLIB — 14
+**No third-party tree needed at all.** Audited by fetching each upstream module
+and reading its non-framework imports: this batch has *zero* third-party
+imports, so they were classified PY_DEP by category rather than by source. They
+are portable now and only need writing.
+
+`alive`, `date`, `display`, `drives`, `echo`, `getpid`, `getppid`, `getprivs`, `getuid`, `last`, `logs`, `msgbox`, `users`, `w`
+
+### PY_DEP — 41
 Needs Pupy's vendored Python dependency tree (`pupy/packages/*`: impacket,
 paramiko, scapy, crypto) shipped inside the generated payload. **Reachable only
 from the Python agent** — `pe_template.c` is a compiled C binary with no
