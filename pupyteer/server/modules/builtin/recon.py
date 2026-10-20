@@ -2633,3 +2633,55 @@ class PexecModule(PupyModule):
         if not (args.get("command") or args.get("cmd")):
             errs.append("Missing required argument: command")
         return errs
+
+
+class PortfwdModule(PupyModule):
+    """Set up port forwarding on the target.
+
+    Upstream Pupy's ``portfwd`` (via portfwd agent module). Native
+    reimplementation using ssh -L/socat on the host.
+    """
+
+    name = "portfwd"
+    version = "1.0.0"
+    description = "Set up port forwarding on the target"
+    author = "Pupyteer Team"
+    category = ModuleCategory.EXECUTION
+
+    async def execute(self, session, args):
+        action = str(args.get("action") or "add").lower().strip()
+        local_port = int(args.get("local_port") or args.get("lport") or 0)
+        remote_host = str(args.get("remote_host") or args.get("rhost") or "127.0.0.1").strip()
+        remote_port = int(args.get("remote_port") or args.get("rport") or 0)
+
+        if action == "add":
+            if not (local_port and remote_port):
+                return {"status": "error", "error": "local_port and remote_port are required"}
+        elif action not in ("remove", "list"):
+            return {"status": "error", "error": f"unknown action: {action}"}
+
+        session_mgr = getattr(self, "_session_manager", None)
+
+        if action == "list":
+            cmd = "ss -tlnp 2>/dev/null | grep LISTEN; netstat -tlnp 2>/dev/null | grep LISTEN"
+        elif action == "remove":
+            cmd = f"pkill -f 'socat.*{local_port}' 2>/dev/null; echo 'removed forward on {local_port}'"
+        else:
+            cmd = (
+                f"socat TCP-LISTEN:{local_port},fork,reuseaddr "
+                f"TCP:{remote_host}:{remote_port} >/dev/null 2>&1 & "
+                f"echo 'forwarded {local_port} -> {remote_host}:{remote_port}'"
+            )
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd, "action": action}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "action": action,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }
