@@ -2268,3 +2268,38 @@ class ZipModule(PupyModule):
             if str(args.get("action") or "create").lower() != "extract":
                 return ["Missing required argument: archive"]
         return []
+
+
+class TasksModule(PupyModule):
+    """List/manage running tasks on the target.
+
+    Upstream Pupy's ``tasks`` (via tasks agent module). Native reimplementation
+    using tasklist/ps on the host.
+    """
+
+    name = "tasks"
+    version = "1.0.0"
+    description = "List running tasks/processes on the target"
+    author = "Pupyteer Team"
+    category = ModuleCategory.RECON
+
+    async def execute(self, session, args):
+        session_mgr = getattr(self, "_session_manager", None)
+        os_name = getattr(session, "os", "").lower()
+
+        if "win" in os_name:
+            cmd = "tasklist /v 2>nul"
+        else:
+            cmd = "ps aux 2>/dev/null || ps -ef"
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }
