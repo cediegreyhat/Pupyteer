@@ -91,6 +91,7 @@ class SessionAuthorization:
         "profiles": Permission.PROFILE_READ,   # refined by subcommand
         "config": Permission.CONFIG_READ,      # refined by subcommand
         "logs": Permission.AUDIT_READ,
+        "history": Permission.AUDIT_READ,
         "evasion": Permission.EVASION_READ,    # refined by subcommand
         "pipeline": Permission.PAYLOAD_BUILD,  # refined by subcommand
         "operator": Permission.OPERATOR_MANAGE,

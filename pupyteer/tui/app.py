@@ -343,6 +343,8 @@ class PupyteerTUI:
         r.register("transports", self.cmd_transports, "List active transports")
         r.register("config", self.cmd_config, "View configuration", "config [get <key>|set <key> <value>]")
         r.register("logs", self.cmd_logs, "View recent audit logs")
+        r.register("history", self.cmd_history, "Search/export command history",
+                   "history [search <term>|export <file>|clear]")
         r.register("evasion", self.cmd_evasion, "Evasion testing", "evasion [status|run|list|stats]")
         r.register("pipeline", self.cmd_pipeline, "Unified payload-to-evasion pipeline", "pipeline [run|build|test|auto|status|history]")
         r.register("theme", self.cmd_theme, "Change TUI theme", "theme [dark|list]")
@@ -1183,6 +1185,50 @@ class PupyteerTUI:
                 print("  " + line.rstrip())
         except Exception as e:
             self.render_error(f"Error reading logs: {e}")
+
+    async def cmd_history(self, args: List[str]) -> None:
+        """Search or export the operator command history."""
+        import readline
+        try:
+            n = readline.get_current_history_length()
+            entries = [readline.get_history_item(i) for i in range(1, n + 1)]
+            entries = [e for e in entries if e]
+        except Exception as e:
+            self.render_error(f"Could not read history: {e}")
+            return
+
+        if not args:
+            for i, e in enumerate(entries[-20:], start=max(1, len(entries) - 19)):
+                print(f"  {i:4d}  {e}")
+            self.render_info(f"Showing last {min(20, len(entries))} of {len(entries)} entries.")
+            return
+
+        sub = args[0].lower()
+        if sub == "search":
+            term = " ".join(args[1:]).lower()
+            matches = [(i, e) for i, e in enumerate(entries, 1) if term in e.lower()]
+            for i, e in matches[-50:]:
+                print(f"  {i:4d}  {e}")
+            self.render_info(f"{len(matches)} match(es) for '{term}'.")
+        elif sub == "export":
+            path = args[1] if len(args) > 1 else "pupyteer_history.txt"
+            try:
+                with open(path, "w") as f:
+                    for e in entries:
+                        f.write(e + "\n")
+                self.render_success(f"Exported {len(entries)} entries to {path}.")
+            except Exception as e:
+                self.render_error(f"Export failed: {e}")
+        elif sub == "clear":
+            try:
+                readline.clear_history()
+                if os.path.exists(self._history_file):
+                    os.remove(self._history_file)
+                self.render_success("Command history cleared.")
+            except Exception as e:
+                self.render_error(f"Clear failed: {e}")
+        else:
+            self.render_warning("Usage: history [search <term>|export <file>|clear]")
 
     async def cmd_evasion(self, args: List[str]) -> None:
         """Run evasion testing commands."""
