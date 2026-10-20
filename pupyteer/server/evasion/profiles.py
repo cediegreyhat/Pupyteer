@@ -208,6 +208,29 @@ PROFILE_NETWORK_EVASION = TestConfigurationProfile(
 )
 
 
+PROFILE_CHACHA20 = TestConfigurationProfile(
+    name="chacha20",
+    description="ChaCha20-Poly1305 authenticated encryption with PE hardening",
+    obfuscation=ObfuscationConfig(
+        scheme=EncodingScheme.CHACHA20,
+        xor_key_size=32,
+        aes_key_size=32,
+        encrypt_strings=True,
+        obfuscate_imports=True,
+        randomize_pe_sections=True,
+        strip_pe_debug=True,
+        modify_pe_timestamp=True,
+        anti_sandbox=True,
+        anti_debug=True,
+        anti_vm=True,
+        injection_enabled=False,
+        injection_method="",
+    ),
+    controls=["windows_defender", "crowdstrike", "yara", "sigma", "amsi"],
+    tags=["chacha20", "aead", "modern"],
+)
+
+
 # Registry of all built-in profiles
 BUILTIN_PROFILES: Dict[str, TestConfigurationProfile] = {
     p.name: p for p in [
@@ -218,6 +241,7 @@ BUILTIN_PROFILES: Dict[str, TestConfigurationProfile] = {
         PROFILE_ANTI_INJECTION,
         PROFILE_STEALTH_FULL,
         PROFILE_NETWORK_EVASION,
+        PROFILE_CHACHA20,
     ]
 }
 
