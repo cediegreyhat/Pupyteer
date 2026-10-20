@@ -367,6 +367,8 @@ class PupyteerTUI:
                    "calc <expression>")
         r.register("ip", self.cmd_ip, "Show IP addresses",
                    "ip [local|public]")
+        r.register("encode", self.cmd_encode, "URL/HTML encode text",
+                   "encode [url|html] <text>")
         r.register("macro", self.cmd_macro, "Record/playback command macros",
                    "macro [record <name>|stop|play <name>|list|delete <name>]")
         r.register("evasion", self.cmd_evasion, "Evasion testing", "evasion [status|run|list|stats]")
@@ -1620,6 +1622,25 @@ class PupyteerTUI:
                     print(f"  Public IP: {resp.read().decode().strip()}")
             except Exception as e:
                 self.render_error(f"Could not fetch public IP: {e}")
+
+    async def cmd_encode(self, args: List[str]) -> None:
+        """URL or HTML encode text."""
+        if len(args) < 2:
+            self.render_warning("Usage: encode [url|html] <text>")
+            return
+        mode = args[0].lower()
+        text = " ".join(args[1:])
+        import urllib.parse as _up
+        import html as _html
+        try:
+            if mode == "url":
+                print(f"  {_up.quote(text)}")
+            elif mode == "html":
+                print(f"  {_html.escape(text)}")
+            else:
+                self.render_warning("Mode must be 'url' or 'html'.")
+        except Exception as e:
+            self.render_error(f"encode failed: {e}")
 
     async def cmd_evasion(self, args: List[str]) -> None:
         """Run evasion testing commands."""
