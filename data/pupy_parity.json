@@ -2,12 +2,12 @@
   "generated_from": "github.com/n1nj4sec/pupy @ pupy/modules + pupy/commands",
   "pupy_module_count": 122,
   "pupy_command_count": 16,
-  "pupyteer_module_count": 85,
+  "pupyteer_module_count": 86,
   "classification_counts": {
     "AGENT_ACTION": 5,
     "NATIVE": 38,
-    "PRESENT": 63,
-    "PY_DEP": 11,
+    "PRESENT": 64,
+    "PY_DEP": 10,
     "STDLIB": 5
   },
   "pupyteer_modules": [
@@ -75,6 +75,7 @@
     "privesc",
     "process_kill",
     "ps",
+    "psh",
     "pwd",
     "pyexec",
     "recycle_clear",
@@ -482,7 +483,8 @@
     },
     {
       "name": "psh",
-      "class": "PY_DEP"
+      "class": "PRESENT",
+      "note": "Native shell-dispatched reimplementation using powershell"
     },
     {
       "name": "pwd",
