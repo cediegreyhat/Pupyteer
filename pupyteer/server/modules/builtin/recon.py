@@ -2721,3 +2721,51 @@ class Socks5ProxyModule(PupyModule):
             "output": result.get("output", ""),
             "error": result.get("error"),
         }
+
+
+class SshModule(PupyModule):
+    """Run commands over SSH on a remote host.
+
+    Upstream Pupy's ``ssh`` (via ssh agent module). Native reimplementation
+    using ssh on the host.
+    """
+
+    name = "ssh"
+    version = "1.0.0"
+    description = "Run commands over SSH on a remote host"
+    author = "Pupyteer Team"
+    category = ModuleCategory.EXECUTION
+
+    async def execute(self, session, args):
+        target = str(args.get("target") or args.get("host") or "").strip()
+        if not target:
+            return {"status": "error", "error": "target argument is required"}
+        command = str(args.get("command") or args.get("cmd") or "").strip()
+        user = str(args.get("user") or "").strip()
+        port = int(args.get("port") or 22)
+
+        session_mgr = getattr(self, "_session_manager", None)
+
+        prefix = f"ssh -p {port} " + (f"{user}@" if user else "") + target
+        if command:
+            cmd = f'{prefix} "{command}"'
+        else:
+            cmd = f"{prefix}"
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd, "target": target}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "target": target,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }
+
+    def validate_args(self, args):
+        if not (args.get("target") or args.get("host")):
+            return ["Missing required argument: target"]
+        return []
