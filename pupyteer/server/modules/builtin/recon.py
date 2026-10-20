@@ -1170,3 +1170,163 @@ class MsgboxModule(PupyModule):
         if not (args.get("text") or args.get("message")):
             return ["Missing required argument: text"]
         return []
+
+
+class LastModule(PupyModule):
+    """Show recent login sessions on the target.
+
+    Upstream Pupy's ``last`` (via pupyps / readlogs). Native reimplementation
+    using the host's own ``last``/``lastlog`` tooling.
+    """
+
+    name = "last"
+    version = "1.0.0"
+    description = "Show recent login sessions on the target"
+    author = "Pupyteer Team"
+    category = ModuleCategory.RECON
+
+    async def execute(self, session: Any, args: Dict[str, Any]) -> Dict[str, Any]:
+        session_mgr = getattr(self, "_session_manager", None)
+        os_name = getattr(session, "os", "").lower()
+
+        n = int(args.get("lines") or args.get("n") or 20)
+        if "win" in os_name:
+            cmd = "wevtutil qe Security /q:\"*[System[(EventID=4624)]]\" /c:%d /f:text" % n
+        else:
+            cmd = f"last -n {n}"
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }
+
+
+class LogsModule(PupyModule):
+    """Show recent system logs on the target.
+
+    Upstream Pupy's ``logs`` (via readlogs / pupwinutils). Native
+    reimplementation using the host's own log tooling.
+    """
+
+    name = "logs"
+    version = "1.0.0"
+    description = "Show recent system logs on the target"
+    author = "Pupyteer Team"
+    category = ModuleCategory.RECON
+
+    async def execute(self, session: Any, args: Dict[str, Any]) -> Dict[str, Any]:
+        session_mgr = getattr(self, "_session_manager", None)
+        os_name = getattr(session, "os", "").lower()
+        n = int(args.get("number") or args.get("n") or 10)
+
+        if "win" in os_name:
+            cmd = "wevtutil qe System /c:%d /f:text" % n
+        else:
+            cmd = f"journalctl -n {n} --no-pager 2>/dev/null || tail -n {n} /var/log/syslog"
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }
+
+
+class CloudinfoModule(PupyModule):
+    """Query cloud instance metadata on the target.
+
+    Upstream Pupy's ``cloudinfo`` (via the cloudinfo agent module). Native
+    reimplementation hitting the standard metadata endpoints with curl.
+    """
+
+    name = "cloudinfo"
+    version = "1.0.0"
+    description = "Query cloud instance metadata (AWS/GCP/Azure) on the target"
+    author = "Pupyteer Team"
+    category = ModuleCategory.RECON
+
+    async def execute(self, session: Any, args: Dict[str, Any]) -> Dict[str, Any]:
+        session_mgr = getattr(self, "_session_manager", None)
+        # IMDSv2 (AWS) token flow, then a plain GET; GCP/Azure use headers.
+        cmd = (
+            "TOKEN=$(curl -s -X PUT 'http://169.254.169.254/latest/api/token' "
+            "-H 'X-aws-ec2-metadata-token-ttl-seconds: 60' 2>/dev/null); "
+            "curl -s -H \"X-aws-ec2-metadata-token: $TOKEN\" "
+            "http://169.254.169.254/latest/meta-data/ 2>/dev/null; "
+            "echo '---GCP---'; "
+            "curl -s -H 'Metadata-Flavor: Google' "
+            "http://metadata.google.internal/computeMetadata/v1/ 2>/dev/null; "
+            "echo '---AZURE---'; "
+            "curl -s -H 'Metadata: true' "
+            "'http://169.254.169.254/metadata/instance?api-version=2021-02-01' 2>/dev/null"
+        )
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }
+
+
+class DnsModule(PupyModule):
+    """Resolve DNS names on the target.
+
+    Upstream Pupy's ``dns`` (via pupyutils.dns, netaddr). Native
+    reimplementation using the host's own resolver, with netaddr replaced by
+    the stdlib ipaddress module where needed.
+    """
+
+    name = "dns"
+    version = "1.0.0"
+    description = "Resolve DNS names on the target"
+    author = "Pupyteer Team"
+    category = ModuleCategory.RECON
+
+    async def execute(self, session: Any, args: Dict[str, Any]) -> Dict[str, Any]:
+        name = str(args.get("name") or args.get("host") or args.get("domain") or "").strip()
+        if not name:
+            return {"status": "error", "error": "name argument is required"}
+
+        session_mgr = getattr(self, "_session_manager", None)
+        os_name = getattr(session, "os", "").lower()
+
+        if "win" in os_name:
+            cmd = f"nslookup {name}"
+        else:
+            cmd = f"getent hosts {name} 2>/dev/null || (command -v dig >/dev/null && dig +short {name}) || nslookup {name}"
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd, "name": name}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "name": name,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }
+
+    def validate_args(self, args: Dict[str, Any]) -> list[str]:
+        if not (args.get("name") or args.get("host") or args.get("domain")):
+            return ["Missing required argument: name"]
+        return []

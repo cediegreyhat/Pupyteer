@@ -2,13 +2,13 @@
   "generated_from": "github.com/n1nj4sec/pupy @ pupy/modules + pupy/commands",
   "pupy_module_count": 122,
   "pupy_command_count": 16,
-  "pupyteer_module_count": 55,
+  "pupyteer_module_count": 59,
   "classification_counts": {
     "AGENT_ACTION": 5,
     "NATIVE": 38,
-    "PRESENT": 33,
+    "PRESENT": 37,
     "PY_DEP": 25,
-    "STDLIB": 21
+    "STDLIB": 17
   },
   "pupyteer_modules": [
     "alive",
@@ -16,10 +16,12 @@
     "assess",
     "cat",
     "check_vm",
+    "cloudinfo",
     "cp",
     "credential_collect",
     "date",
     "discovery",
+    "dns",
     "download",
     "drives",
     "env",
@@ -34,8 +36,10 @@
     "getppid",
     "getprivs",
     "getuid",
+    "last",
     "lateral_sim",
     "log_clear",
+    "logs",
     "migrate",
     "mkdir",
     "msgbox",
@@ -136,8 +140,8 @@
     },
     {
       "name": "cloudinfo",
-      "class": "STDLIB",
-      "note": "pygments used only for display formatting; core data is stdlib"
+      "class": "PRESENT",
+      "note": "Native shell-dispatched reimplementation; no agent change"
     },
     {
       "name": "contacts",
@@ -170,8 +174,8 @@
     },
     {
       "name": "dns",
-      "class": "STDLIB",
-      "note": "netaddr -> stdlib ipaddress"
+      "class": "PRESENT",
+      "note": "Native shell-dispatched reimplementation; no agent change"
     },
     {
       "name": "download",
@@ -303,8 +307,8 @@
     },
     {
       "name": "last",
-      "class": "STDLIB",
-      "note": "audited: no third-party imports, portable without the tree"
+      "class": "PRESENT",
+      "note": "Native shell-dispatched reimplementation; no agent change"
     },
     {
       "name": "lazagne",
@@ -324,8 +328,8 @@
     },
     {
       "name": "logs",
-      "class": "STDLIB",
-      "note": "audited: no third-party imports, portable without the tree"
+      "class": "PRESENT",
+      "note": "Native shell-dispatched reimplementation; no agent change"
     },
     {
       "name": "loot_memory",
