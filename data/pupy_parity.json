@@ -2,13 +2,13 @@
   "generated_from": "github.com/n1nj4sec/pupy @ pupy/modules + pupy/commands",
   "pupy_module_count": 122,
   "pupy_command_count": 16,
-  "pupyteer_module_count": 52,
+  "pupyteer_module_count": 55,
   "classification_counts": {
     "AGENT_ACTION": 5,
     "NATIVE": 38,
-    "PRESENT": 30,
+    "PRESENT": 33,
     "PY_DEP": 25,
-    "STDLIB": 24
+    "STDLIB": 21
   },
   "pupyteer_modules": [
     "alive",
@@ -37,6 +37,8 @@
     "lateral_sim",
     "log_clear",
     "migrate",
+    "mkdir",
+    "msgbox",
     "netinfo",
     "netstat",
     "ping",
@@ -62,7 +64,8 @@
     "sysinfo",
     "timestamp_match",
     "upload",
-    "users"
+    "users",
+    "w"
   ],
   "pupy_commands": [
     "config",
@@ -362,8 +365,8 @@
     },
     {
       "name": "mkdir",
-      "class": "STDLIB",
-      "note": "stdlib-only upstream; no third-party tree"
+      "class": "PRESENT",
+      "note": "Native shell-dispatched reimplementation; no agent change"
     },
     {
       "name": "mouselogger",
@@ -371,8 +374,8 @@
     },
     {
       "name": "msgbox",
-      "class": "STDLIB",
-      "note": "audited: no third-party imports, portable without the tree"
+      "class": "PRESENT",
+      "note": "Native shell-dispatched reimplementation; no agent change"
     },
     {
       "name": "mv",
@@ -584,8 +587,8 @@
     },
     {
       "name": "w",
-      "class": "STDLIB",
-      "note": "audited: no third-party imports, portable without the tree"
+      "class": "PRESENT",
+      "note": "Native shell-dispatched reimplementation; no agent change"
     },
     {
       "name": "webcamsnap",

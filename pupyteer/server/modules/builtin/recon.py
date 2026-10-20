@@ -1038,3 +1038,135 @@ class GetprivsModule(PupyModule):
             "output": result.get("output", ""),
             "error": result.get("error"),
         }
+
+
+class MkdirModule(PupyModule):
+    """Create a directory on the target.
+
+    Upstream Pupy's ``mkdir`` (via pupyutils.basic_cmds). Native
+    reimplementation using the host's own mkdir.
+    """
+
+    name = "mkdir"
+    version = "1.0.0"
+    description = "Create a directory on the target"
+    author = "Pupyteer Team"
+    category = ModuleCategory.FILE_OPS
+
+    async def execute(self, session: Any, args: Dict[str, Any]) -> Dict[str, Any]:
+        path = str(args.get("path") or args.get("dir") or "").strip()
+        if not path:
+            return {"status": "error", "error": "path argument is required"}
+
+        session_mgr = getattr(self, "_session_manager", None)
+        os_name = getattr(session, "os", "").lower()
+
+        if "win" in os_name:
+            cmd = f'mkdir "{path}" 2>nul || echo directory exists'
+        else:
+            cmd = f'mkdir -p "{path}" && echo "created: {path}"'
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd, "path": path}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "path": path,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }
+
+    def validate_args(self, args: Dict[str, Any]) -> list[str]:
+        if not (args.get("path") or args.get("dir")):
+            return ["Missing required argument: path"]
+        return []
+
+
+class WModule(PupyModule):
+    """List logged-in terminal sessions on the target.
+
+    Upstream Pupy's ``w`` (via pupyps / pupwinutils.security). Native
+    reimplementation using the host's own tooling.
+    """
+
+    name = "w"
+    version = "1.0.0"
+    description = "List logged-in terminal sessions on the target"
+    author = "Pupyteer Team"
+    category = ModuleCategory.RECON
+
+    async def execute(self, session: Any, args: Dict[str, Any]) -> Dict[str, Any]:
+        session_mgr = getattr(self, "_session_manager", None)
+        os_name = getattr(session, "os", "").lower()
+
+        if "win" in os_name:
+            cmd = "query user"
+        else:
+            cmd = "w -h"
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }
+
+
+class MsgboxModule(PupyModule):
+    """Pop a message box / notification on the target.
+
+    Upstream Pupy's ``msgbox`` (via pupwinutils.msgbox / notify / osascript).
+    Native reimplementation using the host's own notification mechanism.
+    """
+
+    name = "msgbox"
+    version = "1.0.0"
+    description = "Pop a message box or notification on the target"
+    author = "Pupyteer Team"
+    category = ModuleCategory.EXECUTION
+
+    async def execute(self, session: Any, args: Dict[str, Any]) -> Dict[str, Any]:
+        text = str(args.get("text") or args.get("message") or "").strip()
+        title = str(args.get("title") or "Pupyteer").strip()
+        if not text:
+            return {"status": "error", "error": "text argument is required"}
+
+        session_mgr = getattr(self, "_session_manager", None)
+        os_name = getattr(session, "os", "").lower()
+
+        if "win" in os_name:
+            cmd = (
+                f'powershell -Command "Add-Type -AssemblyName '
+                f'Microsoft.VisualBasic; [Microsoft.VisualBasic.Interaction]::MsgBox('
+                f"\\'{text}\\', 0, \\'{title}\\')" + '"'
+            )
+        elif "darwin" in os_name or "mac" in os_name:
+            cmd = f'osascript -e \'display notification "{text}" with title "{title}"\''
+        else:
+            cmd = f'notify-send "{title}" "{text}" 2>/dev/null || echo "{text}"'
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd, "text": text}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "text": text,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }
+
+    def validate_args(self, args: Dict[str, Any]) -> list[str]:
+        if not (args.get("text") or args.get("message")):
+            return ["Missing required argument: text"]
+        return []
