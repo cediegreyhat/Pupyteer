@@ -550,3 +550,35 @@ class ProcessKillModule(PupyModule):
         if not args.get("pid") and not str(args.get("name", "")).strip():
             return ["Missing required argument: pid or name"]
         return []
+
+
+class PwdModule(PupyModule):
+    """Report the agent's working directory.
+
+    Upstream Pupy's ``pwd``. Exists because relative paths in every other
+    result are unanchored without it.
+    """
+
+    name = "pwd"
+    version = "1.0.0"
+    description = "Report the agent's working directory"
+    author = "Pupyteer Team"
+    category = ModuleCategory.RECON
+
+    async def execute(self, session: Any, args: Dict[str, Any]) -> Dict[str, Any]:
+        session_mgr = getattr(self, "_session_manager", None)
+        if not session_mgr:
+            return _no_agent(session)
+
+        reply = await transfer.run_action(
+            session_mgr, session.session_id, {"action": "pwd"},
+            timeout=_command_timeout(args))
+        if reply.get("error"):
+            return {"status": "error", "error": reply["error"]}
+        cwd = reply.get("cwd")
+        if not cwd:
+            return {
+                "status": "error",
+                "error": f"the agent did not report a working directory: {str(reply)[:200]}",
+            }
+        return {"status": "ok", "cwd": cwd, "platform": reply.get("platform")}

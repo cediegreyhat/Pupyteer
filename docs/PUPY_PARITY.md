@@ -14,9 +14,9 @@ Regenerate by re-running the inventory against `pupy/modules` + `pupy/commands`.
 |---|---|
 | Upstream Pupy modules | **122** |
 | Upstream Pupy console commands | **16** |
-| Pupyteer registered modules | **32** |
-| Already covered | 17 |
-| Not yet ported | 105 |
+| Pupyteer registered modules | **33** |
+| Already covered | 21 |
+| Not yet ported | 101 |
 
 Parity is the goal; this table is the honest distance to it.
 
@@ -25,14 +25,14 @@ Parity is the goal; this table is the honest distance to it.
 Each upstream module falls into one of four buckets. The bucket decides the
 work, the risk, and which agent it can ever run on.
 
-### PRESENT — 17
+### PRESENT — 21
 Pupyteer already provides the capability, possibly under a different name
 (Pupy `ls` → Pupyteer `file_list`, Pupy `get_info` → `sysinfo`,
 Pupy `clear_logs` → `log_clear`).
 
 `cat`, `clear_logs`, `download`, `get_info`, `ip`, `ls`, `migrate`, `mimikatz`, `persistence`, `ps`, `screenshot`, `search`, `shell_exec`, `upload`
 
-### AGENT_ACTION — 10
+### AGENT_ACTION — 6
 Needs a new action on the implant. This is the **highest-risk** bucket: an action
 must be added to `agent/core/stub.py` **and** `agent/core/pe_template.c` **and**
 the `CAPABILITIES` list, or the listener refuses the task as undeclared. Editing
@@ -74,6 +74,18 @@ Upstream Pupy console commands, for parity tracking on the operator side
 | `stat` | `pupy/modules/stat.py` | Derived from `fs_list` of the parent; no agent change |
 | `netstat` | `pupy/modules/netstat.py` | New action: declared in `capabilities.py`, **both** agents, and a module |
 | `process_kill` | `pupy/modules/process_kill.py` | New action taking a pid arg; C side uses `taskkill /F /PID` |
+| `pwd` | `pupy/modules/pwd.py` | New bare-verb action; the cwd was not exposed by anything else |
+
+### Reclassified as already covered
+
+Found during tranche 1: these were counted as missing but an existing module
+already provides the capability. The manifest was over-counting the gap.
+
+| Pupy module | Covered by |
+|---|---|
+| `port_scan` | `post_portscan` ("port scan a host from the target") |
+| `privesc_checker` | `privesc` |
+| `sudo_alias` | `post_sudo` |
 
 ## Suggested tranche order
 

