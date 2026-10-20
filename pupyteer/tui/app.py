@@ -353,6 +353,8 @@ class PupyteerTUI:
                    "watch <seconds> <command...>")
         r.register("export", self.cmd_export, "Export session results to a file",
                    "export [sessions|modules|history] <file>")
+        r.register("macro", self.cmd_macro, "Record/playback command macros",
+                   "macro [record <name>|stop|play <name>|list|delete <name>]")
         r.register("evasion", self.cmd_evasion, "Evasion testing", "evasion [status|run|list|stats]")
         r.register("pipeline", self.cmd_pipeline, "Unified payload-to-evasion pipeline", "pipeline [run|build|test|auto|status|history]")
         r.register("theme", self.cmd_theme, "Change TUI theme", "theme [dark|list]")
@@ -1408,6 +1410,77 @@ class PupyteerTUI:
         except Exception as e:
             self.render_error(f"Export failed: {e}")
 
+    async def cmd_macro(self, args: List[str]) -> None:
+        """Record, play, list, or delete command macros."""
+        macros = getattr(self, "_macros", None)
+        if macros is None:
+            macros = {}
+            self._macros = macros
+        recording = getattr(self, "_macro_recording", None)
+
+        if not args:
+            if not macros:
+                self.render_info("No macros. Use: macro record <name>")
+                return
+            for name, cmds in macros.items():
+                print(f"  {name.ljust(16)} ({len(cmds)} cmd(s))")
+            self.render_info(f"{len(macros)} macro(s).")
+            return
+
+        sub = args[0].lower()
+        if sub == "record":
+            if len(args) < 2:
+                self.render_warning("Usage: macro record <name>")
+                return
+            self._macro_recording = args[1]
+            self._macro_buffer = []
+            self.render_success(f"Recording macro '{args[1]}'. Run commands, then 'macro stop'.")
+        elif sub == "stop":
+            if recording is None:
+                self.render_warning("Not recording a macro.")
+                return
+            macros[recording] = list(getattr(self, "_macro_buffer", []))
+            self._macro_recording = None
+            self._macro_buffer = []
+            self.render_success(f"Saved macro '{recording}' ({len(macros[recording])} cmd(s)).")
+        elif sub == "play":
+            if len(args) < 2:
+                self.render_warning("Usage: macro play <name>")
+                return
+            name = args[1]
+            if name not in macros:
+                self.render_warning(f"No macro named '{name}'.")
+                return
+            for cmd_line in macros[name]:
+                self.render_info(f"> {cmd_line}")
+                parts = shlex.split(cmd_line)
+                if not parts:
+                    continue
+                cmd = self._registry.get(parts[0])
+                if cmd:
+                    try:
+                        await cmd["handler"](parts[1:])
+                    except Exception as e:
+                        self.render_error(f"{e}")
+        elif sub == "list":
+            if not macros:
+                self.render_info("No macros defined.")
+                return
+            for name, cmds in macros.items():
+                print(f"  {name.ljust(16)} ({len(cmds)} cmd(s))")
+        elif sub == "delete":
+            if len(args) < 2:
+                self.render_warning("Usage: macro delete <name>")
+                return
+            name = args[1]
+            if name in macros:
+                del macros[name]
+                self.render_success(f"Deleted macro '{name}'.")
+            else:
+                self.render_warning(f"No macro named '{name}'.")
+        else:
+            self.render_warning("Usage: macro [record <name>|stop|play <name>|list|delete <name>]")
+
     async def cmd_evasion(self, args: List[str]) -> None:
         """Run evasion testing commands."""
         from pupyteer.tui.commands import evasion
@@ -1745,6 +1818,12 @@ class PupyteerTUI:
                 line = line.strip()
                 if not line:
                     continue
+
+                # Record into active macro if recording
+                if getattr(self, "_macro_recording", None):
+                    buf = getattr(self, "_macro_buffer", None)
+                    if buf is not None:
+                        buf.append(line)
 
                 parts = shlex.split(line)
                 if not parts:
