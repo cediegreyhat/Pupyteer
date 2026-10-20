@@ -2,12 +2,12 @@
   "generated_from": "github.com/n1nj4sec/pupy @ pupy/modules + pupy/commands",
   "pupy_module_count": 122,
   "pupy_command_count": 16,
-  "pupyteer_module_count": 81,
+  "pupyteer_module_count": 82,
   "classification_counts": {
     "AGENT_ACTION": 5,
     "NATIVE": 38,
-    "PRESENT": 59,
-    "PY_DEP": 15,
+    "PRESENT": 60,
+    "PY_DEP": 14,
     "STDLIB": 5
   },
   "pupyteer_modules": [
@@ -82,6 +82,7 @@
     "screenshot",
     "search",
     "services",
+    "shares",
     "stat",
     "sysinfo",
     "tasks",
@@ -545,7 +546,8 @@
     },
     {
       "name": "shares",
-      "class": "PY_DEP"
+      "class": "PRESENT",
+      "note": "Native shell-dispatched reimplementation using net/smbclient"
     },
     {
       "name": "shell_exec",

@@ -2338,3 +2338,38 @@ class ServicesModule(PupyModule):
             "output": result.get("output", ""),
             "error": result.get("error"),
         }
+
+
+class SharesModule(PupyModule):
+    """List SMB shares on the target.
+
+    Upstream Pupy's ``shares`` (via shares agent module). Native
+    reimplementation using net/smbclient on the host.
+    """
+
+    name = "shares"
+    version = "1.0.0"
+    description = "List SMB shares on the target"
+    author = "Pupyteer Team"
+    category = ModuleCategory.RECON
+
+    async def execute(self, session, args):
+        session_mgr = getattr(self, "_session_manager", None)
+        os_name = getattr(session, "os", "").lower()
+
+        if "win" in os_name:
+            cmd = "net share 2>nul"
+        else:
+            cmd = "smbclient -L localhost -N 2>/dev/null || net share 2>/dev/null || echo 'no share tooling'"
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }
