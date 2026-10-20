@@ -349,6 +349,8 @@ class PupyteerTUI:
                    "bookmark [add <id> <name>|list|remove <name>|jump <name>]")
         r.register("alias", self.cmd_alias, "Define a command alias",
                    "alias [name=command|list|remove <name>]")
+        r.register("watch", self.cmd_watch, "Repeat a command at an interval",
+                   "watch <seconds> <command...>")
         r.register("evasion", self.cmd_evasion, "Evasion testing", "evasion [status|run|list|stats]")
         r.register("pipeline", self.cmd_pipeline, "Unified payload-to-evasion pipeline", "pipeline [run|build|test|auto|status|history]")
         r.register("theme", self.cmd_theme, "Change TUI theme", "theme [dark|list]")
@@ -1338,6 +1340,37 @@ class PupyteerTUI:
             self.render_success(f"Alias '{name}' -> '{cmd}'.")
         else:
             self.render_warning("Usage: alias name=command | alias list | alias remove <name>")
+
+    async def cmd_watch(self, args: List[str]) -> None:
+        """Repeat a command at a fixed interval (Ctrl+C to stop)."""
+        if len(args) < 2:
+            self.render_warning("Usage: watch <seconds> <command...>")
+            return
+        try:
+            interval = float(args[0])
+        except ValueError:
+            self.render_error(f"Invalid interval: {args[0]}")
+            return
+        if interval < 0.5:
+            self.render_warning("Minimum interval is 0.5 seconds.")
+            return
+        watch_cmd = args[1:]
+        import asyncio as _a
+        self.render_info(f"Watching every {interval}s: {' '.join(watch_cmd)} (Ctrl+C to stop)")
+        try:
+            while self._running:
+                line = " ".join(watch_cmd)
+                parts = shlex.split(line)
+                if parts:
+                    cmd = self._registry.get(parts[0])
+                    if cmd:
+                        try:
+                            await cmd["handler"](parts[1:])
+                        except Exception as e:
+                            self.render_error(f"{e}")
+                await _a.sleep(interval)
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            self.render_info("Watch stopped.")
 
     async def cmd_evasion(self, args: List[str]) -> None:
         """Run evasion testing commands."""
