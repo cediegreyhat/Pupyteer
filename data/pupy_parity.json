@@ -2,12 +2,12 @@
   "generated_from": "github.com/n1nj4sec/pupy @ pupy/modules + pupy/commands",
   "pupy_module_count": 122,
   "pupy_command_count": 16,
-  "pupyteer_module_count": 78,
+  "pupyteer_module_count": 79,
   "classification_counts": {
     "AGENT_ACTION": 5,
     "NATIVE": 38,
-    "PRESENT": 56,
-    "PY_DEP": 18,
+    "PRESENT": 57,
+    "PY_DEP": 17,
     "STDLIB": 5
   },
   "pupyteer_modules": [
@@ -88,7 +88,8 @@
     "users",
     "w",
     "write",
-    "x509"
+    "x509",
+    "zip"
   ],
   "pupy_commands": [
     "config",
@@ -638,7 +639,8 @@
     },
     {
       "name": "zip",
-      "class": "PY_DEP"
+      "class": "PRESENT",
+      "note": "Native shell-dispatched reimplementation using zip/tar"
     }
   ],
   "classes": {

