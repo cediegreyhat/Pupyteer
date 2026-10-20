@@ -357,6 +357,8 @@ class PupyteerTUI:
                    "uuid [count]")
         r.register("b64", self.cmd_b64, "Base64 encode/decode",
                    "b64 [encode|decode] <text>")
+        r.register("hash", self.cmd_hash, "Hash text (md5/sha1/sha256)",
+                   "hash [md5|sha1|sha256] <text>")
         r.register("macro", self.cmd_macro, "Record/playback command macros",
                    "macro [record <name>|stop|play <name>|list|delete <name>]")
         r.register("evasion", self.cmd_evasion, "Evasion testing", "evasion [status|run|list|stats]")
@@ -1518,6 +1520,28 @@ class PupyteerTUI:
             print(f"  {out}")
         except Exception as e:
             self.render_error(f"b64 failed: {e}")
+
+    async def cmd_hash(self, args: List[str]) -> None:
+        """Hash text using md5/sha1/sha256."""
+        if len(args) < 2:
+            self.render_warning("Usage: hash [md5|sha1|sha256] <text>")
+            return
+        algo = args[0].lower()
+        text = " ".join(args[1:])
+        import hashlib as _hl
+        try:
+            if algo == "md5":
+                h = _hl.md5(text.encode()).hexdigest()
+            elif algo == "sha1":
+                h = _hl.sha1(text.encode()).hexdigest()
+            elif algo == "sha256":
+                h = _hl.sha256(text.encode()).hexdigest()
+            else:
+                self.render_warning("Algorithm must be md5, sha1, or sha256.")
+                return
+            print(f"  {algo}: {h}")
+        except Exception as e:
+            self.render_error(f"hash failed: {e}")
 
     async def cmd_evasion(self, args: List[str]) -> None:
         """Run evasion testing commands."""

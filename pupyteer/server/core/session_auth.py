@@ -64,6 +64,7 @@ class SessionAuthorization:
         "clear": None,
         "uuid": Permission.MODULE_READ,
         "b64": Permission.MODULE_READ,
+        "hash": Permission.MODULE_READ,
         "theme": None,
         "exit": None,
         "quit": None,
