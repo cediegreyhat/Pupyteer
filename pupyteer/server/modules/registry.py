@@ -359,25 +359,14 @@ class ModuleRegistry:
             return None
         return cls(self._config, self._audit)
 
-    def create_and_init(self, name: str) -> Optional[PupyModule]:
-        """Instantiate, call initialize(), and return the module."""
+    async def create_and_init(self, name: str) -> Optional[PupyModule]:
+        """Instantiate, await initialize(), and return the module."""
         instance = self.create(name)
         if instance is None:
             return None
-        # initialize() is sync-or-async friendly via call schedule
-        import asyncio
-        coro = instance.initialize()
-        if asyncio.iscoroutine(coro):
-            try:
-                loop = asyncio.get_running_loop()
-                # We're inside an event loop — schedule it.
-                task = asyncio.ensure_future(coro)
-                # We can't block-wait here; callers in async context await directly.
-                # Store the task so it runs.
-                instance._init_task = task  # type: ignore[attr-defined]
-            except RuntimeError:
-                # No running loop — run synchronously.
-                asyncio.run(coro)
+        result = instance.initialize()
+        if hasattr(result, "__await__"):
+            await result
         return instance
 
     async def execute(
