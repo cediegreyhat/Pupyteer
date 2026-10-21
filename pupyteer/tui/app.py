@@ -150,6 +150,7 @@ class TabCompleter:
 # pupyteer.tui.widgets for the modernization track.
 from pupyteer.tui.screens.session_dashboard import SessionDashboard
 from pupyteer.tui.widgets.status_bar import StatusBar
+from pupyteer.tui.widgets.table import TableRenderer
 from pupyteer.tui.widgets.keyboard import KeyboardShortcuts
 
 # ─── Main TUI ─────────────────────────────────────────────────────────
@@ -178,6 +179,7 @@ class PupyteerTUI:
                                     + c(" ▸ ", self._theme.get("muted")))
         self._history_file = os.path.expanduser("~/.pupyteer_history")
         self._status_bar = StatusBar(engine, self._theme)
+        self._table = TableRenderer(self._theme)
         self._dashboard = SessionDashboard(engine, self._theme)
 
         # What a login proved, not what the config says to be called. None means
@@ -351,6 +353,7 @@ class PupyteerTUI:
                                     + c(" ▸ ", self._theme.get("muted")))
         self._status_bar = StatusBar(self._engine, self._theme)
         self._dashboard = SessionDashboard(self._engine, self._theme)
+        self._table = TableRenderer(self._theme)
 
     # ------------------------------------------------------------------ #
     #  Operator gate                                                     #
@@ -845,41 +848,7 @@ class PupyteerTUI:
 
     def render_table(self, headers: List[str], rows: List[List[str]]) -> None:
         """Render a table with a boxed header row and dim separators."""
-        theme = self._theme
-        if not rows:
-            print(c("  (no data)", theme.get("muted")))
-            return
-
-        # Calculate column widths
-        widths = [len(h) for h in headers]
-        for row in rows:
-            for i, cell in enumerate(row):
-                widths[i] = max(widths[i], len(str(cell)))
-
-        b = theme.get("table_border")
-        hdr = theme.get("table_header")
-
-        def _sep(l: str, m: str, r: str) -> str:
-            return c("  " + l + m.join("─" * (w + 2) for w in widths) + r, b)
-
-        # Header — bold gradient title in a boxed row
-        header_line = c("  │", b)
-        for h, w in zip(headers, widths):
-            header_line += " " + c(h.ljust(w), hdr, _Ansi.BOLD) + " " + c("│", b)
-        print(_sep("┌", "┬", "┐"))
-        print(header_line)
-        print(_sep("├", "┼", "┤"))
-
-        # Rows — alternating dim stripe on even rows for scannability
-        for idx, row in enumerate(rows):
-            cells = []
-            for cell, w in zip(row, widths):
-                text = str(cell).ljust(w)
-                if idx % 2 == 1:
-                    text = c(text, theme.get("muted"))
-                cells.append(text)
-            print(c("  │", b) + " " + f" {c('│', b)} ".join(cells) + " " + c("│", b))
-        print(_sep("└", "┴", "┘"))
+        self._table.render(headers, rows)
 
     def render_error(self, message: str) -> None:
         """Render an error message with color coding."""
