@@ -287,14 +287,63 @@ class ModuleRegistry:
         return count
 
     async def discover_async(self) -> int:
-        """Asynchronously discover modules (offloads blocking import to a thread).
+        """Asynchronously discover modules in parallel.
 
-        Keeps the event loop responsive during startup while reusing the
-        synchronous `discover()` implementation.
+        Each module file is imported in its own thread (bounded by a
+        semaphore) so startup stays responsive; registration happens in
+        sorted file order to keep the registry deterministic.
         """
         import asyncio as _asyncio
-        loop = _asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self.discover)
+
+        files = []
+        for path in self._paths:
+            if not path.exists():
+                path.mkdir(parents=True, exist_ok=True)
+                continue
+            for f in sorted(path.glob("*.py")):
+                if not f.name.startswith("_"):
+                    files.append(f)
+
+        sem = _asyncio.Semaphore(8)
+
+        async def _load(f):
+            async with sem:
+                try:
+                    classes = await _asyncio.to_thread(self._load_from_file, f)
+                    return f, classes, None
+                except Exception as exc:
+                    return f, [], exc
+
+        results = await _asyncio.gather(*[_load(f) for f in files])
+
+        count = 0
+        for f, classes, exc in results:
+            if exc is not None:
+                logger.warning("Failed to load module file %s: %s", f, exc)
+                self._health[f"file:{f.stem}"] = ModuleHealth(
+                    name=f"file:{f.stem}",
+                    state=ModuleState.FAILED,
+                    registered_at=datetime.now(timezone.utc).isoformat(),
+                    last_error=str(exc),
+                )
+                self._list_cache = None
+                continue
+            for cls in classes:
+                if self._validate_class(cls):
+                    self._register_class(cls)
+                    count += 1
+                else:
+                    name = cls.name or cls.__name__
+                    logger.warning("Module %s failed validation — skipped", name)
+                    self._health[name] = ModuleHealth(
+                        name=name,
+                        state=ModuleState.FAILED,
+                        registered_at=datetime.now(timezone.utc).isoformat(),
+                        last_error="Failed validation",
+                    )
+                    self._list_cache = None
+        logger.info("Discovered %d modules", count)
+        return count
 
     def _load_from_file(self, path: Path) -> List[Type[PupyModule]]:
         """Load all PupyModule subclasses from a Python file."""
