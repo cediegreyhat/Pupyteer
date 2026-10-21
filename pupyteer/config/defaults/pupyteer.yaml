@@ -74,6 +74,10 @@ security:
   # Hashed credentials, written on first use and never here. With no such file a
   # server run generates one operator password and prints it once.
   operators_file: "./data/keys/operators.json"
+  # Optional allow-list of operator source CIDRs for the console listener.
+  # Empty (default) means no network-level restriction; combine with a
+  # reverse proxy / mTLS for real access control (see README Security).
+  allowed_operator_cidrs: []
 
 paths:
   payload_artifacts: "./payloads/artifacts"
