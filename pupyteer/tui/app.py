@@ -190,6 +190,7 @@ class TabCompleter:
 # pupyteer.tui.widgets for the modernization track.
 from pupyteer.tui.screens.session_dashboard import SessionDashboard
 from pupyteer.tui.widgets.status_bar import StatusBar
+from pupyteer.tui.widgets.keyboard import KeyboardShortcuts
 
 # ─── Main TUI ─────────────────────────────────────────────────────────
 class PupyteerTUI:
@@ -355,6 +356,7 @@ class PupyteerTUI:
                 ).complete
             )
             readline.parse_and_bind("tab: complete")
+            KeyboardShortcuts(self).register(readline)
             if os.path.exists(self._history_file):
                 readline.read_history_file(self._history_file)
         except Exception:

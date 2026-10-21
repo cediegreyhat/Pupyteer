@@ -65,6 +65,9 @@ class SessionInfo:
     #: The longest line this agent reads in one piece, so a chunk is sized to
     #: something that survives the trip. 0 means undeclared.
     max_line: int = 0
+    #: Payload id the agent claimed at registration (if any). Used to look up
+    #: the build manifest and verify capability claims.
+    payload_id: str = ""
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     @property
