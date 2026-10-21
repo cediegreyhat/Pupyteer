@@ -78,6 +78,10 @@ security:
   # Empty (default) means no network-level restriction; combine with a
   # reverse proxy / mTLS for real access control (see README Security).
   allowed_operator_cidrs: []
+  # Optional payload-level AEAD channel cipher (off by default).
+  # When on, register negotiates a per-session key; TLS remains the
+  # primary confidentiality layer. See README Security.
+  channel_cipher: false
 
 paths:
   payload_artifacts: "./payloads/artifacts"
