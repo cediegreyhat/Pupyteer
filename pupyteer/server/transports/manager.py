@@ -143,7 +143,7 @@ class TransportManager:
             "supported": protocol in SUPPORTED_LISTENER_PROTOCOLS,
         })
 
-    async def start_listener(self, session_manager: Any, agent_keys: Any = None) -> None:
+    async def start_listener(self, session_manager: Any, agent_keys: Any = None, payload_store: Any = None) -> None:
         """Bind the real agent listener(s) for the requested protocol.
 
         *agent_keys* is the AgentKeyRegistry used to verify agent
@@ -232,6 +232,7 @@ class TransportManager:
             session_manager=session_manager,
             audit_logger=self._audit,
             agent_keys=agent_keys,
+            payload_store=payload_store,
         )
         # Bind with retry/backoff so a transient bind failure (port in use,
         # permission) does not abort startup on the first attempt.

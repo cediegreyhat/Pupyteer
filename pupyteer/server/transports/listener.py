@@ -147,6 +147,7 @@ class AgentListener:
         session_manager: Any,
         audit_logger: AuditLogger,
         agent_keys: Any = None,
+        payload_store: Any = None,
     ):
         self._host: str = config.get("host", "0.0.0.0")
         self._port: int = int(config.get("port", 8443))
@@ -164,6 +165,7 @@ class AgentListener:
         # AgentKeyRegistry for Ed25519 registration verification. If None,
         # registration falls back to UNSIGNED (legacy) — see _handle_register.
         self._agent_keys = agent_keys
+        self._payload_store = payload_store
         # When True, reject agents whose registration lacks a valid signature.
         # Driven by security.require_agent_auth (defaults on when a registry
         # is present).
@@ -875,11 +877,34 @@ class AgentListener:
             capabilities=declared_capabilities(msg.get("capabilities")),
             max_line=(declared_max_line(msg.get("max_line"))
                       if msg.get("max_line") else 0),
+            payload_id=str(msg.get("payload_id") or ""),
             # Handed out once, in the reply below, and never shown to an operator.
             # Everything after this line has to bring it back or it is a stranger
             # wearing a session id.
             beacon_token=new_beacon_token(),
         )
+
+        # Verify capability claims against the build manifest when a payload_id
+        # is present and the store can resolve it. A payload that overstates
+        # what it carries is downgraded to its shipped capabilities (or to
+        # shell-only) and the mismatch is audited.
+        if self._payload_store is not None and info.payload_id:
+            try:
+                meta = self._payload_store.get(info.payload_id)
+            except Exception:
+                meta = None
+            manifest_caps = getattr(meta, "capabilities", None) if meta is not None else None
+            if manifest_caps:
+                claimed = list(info.capabilities)
+                verified = [c for c in claimed if c in manifest_caps]
+                if verified != claimed:
+                    self._audit.log_event(
+                        "session_capability_mismatch",
+                        {"session": info.session_id, "claimed": claimed,
+                         "verified": verified, "payload_id": info.payload_id},
+                        result="warning",
+                    )
+                    info.capabilities = verified
 
         registered_id = await self._session_manager.register(info)
 

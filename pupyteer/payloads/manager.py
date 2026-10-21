@@ -187,6 +187,8 @@ class PayloadMetadata:
     config: Dict[str, Any] = field(default_factory=dict)
     build_log: List[str] = field(default_factory=list)
     tags: List[str] = field(default_factory=list)
+    # Capabilities the shipped payload declares (for claim verification).
+    capabilities: List[str] = field(default_factory=list)
     # Spec field: Expiration/Validity
     expiration: str = ""
     # Internal tracking
@@ -600,6 +602,16 @@ class PayloadBuilder:
             build_log.append(f"Size: {artifact_path.stat().st_size} bytes")
 
             # Phase: Verification
+            # Record shipped capabilities so the listener can verify claims.
+            try:
+                from pupyteer.server.sessions.capabilities import KNOWN_CAPABILITIES
+                if payload_config.payload_type.value == "script":
+                    metadata.capabilities = list(KNOWN_CAPABILITIES)
+                else:
+                    metadata.capabilities = ["exec", "ping", "sysinfo", "processes",
+                                            "fs_list", "fs_get", "fs_put", "screenshot"]
+            except Exception:
+                metadata.capabilities = []
             metadata.status = PayloadStatus.VERIFIED.value
             metadata.build_timestamp = datetime.now(timezone.utc).isoformat()
             metadata.hash_sha256 = hashes["sha256"]

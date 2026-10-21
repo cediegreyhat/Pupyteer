@@ -321,7 +321,7 @@ class PupyteerEngine:
             )
             # Wire session manager + agent key registry into the TCP listener
             # so agent callbacks can create sessions and verify registrations
-            await self._transports.start_listener(self._sessions, self._agent_keys)
+            await self._transports.start_listener(self._sessions, self._agent_keys, payload_store=self._payloads)
             # Discover and register modules (async to keep event loop responsive)
             mod_count = await asyncio.wait_for(self._module_registry.discover_async(), timeout=120.0)
             self._logger.info("Discovered %d modules", mod_count)
