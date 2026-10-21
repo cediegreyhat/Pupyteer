@@ -232,7 +232,21 @@ class TransportManager:
             audit_logger=self._audit,
             agent_keys=agent_keys,
         )
-        await self._listener.start()
+        # Bind with retry/backoff so a transient bind failure (port in use,
+        # permission) does not abort startup on the first attempt.
+        import asyncio as _asyncio
+        _last_exc = None
+        for _attempt in range(3):
+            try:
+                await self._listener.start()
+                _last_exc = None
+                break
+            except Exception as exc:
+                _last_exc = exc
+                logger.warning("Listener bind attempt %d failed: %s", _attempt + 1, exc)
+                await _asyncio.sleep(0.5 * (2 ** _attempt))
+        if _last_exc is not None:
+            raise _last_exc
         logger.info("Agent listener started on %s:%d (%s)",
                     host, port, "TLS" if tls else "plaintext")
 
