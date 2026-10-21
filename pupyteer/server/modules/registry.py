@@ -285,6 +285,16 @@ class ModuleRegistry:
         logger.info("Discovered %d modules", count)
         return count
 
+    async def discover_async(self) -> int:
+        """Asynchronously discover modules (offloads blocking import to a thread).
+
+        Keeps the event loop responsive during startup while reusing the
+        synchronous `discover()` implementation.
+        """
+        import asyncio as _asyncio
+        loop = _asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self.discover)
+
     def _load_from_file(self, path: Path) -> List[Type[PupyModule]]:
         """Load all PupyModule subclasses from a Python file."""
         spec = importlib.util.spec_from_file_location(

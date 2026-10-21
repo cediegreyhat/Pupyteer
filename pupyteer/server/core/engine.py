@@ -318,8 +318,8 @@ class PupyteerEngine:
             # Wire session manager + agent key registry into the TCP listener
             # so agent callbacks can create sessions and verify registrations
             await self._transports.start_listener(self._sessions, self._agent_keys)
-            # Discover and register modules
-            mod_count = self._module_registry.discover()
+            # Discover and register modules (async to keep event loop responsive)
+            mod_count = await self._module_registry.discover_async()
             self._logger.info("Discovered %d modules", mod_count)
             await self._safe_call(
                 "tasks.initialize",
