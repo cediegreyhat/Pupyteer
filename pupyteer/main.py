@@ -14,6 +14,8 @@ import sys
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from pupyteer import __version__, __codename__
+
 
 def configure_stdio() -> None:
     """Force UTF-8 on stdout/stderr.
@@ -75,7 +77,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     """
     parser = argparse.ArgumentParser(
         prog="pupyteer",
-        description="Pupyteer — Red Team Operations Framework v1.0.0",
+        description=f"Pupyteer — Red Team Operations Framework v{__version__}",
     )
     parser.add_argument(
         "-c", "--config",
@@ -90,7 +92,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--version",
         action="version",
-        version="Pupyteer v1.0.0 (Nightfall)",
+        version=f"Pupyteer v{__version__} ({__codename__})",
     )
     parser.add_argument(
         "-e", "--environment",
