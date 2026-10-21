@@ -170,6 +170,7 @@ class AgentListener:
         self._require_agent_auth: bool = bool(
             config.get("require_agent_auth", agent_keys is not None)
         )
+        self._allowed_cidrs = list(config.get("allowed_cidrs") or [])
         # Optional RC4 transport key (hex string). When set, the listener
         # decrypts inbound messages and encrypts outbound ones with RC4 so it
         # interoperates with the compiled PE agent (pe_template.c), which
@@ -757,6 +758,28 @@ class AgentListener:
         writer: asyncio.StreamWriter,
     ) -> Dict[str, Any]:
         """Create a new session and register it."""
+        # Optional source-CIDR allow-list (deployment access control).
+        if self._allowed_cidrs:
+            import ipaddress as _ip
+            try:
+                addr = _ip.ip_address(remote.split(":")[0] if ":" in remote else remote)
+            except ValueError:
+                addr = None
+            allowed = False
+            if addr is not None:
+                for cidr in self._allowed_cidrs:
+                    try:
+                        if addr in _ip.ip_network(cidr, strict=False):
+                            allowed = True
+                            break
+                    except ValueError:
+                        continue
+            if not allowed:
+                self._stats["registrations_rejected"] += 1
+                logger.warning("Rejected registration from %s: source not in allowed CIDRs", remote)
+                self._audit.log_event("registration_rejected",
+                                      {"remote": remote, "reason": "source_cidr"}, result="error")
+                return {"status": "error", "error": "source not allowed"}
         ledger = self._enrollment
         # Agent-key auth and enrollment are alternative mechanisms: a payload
         # that authenticates with a valid Ed25519 agent-key signature does not

@@ -227,6 +227,7 @@ class TransportManager:
                 # Threaded through so the RC4 buffer ceiling is tunable rather
                 # than always the MAX_RC4_BUFFER_BYTES default; absent keeps that.
                 "max_rc4_buffer": self._config.get("transports.max_rc4_buffer"),
+                "allowed_cidrs": self._config.get("security.allowed_operator_cidrs", []),
             },
             session_manager=session_manager,
             audit_logger=self._audit,
