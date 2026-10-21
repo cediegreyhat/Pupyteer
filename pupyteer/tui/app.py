@@ -1956,7 +1956,12 @@ class PupyteerTUI:
                     if buf is not None:
                         buf.append(line)
 
-                parts = shlex.split(line)
+                try:
+                    from pupyteer.server.core.validation import validate_command_line
+                    parts = validate_command_line(line)
+                except ValueError as ve:
+                    self.render_error(str(ve))
+                    continue
                 if not parts:
                     continue
 
