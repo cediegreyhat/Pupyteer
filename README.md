@@ -361,8 +361,8 @@ pupyteer/
 ├── tui/
 │   ├── app.py         # console application, command registry, completer
 │   ├── themes.py      # dark/light theme definitions
-│   ├── screens/       # (reserved)
-│   ├── widgets/       # (reserved)
+│   ├── screens/       # extracted TUI screens (banner, session dashboard, base)
+│   ├── widgets/       # status bar, keyboard shortcuts, table renderer
 │   └── commands/      # sessions, jobs, payloads, evasion, pipeline, msf_core
 │
 ├── config/
@@ -398,7 +398,7 @@ git-ignored.
 .venv/bin/python -m pytest pupyteer/tests/integration/ -v
 ```
 
-**Current test count: 1178 tests passing** (`pytest pupyteer/tests`)
+**Current test count: 1450 tests passing** (`pytest pupyteer/tests`)
 
 The suite runs against real engines and real listeners, and repoints every file a
 default-config server writes — the audit trail, the enrollment secret, the TLS
