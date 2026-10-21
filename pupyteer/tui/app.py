@@ -41,49 +41,9 @@ LOGIN_ATTEMPTS = 3
 #: drifts open when a terminal renders the box-drawing glyphs at double width.
 _W = 64
 
-_BANNER_WORDMARK = [
-    "██████╗ ██╗   ██╗██████╗ ██╗   ██╗████████╗███████╗███████╗",
-    "██╔══██╗██║   ██║██╔══██╗╚██╗ ██╔╝╚══██╔══╝██╔════╝██╔════╝",
-    "██████╔╝██║   ██║██████╔╝ ╚████╔╝    ██║   █████╗  █████╗  ",
-    "██╔═══╝ ██║   ██║██╔═══╝   ╚██╔╝     ██║   ██╔══╝  ██╔══╝  ",
-    "██║     ╚██████╔╝██║        ██║      ██║   ███████╗███████╗",
-    "╚═╝      ╚═════╝ ╚═╝        ╚═╝      ╚═╝   ╚══════╝╚══════╝",
-]
-
-
-def _render_banner(codename: str, version: str, theme: Theme) -> str:
-    """Compose the startup banner: gradient wordmark, boxed tagline.
-
-    Rendered per-theme at draw time rather than frozen at import, so switching
-    themes re-sweeps the wordmark in the new palette instead of leaving the old
-    gradient burned in.
-    """
-    grad = ramp(_CYAN, _MAGENTA, _W)
-    box_c = theme.get("dashboard_border")
-
-    def _row(content: str) -> str:
-        # Pad to the inner width using VISIBLE length, so an already-colored
-        # content string does not leave the frame short by its escape codes.
-        vis = strip_ansi(content)
-        pad = " " * max(0, _W - len(vis))
-        return f"{c('║', box_c)}{content}{pad}{c('║', box_c)}"
-
-    rows = ["",
-            c("╔" + "═" * _W + "╗", box_c),
-            _row("")]
-    for line in _BANNER_WORDMARK:
-        rows.append(_row(gradient_line("  " + line, grad)))
-    rows.append(_row(""))
-    tagline = f"   Red Team Operations Framework · v{codename} {version}   "
-    rows.append(_row(c(tagline, theme.get("banner_text"), _Ansi.BOLD)))
-    rows.append(_row(""))
-    rows.append(c("╚" + "═" * _W + "╝", box_c))
-    return "\n".join(rows)
-#: The banner rendered once in the default (dark) palette. Kept as a module
-#: constant because callers import it to check the wordmark/tagline without
-#: standing up an engine; the live TUI re-renders it in the active theme.
-BANNER = _render_banner("Nightfall", "1.0.0", THEMES["dark"])
-
+from pupyteer.tui.screens.banner import (
+    _W, _BANNER_WORDMARK, _render_banner, BANNER,
+)
 
 
 # ─── Command Registry ─────────────────────────────────────────────────
