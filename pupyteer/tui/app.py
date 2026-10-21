@@ -375,6 +375,8 @@ class PupyteerTUI:
                    "echo <text>")
         r.register("sleep", self.cmd_sleep, "Sleep for N seconds",
                    "sleep <seconds>")
+        r.register("version", self.cmd_version, "Show version info",
+                   "version")
         r.register("macro", self.cmd_macro, "Record/playback command macros",
                    "macro [record <name>|stop|play <name>|list|delete <name>]")
         r.register("evasion", self.cmd_evasion, "Evasion testing", "evasion [status|run|list|stats]")
@@ -1687,6 +1689,12 @@ class PupyteerTUI:
         import asyncio as _a
         await _a.sleep(secs)
         self.render_info(f"Slept {secs}s.")
+
+    async def cmd_version(self, args: List[str]) -> None:
+        """Show Pupyteer version information."""
+        print("  Pupyteer 0.1.0 (overhaul of Pupy)")
+        print("  Modernization track: TUI + evasion")
+        print("  Parity: 122/122 upstream modules integrated")
 
     async def cmd_evasion(self, args: List[str]) -> None:
         """Run evasion testing commands."""

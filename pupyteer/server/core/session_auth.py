@@ -73,6 +73,7 @@ class SessionAuthorization:
         "decode": Permission.MODULE_READ,
         "echo": Permission.MODULE_READ,
         "sleep": Permission.MODULE_READ,
+        "version": Permission.MODULE_READ,
         "theme": None,
         "exit": None,
         "quit": None,
