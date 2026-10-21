@@ -74,6 +74,7 @@ class SessionAuthorization:
         "echo": Permission.MODULE_READ,
         "sleep": Permission.MODULE_READ,
         "version": Permission.MODULE_READ,
+        "whoami": Permission.MODULE_READ,
         "theme": None,
         "exit": None,
         "quit": None,

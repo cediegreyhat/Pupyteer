@@ -186,94 +186,10 @@ class TabCompleter:
 
 
 # ─── Session Dashboard Widget ─────────────────────────────────────────
-class SessionDashboard:
-    """Renders the session dashboard widget."""
-
-    def __init__(self, engine: PupyteerEngine, theme: Theme):
-        self._engine = engine
-        self._theme = theme
-
-    def render(self) -> None:
-        """Render the session dashboard."""
-        status = self._engine.get_status()
-        state = status["state"]
-        theme = self._theme
-        b = theme.get("dashboard_border")
-        val = theme.get("text")
-
-        online = bool(state["started"])
-        agents = state["active_sessions"]
-        tasks = state["queued_tasks"]
-        profile = state["loaded_profile"] or "none"
-
-        #: Inner width between the frame glyphs. Every row and rule is built
-        #: against this one number so a long value can never push the frame open.
-        inner = 50
-        side = c("│", b)
-        #: The panel title lives inside the top rule, so it is part of the same
-        #: fixed-width line rather than a separate row that could drift.
-        title = " Dashboard "
-        # ┌ + ─ + title + rule + ┐ must total inner + 2, so the rule fills
-        # inner - 1 - len(title) and the frame never drifts.
-        rule = "─" * max(0, inner - 1 - len(title))
-        top = (c("┌─", b) + c(title, theme.get("table_header"), _Ansi.BOLD)
-               + c(rule + "┐", b))
-        bot = c("└" + "─" * inner + "┘", b)
-
-        def _row(label: str, value: str, kind: str) -> str:
-            # 2 pad + 9 label + 2 pad + 1 dot + 2 pad + value + slack + frame.
-            head = 2 + 9 + 2 + 1 + 2
-            slack = max(0, inner - head - len(str(value)))
-            return (f"{side}  {c(label.ljust(9), theme.get('muted'))}"
-                    f"  {status_dot(theme, kind)}  {c(value, val)}"
-                    f"{' ' * slack}{side}")
-
-        print()
-        print(top)
-        print(_row("Server", "online" if online else "offline",
-                   "ok" if online else "off"))
-        print(_row("Agents", str(agents), "ok" if agents else "off"))
-        print(_row("Tasks", str(tasks), "warn" if tasks else "ok"))
-        print(_row("Profile", profile, "none" if profile == "none" else "ok"))
-        print(bot)
-        print()
-
-    def render_compact(self) -> str:
-        """Render a compact status line for the status bar."""
-        status = self._engine.get_status()
-        state = status["state"]
-        theme = self._theme
-        return (
-            f"{status_dot(theme, 'ok' if state['started'] else 'off')} "
-            f"{c('Server', theme.get('muted'))} {'Online' if state['started'] else 'Offline'}  "
-            f"{c('Agents', theme.get('info'))} {state['active_sessions']}  "
-            f"{c('Tasks', theme.get('warning'))} {state['queued_tasks']}  "
-            f"{c('Profile', theme.get('accent'))} {state['loaded_profile'] or 'none'}"
-        )
-
-
-# ─── Status Bar ───────────────────────────────────────────────────────
-class StatusBar:
-    """Renders the persistent status bar."""
-
-    def __init__(self, engine: PupyteerEngine, theme: Theme):
-        self._engine = engine
-        self._theme = theme
-        self._dashboard = SessionDashboard(engine, theme)
-
-    def render(self) -> None:
-        """Render the status bar."""
-        theme = self._theme
-        status_str = self._dashboard.render_compact()
-        # Clear line and print status bar
-        print(f"\r{' ' * 80}\r{status_str}", end="", flush=True)
-
-    def render_full(self) -> None:
-        """Render full status bar with newline."""
-        theme = self._theme
-        status_str = self._dashboard.render_compact()
-        print(f"\n{status_str}\n")
-
+# SessionDashboard and StatusBar extracted to pupyteer.tui.screens /
+# pupyteer.tui.widgets for the modernization track.
+from pupyteer.tui.screens.session_dashboard import SessionDashboard
+from pupyteer.tui.widgets.status_bar import StatusBar
 
 # ─── Main TUI ─────────────────────────────────────────────────────────
 class PupyteerTUI:
