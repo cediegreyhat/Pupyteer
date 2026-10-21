@@ -77,7 +77,8 @@ class TaskManager:
         self._sessions = sessions
         self._audit = audit
         self._tasks: Dict[str, TaskInfo] = {}
-        self._queue: asyncio.Queue = asyncio.Queue()
+        queue_size = int(config.get("tasks.queue_size", 0))
+        self._queue: asyncio.Queue = asyncio.Queue(maxsize=queue_size if queue_size > 0 else 0)
         self._workers: List[asyncio.Task] = []
         self._running: Dict[str, asyncio.Task] = {}  # task_id -> asyncio.Task
         self._max_concurrent: int = int(config.get("tasks.max_concurrent", 5))
@@ -124,7 +125,10 @@ class TaskManager:
         )
         async with self._lock:
             self._tasks[task_id] = task
-        await self._queue.put(task_id)
+        try:
+            await asyncio.wait_for(self._queue.put(task_id), timeout=30.0)
+        except asyncio.TimeoutError:
+            raise RuntimeError("Task queue full — backpressure")
         self._audit.log_event(
             "task_created",
             {"task_id": task_id, "name": name, "module": module, "session_id": session_id},
