@@ -229,6 +229,7 @@ class ModuleRegistry:
         self._config = config
         self._audit = audit
         self._modules: Dict[str, Type[PupyModule]] = {}
+        self._list_cache: Optional[List[Dict[str, Any]]] = None
         self._health: Dict[str, ModuleHealth] = {}
         self._paths: List[Path] = []
 
@@ -338,6 +339,7 @@ class ModuleRegistry:
         """Register a validated module class."""
         name = cls.name
         self._modules[name] = cls
+        self._list_cache = None
         self._health[name] = ModuleHealth(
             name=name,
             state=ModuleState.REGISTERED,
@@ -415,6 +417,7 @@ class ModuleRegistry:
             if name in self._health:
                 self._health[name].last_executed = datetime.now(timezone.utc).isoformat()
                 self._health[name].state = ModuleState.LOADED
+                self._list_cache = None
             # Emit module_executed audit event (spec section 11)
             try:
                 self._audit.emit_spec(
@@ -430,6 +433,7 @@ class ModuleRegistry:
             if name in self._health:
                 self._health[name].last_error = str(exc)
                 self._health[name].state = ModuleState.FAILED
+                self._list_cache = None
             return {"status": "error", "error": str(exc)}
         finally:
             try:
@@ -445,6 +449,8 @@ class ModuleRegistry:
 
     def list_all(self) -> List[Dict[str, Any]]:
         """List all registered modules with their metadata."""
+        if self._list_cache is not None:
+            return [dict(m) for m in self._list_cache]
         result = []
         for name, cls in sorted(self._modules.items()):
             instance = cls(self._config, self._audit)
@@ -454,6 +460,7 @@ class ModuleRegistry:
             if health:
                 info["state"] = health.state.value
             result.append(info)
+        self._list_cache = [dict(m) for m in result]
         return result
 
     def list_by_category(self, category: ModuleCategory) -> List[Dict[str, Any]]:
@@ -526,8 +533,10 @@ class ModuleRegistry:
         """Remove a module from the registry. Returns True if it existed."""
         if name in self._modules:
             del self._modules[name]
+            self._list_cache = None
             if name in self._health:
                 self._health[name].state = ModuleState.UNLOADED
+                self._list_cache = None
             logger.info("Unloaded module: %s", name)
             return True
         return False
