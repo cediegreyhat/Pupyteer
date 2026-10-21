@@ -293,6 +293,7 @@ class PupyteerEngine:
                 self._config.validate,
                 subsystem="config",
                 operation="init",
+                timeout=30.0,
             )
             validate_engine_config(self._config)
 
@@ -302,42 +303,48 @@ class PupyteerEngine:
                 self._profiles.initialize,
                 subsystem="profiles",
                 operation="init",
+                timeout=30.0,
             )
             await self._safe_call(
                 "transports.initialize",
                 self._transports.initialize,
                 subsystem="transports",
                 operation="init",
+                timeout=30.0,
             )
             await self._safe_call(
                 "sessions.initialize",
                 self._sessions.initialize,
                 subsystem="sessions",
                 operation="init",
+                timeout=30.0,
             )
             # Wire session manager + agent key registry into the TCP listener
             # so agent callbacks can create sessions and verify registrations
             await self._transports.start_listener(self._sessions, self._agent_keys)
             # Discover and register modules (async to keep event loop responsive)
-            mod_count = await self._module_registry.discover_async()
+            mod_count = await asyncio.wait_for(self._module_registry.discover_async(), timeout=120.0)
             self._logger.info("Discovered %d modules", mod_count)
             await self._safe_call(
                 "tasks.initialize",
                 self._tasks.initialize,
                 subsystem="tasks",
                 operation="init",
+                timeout=30.0,
             )
             await self._safe_call(
                 "evasion.initialize",
                 self._evasion.initialize,
                 subsystem="evasion",
                 operation="init",
+                timeout=30.0,
             )
             await self._safe_call(
                 "pipeline.initialize",
                 self._pipeline.initialize,
                 subsystem="pipeline",
                 operation="init",
+                timeout=30.0,
             )
 
             self._phase = EnginePhase.RUNNING
@@ -563,10 +570,24 @@ class PupyteerEngine:
         coro_func,
         subsystem: str = "unknown",
         operation: str = "init",
+        timeout: Optional[float] = None,
     ) -> Any:
-        """Call a coroutine, wrapping exceptions in SubsystemError."""
+        """Call a coroutine, wrapping exceptions in SubsystemError.
+
+        When *timeout* is given, the call is bounded by asyncio.wait_for so a
+        hung subsystem cannot stall startup indefinitely.
+        """
         try:
+            if timeout is not None:
+                return await asyncio.wait_for(coro_func(), timeout=timeout)
             return await coro_func()
+        except asyncio.TimeoutError as exc:
+            raise SubsystemError(
+                subsystem=subsystem,
+                operation=operation,
+                message=f"{label} timed out after {timeout}s",
+                cause=exc,
+            )
         except C2EngineError:
             raise
         except Exception as exc:
