@@ -114,6 +114,7 @@ class AuthLayer:
         both pay the same scrypt — and a locked-out name is refused before the
         password is even looked at.
         """
+        username = username.strip()
         now = time.monotonic()
         attempts = [t for t in self._failed.get(username, []) if now - t < self._lockout_seconds]
         if len(attempts) >= self._max_failed:

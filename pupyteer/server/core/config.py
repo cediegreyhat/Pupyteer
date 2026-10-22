@@ -119,7 +119,7 @@ def _redact_sensitive(data: Dict[str, Any]) -> Dict[str, Any]:
     """Return a copy with sensitive values replaced by ***REDACTED***."""
     redacted: Dict[str, Any] = {}
     for key, value in data.items():
-        if key.lower() in _SENSITIVE_KEYS and isinstance(value, str):
+        if any(s in key.lower() for s in _SENSITIVE_KEYS) and isinstance(value, str):
             redacted[key] = "***REDACTED***"
         elif isinstance(value, dict):
             redacted[key] = _redact_sensitive(value)

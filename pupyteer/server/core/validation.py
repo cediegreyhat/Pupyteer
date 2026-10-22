@@ -328,8 +328,8 @@ def validate_file_path(path: str, allow_absolute: bool = False) -> str:
     if not path:
         raise ValueError("Path cannot be empty")
     
-    # Reject path traversal
-    if _RE_PATH_TRAVERSAL.search(path):
+    # Reject path traversal (any '..' segment, including a bare '..')
+    if _RE_PATH_TRAVERSAL.search(path) or path == ".." or any(seg == ".." for seg in path.replace("\\", "/").split("/")):
         raise ValueError(f"Path contains directory traversal: {path}")
     
     # Reject absolute paths unless explicitly allowed
