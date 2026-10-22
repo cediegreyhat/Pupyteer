@@ -242,7 +242,9 @@ class SessionManager:
         """Search sessions by tag, hostname, OS, username, or ID substring."""
         results = []
         q = query.lower()
-        for s in self._sessions.values():
+        async with self._lock:
+            sessions = list(self._sessions.values())
+        for s in sessions:
             if any([
                 q in s.session_id.lower(),
                 q in s.hostname.lower(),
@@ -259,7 +261,9 @@ class SessionManager:
     async def filter_by(self, **kwargs) -> List[SessionInfo]:
         """Filter sessions by keyword args matching SessionInfo fields."""
         results = []
-        for s in self._sessions.values():
+        async with self._lock:
+            sessions = list(self._sessions.values())
+        for s in sessions:
             match = True
             for key, value in kwargs.items():
                 if not hasattr(s, key):
@@ -424,16 +428,21 @@ class SessionManager:
 
     async def get_command_history(self, session_id: str, limit: int = 50) -> List[Dict[str, Any]]:
         """Get command history for a session."""
-        queue = self._command_queue.get(session_id, [])
+        async with self._lock:
+            queue = list(self._command_queue.get(session_id, []))
         return queue[-limit:]
 
     async def filter_by_tag(self, tag: str) -> List[SessionInfo]:
         """Filter sessions by a specific tag."""
-        return [s for s in self._sessions.values() if tag in s.tags]
+        async with self._lock:
+            sessions = list(self._sessions.values())
+        return [s for s in sessions if tag in s.tags]
 
     async def filter_by_state(self, state: SessionState) -> List[SessionInfo]:
         """Filter sessions by state."""
-        return [s for s in self._sessions.values() if s.state == state]
+        async with self._lock:
+            sessions = list(self._sessions.values())
+        return [s for s in sessions if s.state == state]
 
     async def rename(self, session_id: str, new_hostname: str) -> bool:
         async with self._lock:
@@ -473,7 +482,8 @@ class SessionManager:
         return list(self._sessions.keys())
 
     async def count_active(self) -> int:
-        return sum(1 for s in self._sessions.values() if s.state == SessionState.CONNECTED)
+        async with self._lock:
+            return sum(1 for s in self._sessions.values() if s.state == SessionState.CONNECTED)
 
     async def summary(self) -> Dict[str, Any]:
         """Return aggregate session summary."""
@@ -484,9 +494,10 @@ class SessionManager:
                 by_os[s.os] = by_os.get(s.os, 0) + 1
                 state_val = s.state.value
                 by_state[state_val] = by_state.get(state_val, 0) + 1
+            total = len(self._sessions)
 
         return {
-            "total": len(self._sessions),
+            "total": total,
             "by_os": by_os,
             "by_state": by_state,
             "active": by_state.get("connected", 0),

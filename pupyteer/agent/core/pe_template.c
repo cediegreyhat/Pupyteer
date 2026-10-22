@@ -1006,10 +1006,10 @@ static const char *json_get_string(const char *json, const char *key, char *out,
     char pattern[128];
     snprintf(pattern, sizeof(pattern), "\"%s\"", key);
     const char *p = strstr(json, pattern);
-    if (!p) { out[0] = '\0'; return NULL; }
+    if (!p) { if (out_sz) out[0] = '\0'; return NULL; }
     p += strlen(pattern);
     while (*p && (*p == ' ' || *p == '\t' || *p == ':' || *p == ',')) p++;
-    if (*p != '"') { out[0] = '\0'; return NULL; }
+    if (*p != '"') { if (out_sz) out[0] = '\0'; return NULL; }
     p++;
     /* Four bytes of room per step because one escape can write that much UTF-8. */
     size_t i = 0;
@@ -1085,19 +1085,20 @@ static int json_get_whole_string(const char *json, const char *key, char *out, s
     char pattern[128];
     snprintf(pattern, sizeof(pattern), "\"%s\"", key);
     const char *p = strstr(json, pattern);
-    if (!p) { out[0] = '\0'; return 0; }
+    if (!p) { if (out_sz) out[0] = '\0'; return 0; }
     p += strlen(pattern);
     while (*p && (*p == ' ' || *p == '\t' || *p == ':' || *p == ',')) p++;
-    if (*p != '"') { out[0] = '\0'; return 0; }
+    if (*p != '"') { if (out_sz) out[0] = '\0'; return 0; }
     size_t room = strlen(p + 1) + 1;          /* to the NUL of the task */
     if (room > out_sz) room = out_sz;         /* never write past the caller's buffer */
-    if (room < 4) room = 4;
+    if (room < 4 && out_sz >= 4) room = 4;
+    if (out_sz == 0) return 0;
     if (!json_get_string(json, key, out, room)) return 0;
     /* Escapes shrink as they are decoded, so the decoded length is the most
      * this reader can consume before refusing to write another four bytes.
      * Anything still open at that point had nowhere left to go. */
     if (strlen(out) + 4 >= out_sz) {
-        out[0] = '\0';
+        if (out_sz) out[0] = '\0';
         return -1;
     }
     return 1;

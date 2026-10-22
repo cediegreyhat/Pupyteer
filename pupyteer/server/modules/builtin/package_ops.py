@@ -12,7 +12,6 @@ is loaded, modules that need it can be ported.
 from __future__ import annotations
 
 import os
-from typing import Any, Dict
 
 from pupyteer.server.modules.registry import PupyModule, ModuleCategory
 from pupyteer.server.sessions import transfer
@@ -38,6 +37,9 @@ class LoadPackageModule(PupyModule):
         package = str(args.get("package") or args.get("name") or "").strip()
         if not package:
             return {"status": "error", "error": "package argument is required"}
+        if (os.sep in package or "/" in package or "\\" in package
+                or package in (".", "..") or ".." in package.split()):
+            return {"status": "error", "error": "invalid package name"}
 
         force = bool(args.get("force", False))
         remove = bool(args.get("remove", False))
