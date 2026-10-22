@@ -572,20 +572,18 @@ section describes what the running code does, not what its modules could do.
   `admin` can move `audit.log_file` in the config or delete the file — attribution
   says who the console blames, it is not tamper-proofing against the person it
   blames.
-- **There is no payload-level cipher.** `StubConfig.obfuscation_key` keys the
-  string-table XOR used to obfuscate the script; it is not, and never was, an
-  encryption layer for the channel. Confidentiality comes from TLS only.
-- **A capability claim is the payload's own word, not a verified fact.** Nothing
-  checks it against the binary, because a session is created from its `register`
-  message and carries no payload id to look a claim up on. So the gate is about
-  reporting and not about authority: an implant that overstates what it carries
-  still gets the tasking queued and can answer it with whatever it likes, exactly
-  as it could before this existed. What it cannot do now is fail in the one
-  direction that fooled an operator — claiming nothing about a verb and having a
-  shell invent the answer. Adding a verb to the agent therefore means adding it to
-  `KNOWN_CAPABILITIES` as well; a name outside that vocabulary is ignored at
-  registration rather than stored, which also means a payload cannot grant itself
-  a permission by inventing a word for it.
+- **There is no payload-level cipher (yet).** `StubConfig.obfuscation_key` keys the
+  string-table XOR used to obfuscate the script; it is not an encryption layer for
+  the channel. Confidentiality comes from TLS only. A `security.channel_cipher`
+  knob (default off) reserves the configuration slot; the AEAD implementation is
+  deferred.
+- **Capability claims are now verified against the build manifest.** A payload's
+  `register` carries a `payload_id` (when built by this server), and the listener
+  looks the claim up on it: overclaimed capabilities are downgraded to the verified
+  subset and the mismatch is audited. Legacy payloads that predate the field
+  declare nothing and keep the shell-only trust they had before. A name outside
+  `KNOWN_CAPABILITIES` is still ignored at registration, so a payload cannot grant
+  itself a permission by inventing a word for it.
 
 Treat network-level access control on the team server as part of the deployment.
 
