@@ -191,12 +191,6 @@ class AgentListener:
                     "Listener rc4_key is not valid hex; ignoring — "
                     "wire transport will remain plaintext."
                 )
-            # Per-connection RC4 stream buffer. RC4 output length == plaintext
-            # length, so a ciphertext byte may equal '\n' and split a frame across
-            # reader.readline() calls. We accumulate raw ciphertext here and
-            # decrypt continuously in _rc4_extract(), keyed by connection in the
-            # handler (reset on each new connection).
-            self._rc4_buf = bytearray()
 
         # Maximum silence tolerated per read on an established connection; see
         # IDLE_READ_TIMEOUT_SECONDS. Overridable so a stalled-read test does not
@@ -485,8 +479,8 @@ class AgentListener:
 
         logger.debug("New agent connection from %s", remote_str)
         self._stats["connections"] += 1
-        # Fresh RC4 stream state for this connection.
-        self._rc4_buf = bytearray()
+        # Fresh RC4 stream state for this connection (per-connection local).
+        rc4_buf = bytearray()
 
         try:
             while True:
@@ -501,26 +495,26 @@ class AgentListener:
                     chunk = await reader.read(4096)
                     if not chunk:
                         # EOF — flush anything decodable then stop.
-                        msgs, leftover = self._rc4_extract(self._rc4_buf)
+                        msgs, leftover = self._rc4_extract(rc4_buf)
                         for msg in msgs:
                             r = await self._dispatch(msg, remote_str, writer)
                             if r == "":
                                 break
                         break
                     self._stats["bytes_received"] += len(chunk)
-                    self._rc4_buf.extend(chunk)
+                    rc4_buf.extend(chunk)
                     # Bound the buffer before decrypting: a peer that streams
                     # ciphertext which never decrypts to a complete JSON object
                     # would otherwise grow _rc4_buf without limit (one frame at
                     # a time) until the listener OOMs. See MAX_RC4_BUFFER_BYTES.
-                    if len(self._rc4_buf) > self._max_rc4_buffer:
+                    if len(rc4_buf) > self._max_rc4_buffer:
                         logger.warning(
                             "Dropping %s: RC4 buffer exceeded %d bytes without a "
                             "complete frame", remote_str, self._max_rc4_buffer)
                         self._stats["rc4_buffer_overflows"] += 1
                         break
-                    msgs, leftover = self._rc4_extract(self._rc4_buf)
-                    self._rc4_buf = bytearray(leftover)
+                    msgs, leftover = self._rc4_extract(rc4_buf)
+                    rc4_buf = bytearray(leftover)
                     drop = False
                     for msg in msgs:
                         result = await self._dispatch(msg, remote_str, writer)
