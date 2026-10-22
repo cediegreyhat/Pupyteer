@@ -1065,7 +1065,7 @@ static const char *json_get_string(const char *json, const char *key, char *out,
         }
         p++;
     }
-    out[i] = '\0';
+    if (out_sz) out[i] = '\0';
     return out;
 }
 
