@@ -14,9 +14,7 @@ from __future__ import annotations
 import os
 from typing import Any, Dict
 
-from pupyteer.server.core.config import ConfigManager
-from pupyteer.server.core.logging import AuditLogger
-from pupyteer.server.modules.registry import PupyModule, ModuleCategory, ModuleRequirement
+from pupyteer.server.modules.registry import PupyModule, ModuleCategory
 from pupyteer.server.sessions import transfer
 from pupyteer.server.modules.builtin.recon import (
     _command_timeout,
