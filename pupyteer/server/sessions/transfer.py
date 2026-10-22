@@ -155,7 +155,10 @@ async def chunk_budget(
     operator reads is a short file with a check mark next to it.
     """
     session = await session_manager.get(session_id)
-    declared = getattr(session, "max_line", 0) or DEFAULT_MAX_LINE
+    if session is None:
+        declared = DEFAULT_MAX_LINE
+    else:
+        declared = getattr(session, "max_line", 0) or DEFAULT_MAX_LINE
     usable_line = declared - LINE_FRAMING_ALLOWANCE
     return min(chunk_size, max(usable_line, 0) * 3 // 4)
 
