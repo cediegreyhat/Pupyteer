@@ -608,8 +608,11 @@ class PayloadBuilder:
                 if payload_config.payload_type.value == "script":
                     metadata.capabilities = list(KNOWN_CAPABILITIES)
                 else:
-                    metadata.capabilities = ["exec", "ping", "sysinfo", "processes",
-                                            "fs_list", "fs_get", "fs_put", "screenshot"]
+                    caps = ["exec", "ping", "sysinfo", "processes",
+                            "fs_list", "fs_get", "fs_put"]
+                    if payload_config.screenshot:
+                        caps.append("screenshot")
+                    metadata.capabilities = caps
             except Exception:
                 metadata.capabilities = []
             metadata.status = PayloadStatus.VERIFIED.value

@@ -285,8 +285,8 @@ class PupyteerTUI:
         "payloads": ["status", "list", "build", "info", "verify", "remove", "cleanup", "versions"],
         "config": ["get", "set"],
         "theme": ["dark", "aurora", "light", "list"],
-        "evasion": ["status", "run", "list", "stats"],
-        "pipeline": ["run", "build", "test", "auto", "status", "history"],
+        "evasion": ["status", "run", "list", "stats", "profiles", "runner"],
+        "pipeline": ["run", "build", "test", "auto", "status", "history", "profiles", "info"],
         "operator": ["list", "add", "role", "remove"],
         "enrollment": ["show", "rotate", "revoke"],
     }

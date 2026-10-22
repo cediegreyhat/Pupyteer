@@ -281,9 +281,14 @@ class PEBuilder:
         # returns its default only when the key is genuinely absent, so a None
         # default cleanly distinguishes "unset" from "set to deadbeef". Empty is
         # legitimate: it selects the plaintext wire (no RC4 framing).
-        rc4_key = getattr(cfg, "rc4_key", "") or getattr(cfg, "dns_key", "")
-        if not rc4_key:
-            rc4_key = self._config.get("payloads.pe_rc4_key", None)
+        if hasattr(cfg, "rc4_key"):
+            rc4_key = getattr(cfg, "rc4_key", "")
+        else:
+            rc4_key = getattr(cfg, "dns_key", "")
+        if rc4_key is None:
+            rc4_key = self._config.get("payloads.pe_rc4_key", None) or ""
+        if rc4_key is None:
+            rc4_key = ""
 
         replacements = {
             "{{HOST}}": self._c_string("server host", cfg.host or "127.0.0.1"),

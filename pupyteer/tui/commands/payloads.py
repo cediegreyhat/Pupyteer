@@ -5,7 +5,6 @@ Provides TUI-accessible commands for payload lifecycle operations:
 """
 from __future__ import annotations
 
-import sys
 from typing import Any, Dict, List
 
 from pupyteer.payloads.manager import (

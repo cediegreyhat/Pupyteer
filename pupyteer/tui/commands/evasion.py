@@ -7,7 +7,6 @@ Wire to TUI via app.py: evasion [status|run|list|stats|profiles|runner]
 from __future__ import annotations
 
 import os
-import sys
 from typing import Any, Dict, List
 
 
