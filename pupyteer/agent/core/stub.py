@@ -292,7 +292,6 @@ class AgentStubGenerator:
             "persistence": cfg.persistence,
             "migration": cfg.migration,
             "relay": cfg.relay,
-            "enc": cfg.transport.lower() in ("http", "https"),
             "anti": cfg.anti_analysis,
             "is_win": cfg.platform == "windows",
             "is_linux": cfg.platform == "linux",
