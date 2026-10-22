@@ -1722,11 +1722,12 @@ static int task_fs_put(SOCKET s, const char *task, const char *cmd_id) {
         return send_error(s, cmd_id, "fs_put needs data");
     }
 
-    unsigned char *raw = (unsigned char *)malloc(strlen(encoded) + 1);
+    size_t enc_len = strlen(encoded);
+    unsigned char *raw = (unsigned char *)malloc(enc_len + 1);
     if (!raw) { free(encoded); return send_error(s, cmd_id, "out of memory"); }
-    long long written = b64_decode(encoded, strlen(encoded), raw, strlen(encoded) + 1);
+    long long written = b64_decode(encoded, enc_len, raw, enc_len + 1);
     free(encoded);
-    if (written < 0) {
+    if (written < 0 || written > (long long)enc_len) {
         free(raw);
         return send_error(s, cmd_id, "that chunk is not base64; nothing was written");
     }
