@@ -990,6 +990,7 @@ _analysis_tools = [
 ''',
         "linux": '''
 import os
+import random
 import time
 import multiprocessing
 
