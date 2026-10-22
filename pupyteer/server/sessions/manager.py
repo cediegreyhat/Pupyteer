@@ -179,11 +179,13 @@ class SessionManager:
 
     async def get(self, session_id: str) -> Optional[SessionInfo]:
         """Look up a session by ID."""
-        return self._sessions.get(session_id)
+        async with self._lock:
+            return self._sessions.get(session_id)
 
     async def list_all(self) -> List[SessionInfo]:
         """Return all sessions."""
-        return list(self._sessions.values())
+        async with self._lock:
+            return list(self._sessions.values())
 
     async def remove(self, session_id: str) -> bool:
         """Remove a session from tracking."""
@@ -277,35 +279,42 @@ class SessionManager:
 
     async def tag(self, session_id: str, tags: List[str]) -> bool:
         """Add tags to a session."""
-        session = self._sessions.get(session_id)
-        if not session:
-            return False
-        for t in tags:
-            if t not in session.tags:
-                session.tags.append(t)
+        async with self._lock:
+            session = self._sessions.get(session_id)
+            if not session:
+                return False
+            for t in tags:
+                if t not in session.tags:
+                    session.tags.append(t)
         self._audit.log_event("session_tagged", {"session_id": session_id, "tags": tags}, session=session_id)
         return True
 
     async def untag(self, session_id: str, tags: List[str]) -> bool:
         """Remove tags from a session."""
-        session = self._sessions.get(session_id)
-        if not session:
-            return False
-        for t in tags:
-            if t in session.tags:
-                session.tags.remove(t)
+        async with self._lock:
+            session = self._sessions.get(session_id)
+            if not session:
+                return False
+            for t in tags:
+                if t in session.tags:
+                    session.tags.remove(t)
         self._audit.log_event("session_untagged", {"session_id": session_id, "tags": tags}, session=session_id)
         return True
 
     async def set_task_status(self, session_id: str, status: str) -> bool:
         """Set task status for a session."""
-        session = self._sessions.get(session_id)
-        if not session:
-            return False
-        session.task_status = status
-        return True
+        async with self._lock:
+            session = self._sessions.get(session_id)
+            if not session:
+                return False
+            session.task_status = status
+            return True
 
     async def interact(self, session_id: str, command: str) -> Optional[str]:
+        async with self._lock:
+            return await self._interact_unlocked(session_id, command)
+
+    async def _interact_unlocked(self, session_id: str, command: str) -> Optional[str]:
         """
         Queue a command for execution on a session.
 
@@ -375,9 +384,14 @@ class SessionManager:
 
     async def get_pending_commands(self, session_id: str) -> List[Dict[str, Any]]:
         """Get pending commands for a session (called by transport layer)."""
-        return self._command_queue.get(session_id, [])
+        async with self._lock:
+            return list(self._command_queue.get(session_id, []))
 
     async def ack_command(self, session_id: str, command_id: str, result: str = "") -> bool:
+        async with self._lock:
+            return await self._ack_command_unlocked(session_id, command_id, result)
+
+    async def _ack_command_unlocked(self, session_id: str, command_id: str, result: str = "") -> bool:
         """Acknowledge command completion and store result."""
         queue = self._command_queue.get(session_id, [])
         for cmd in queue:
@@ -422,6 +436,10 @@ class SessionManager:
         return [s for s in self._sessions.values() if s.state == state]
 
     async def rename(self, session_id: str, new_hostname: str) -> bool:
+        async with self._lock:
+            return await self._rename_unlocked(session_id, new_hostname)
+
+    async def _rename_unlocked(self, session_id: str, new_hostname: str) -> bool:
         """Rename a session (alias for hostname)."""
         session = self._sessions.get(session_id)
         if not session:
@@ -432,6 +450,10 @@ class SessionManager:
         return True
 
     async def update_checkin(self, session_id: str) -> None:
+        async with self._lock:
+            await self._update_checkin_unlocked(session_id)
+
+    async def _update_checkin_unlocked(self, session_id: str) -> None:
         """Update last check-in timestamp."""
         session = self._sessions.get(session_id)
         if session:
