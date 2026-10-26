@@ -47,7 +47,7 @@ TEMPLATE_PLACEHOLDERS = (
 # Default RC4 transport key when the StubConfig does not supply one.
 # 8 hex digits (4 bytes) — deliberately weak by default; operators must set
 # payloads.pe_rc4_key or StubConfig.rc4_key to something real.
-DEFAULT_PE_RC4_KEY = "deadbeef"
+DEFAULT_PE_RC4_KEY = ""  # unset -> build generates a random key
 
 #: Rendered into a C string literal, so anything that could end the literal
 #: early or start an escape has to be refused rather than compiled in.
@@ -289,6 +289,17 @@ class PEBuilder:
             rc4_key = self._config.get("payloads.pe_rc4_key", None) or ""
         if rc4_key is None:
             rc4_key = ""
+        # Never ship the historical weak default ("deadbeef"). When no key is
+        # configured, generate a strong random key and surface it so the
+        # operator can configure the matching listener.
+        _UNSET = object()
+        _cfg_val = self._config.get("payloads.pe_rc4_key", _UNSET)
+        if rc4_key == "" and _cfg_val is _UNSET:
+            import secrets as _sec
+            rc4_key = _sec.token_hex(16)
+            logger.warning(
+                "No RC4 key configured; generated random key %r — configure "
+                "listener with the same value", rc4_key)
 
         replacements = {
             "{{HOST}}": self._c_string("server host", cfg.host or "127.0.0.1"),
