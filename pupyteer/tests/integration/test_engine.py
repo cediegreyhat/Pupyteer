@@ -1,6 +1,7 @@
 """Integration tests — engine startup, subsystem wiring, end-to-end flows."""
 import asyncio
 import os
+import socket
 import sys
 import tempfile
 from pathlib import Path
@@ -21,6 +22,19 @@ from pupyteer.payloads.manager import PayloadPlatform, PayloadArch, PayloadType
 
 
 # ─── Engine Integration ───────────────────────────────────────────────
+
+
+def _free_port() -> int:
+    """Ask the OS for a port instead of hardcoding one.
+
+    A literal port makes the test depend on the host's excluded ranges: on
+    Windows, Hyper-V/WSL reservations and some EDR agents deny bind on whole
+    bands (10013/WSAEACCES) while neighbouring ports bind fine, so a fixed
+    port turns a green suite red on an unrelated machine.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
 
 class TestEngineStartup:
@@ -82,13 +96,14 @@ class TestEngineStartup:
 
     @pytest.mark.asyncio
     async def test_engine_with_custom_config(self, tmp_path):
+        port = _free_port()
         cfg = tmp_path / "engine_test.yaml"
-        cfg.write_text("server:\n  host: 127.0.0.1\n  port: 18443\n")
+        cfg.write_text(f"server:\n  host: 127.0.0.1\n  port: {port}\n")
         engine = PupyteerEngine(str(cfg))
         await engine.start()
-        assert engine.config.get("server.port") == 18443
+        assert engine.config.get("server.port") == port
         status = engine.get_status()
-        assert status["config"]["server_port"] == 18443
+        assert status["config"]["server_port"] == port
         await engine.stop()
 
 
