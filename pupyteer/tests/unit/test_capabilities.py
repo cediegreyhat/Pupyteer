@@ -10,7 +10,9 @@ import base64
 import io
 import json
 import os
+import re
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -24,6 +26,8 @@ from pupyteer.server.sessions.transfer import (
     DEFAULT_CHUNK_SIZE, LINE_FRAMING_ALLOWANCE, chunk_budget, pull, push,
 )
 from pupyteer.server.transports.listener import AgentListener
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 class MockTransports:
@@ -271,6 +275,84 @@ class TestDispatchKeepsRefusalsOnTheServer:
 async def _token(sm, session_id):
     session = await sm.get(session_id)
     return session.beacon_token
+
+
+class TestTheVocabularyCoversBothAgents:
+    """The claim vocabulary has to contain every action the agents implement.
+
+    It did not. The recon verbs (`netstat`, `pwd`, `env`, `date`, `kill`) and
+    the module dispatches (`pyexec`, `load_package`) were absent from
+    `KNOWN_CAPABILITIES`, so `declared_capabilities` dropped them from every
+    real payload's claim and the queue refused exactly the commands those
+    payloads were built to run — a refusal that reads as a dead implant.
+    """
+
+    def test_every_operator_verb_resolves_to_a_known_capability(self):
+        missing = {v: c for v, c in caps.TYPED_VERBS.items()
+                   if c not in caps.KNOWN_CAPABILITIES}
+        assert missing == {}, missing
+
+    def test_every_action_the_python_agent_dispatches_is_known(self):
+        source = (REPO_ROOT / "pupyteer" / "agent" / "core" / "stub.py").read_text(
+            encoding="utf-8")
+        body = source.split("def _dispatch(")[1].split("def _render_result")[0]
+        actions = set(re.findall(r'action == "([a-z_]+)"', body))
+        assert actions, "the parse found nothing — the test is not testing"
+        assert actions <= set(caps.KNOWN_CAPABILITIES), actions
+
+    def test_every_verb_the_python_agent_parses_is_known(self):
+        source = (REPO_ROOT / "pupyteer" / "agent" / "core" / "stub.py").read_text(
+            encoding="utf-8")
+        body = source.split("def _parse_command")[1].split("# ---")[0]
+        verbs = set(re.findall(r'v == "([a-z_]+)"', body))
+        for tup in re.findall(r"v in \(([^)]*)\)", body):
+            verbs |= set(re.findall(r'"([a-z_]+)"', tup))
+        assert verbs, "the parse found nothing — the test is not testing"
+        # `ps`, `kill` and `exit` are operator spellings, not capability names;
+        # what matters is that the gate they resolve to is a real word.
+        resolved = {caps.required_capability(v) for v in verbs}
+        assert resolved <= set(caps.KNOWN_CAPABILITIES), resolved
+
+    def test_the_pe_capability_constant_matches_the_c_register(self):
+        """The manifest records what the .exe declares, so tie the two together.
+
+        A constant that drifts from `handle_register` is a manifest that lies
+        about the artifact, which is the one thing it exists not to do.
+        """
+        source = (REPO_ROOT / "pupyteer" / "agent" / "core" / "pe_template.c").read_text(
+            encoding="utf-8")
+        match = re.search(r'capabilities\\":\[([^\]]*)\]', source)
+        assert match, "the C register no longer carries a capability list"
+        declared = set(re.findall(r'\\"([a-z_]+)\\"', match.group(1)))
+        assert declared == set(caps.PE_CAPABILITIES)
+        assert declared <= set(caps.KNOWN_CAPABILITIES)
+
+    def test_script_capabilities_follow_the_build_switches(self):
+        default = caps.script_capabilities()
+        assert "screenshot" not in default
+        assert "screenshot" in caps.script_capabilities(screenshot=True)
+        assert "migrate" in default
+        assert "migrate" not in caps.script_capabilities(migration=False)
+        assert set(default) <= set(caps.KNOWN_CAPABILITIES)
+
+    @pytest.mark.asyncio
+    async def test_a_real_payloads_claim_survives_the_gate(self, sessions):
+        """End to end: what the stub declares is what the queue accepts."""
+        sm, _ = sessions
+        declared = caps.declared_capabilities(caps.script_capabilities())
+        for name in ("netstat", "pwd", "env", "date", "process_kill",
+                     "load_package", "pyexec"):
+            assert name in declared, name
+        await _connect(sm, capabilities=declared)
+
+        for command in ("netstat", "pwd", "env", "date", "kill 4"):
+            cid = await sm.interact("s1", command)
+            assert _entry(sm, "s1", cid)["status"] == "queued", command
+
+        for task in ('{"action": "load_package", "name": "x"}',
+                     '{"action": "pyexec", "code": "1"}'):
+            cid = await sm.interact("s1", task)
+            assert _entry(sm, "s1", cid)["status"] == "queued", task
 
 
 # ─── transfer sizes itself to the implant ────────────────────────────

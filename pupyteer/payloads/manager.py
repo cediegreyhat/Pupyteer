@@ -604,15 +604,14 @@ class PayloadBuilder:
             # Phase: Verification
             # Record shipped capabilities so the listener can verify claims.
             try:
-                from pupyteer.server.sessions.capabilities import KNOWN_CAPABILITIES
+                from pupyteer.server.sessions.capabilities import (
+                    PE_CAPABILITIES, script_capabilities)
                 if payload_config.payload_type.value == "script":
-                    metadata.capabilities = list(KNOWN_CAPABILITIES)
+                    metadata.capabilities = script_capabilities(
+                        screenshot=payload_config.screenshot,
+                        migration=payload_config.migration)
                 else:
-                    caps = ["exec", "ping", "sysinfo", "processes",
-                            "fs_list", "fs_get", "fs_put"]
-                    if payload_config.screenshot:
-                        caps.append("screenshot")
-                    metadata.capabilities = caps
+                    metadata.capabilities = list(PE_CAPABILITIES)
             except Exception:
                 metadata.capabilities = []
             metadata.status = PayloadStatus.VERIFIED.value

