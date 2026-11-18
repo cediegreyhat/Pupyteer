@@ -871,6 +871,39 @@ class TestSecureDefaults:
         findings = check_config_defaults()
         assert findings == [], f"the shipped defaults fail their own gate: {findings}"
 
+    def test_the_shipped_tree_scans_clean(self, tmp_path):
+        """`--strict` must exit zero on the tree as it stands.
+
+        It did not: the wmic command template in recon.py reads
+        `password:"{password}"`, which the password pattern matched as a
+        hardcoded credential. A gate that is red on a clean checkout trains
+        everybody to ignore it, so the scan itself is under test here.
+        """
+        from scripts.verify_secure_defaults import scan_for_secrets
+
+        root = Path(__file__).resolve().parents[2]
+        assert scan_for_secrets(root) == []
+
+    def test_a_command_template_placeholder_is_not_a_password(self, tmp_path):
+        """The specific shape that used to trip the scanner."""
+        from scripts.verify_secure_defaults import check_file
+
+        f = tmp_path / "rwmic.py"
+        f.write_text(
+            'auth = f\' /user:"{user}" /password:"{password}"\' if user else ""\n',
+            encoding="utf-8",
+        )
+        assert check_file(f) == []
+
+    def test_a_real_hardcoded_password_is_still_found(self, tmp_path):
+        """The placeholder exemption must not become a blind spot."""
+        from scripts.verify_secure_defaults import check_file
+
+        f = tmp_path / "creds.py"
+        f.write_text('password = "hunter2-super-secret"\n', encoding="utf-8")
+        findings = check_file(f)
+        assert any("Hardcoded password" in x for x in findings), findings
+
     def test_a_plaintext_operator_credential_coming_back_is_found(self, monkeypatch):
         """The gate has to be able to fail, or it is a print statement.
 

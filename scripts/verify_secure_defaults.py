@@ -51,6 +51,22 @@ SKIP_PATTERNS = [
     '.pyc',
 ]
 
+#: The quoted body of an f-string placeholder, e.g. `{password}`.
+_INTERPOLATION_PAYLOAD = re.compile(r'^\{[^{}]*\}$')
+
+
+def _is_fstring_interpolation(match_text: str) -> bool:
+    """True when a secret-pattern hit is an f-string placeholder, not a literal.
+
+    `password:"{password}"` inside an f-string is a variable reference built
+    into a command line, not a credential shipped in the source. Flagging it
+    made `--strict` exit non-zero on a clean tree, which is worse than the
+    finding it invented: a gate that is always red gets ignored.
+    """
+    quoted = re.findall(r'["\']([^"\']*)["\']', match_text)
+    return bool(quoted) and all(_INTERPOLATION_PAYLOAD.match(q) for q in quoted)
+
+
 # Directories to scan
 SCAN_DIRS = ['pupyteer', 'scripts', 'config']
 
@@ -79,13 +95,17 @@ def check_file(filepath: Path) -> List[str]:
             continue
         
         for pattern, desc in SECRET_PATTERNS:
-            if pattern.search(line):
+            hit = pattern.search(line)
+            if hit:
                 # Skip test/example patterns
                 if any(s in filepath.name.lower() for s in ['test_', '_test', 'example', 'sample']):
                     continue
                 if 'fixture' in filepath.name.lower() or 'mock' in filepath.name.lower():
                     continue
-                    
+                # An f-string placeholder is a variable, not a shipped secret.
+                if _is_fstring_interpolation(hit.group(0)):
+                    continue
+
                 findings.append(
                     f"  Line {line_num}: {desc}"
                 )
