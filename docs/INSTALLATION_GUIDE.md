@@ -49,7 +49,7 @@
 | `pyyaml` | Configuration and profile parsing |
 | `cryptography` | AES in the pipeline's obfuscation stage (imported lazily) |
 | `httpx` | HTTP(S) transports and the external analyser client |
-| `websockets` | WebSocket transport |
+| `websockets` | Declared for a WebSocket transport that is not implemented — nothing imports it |
 | `jinja2` | Agent stub templating (imported lazily) |
 | `readline` | Command history and tab completion — stdlib on Unix, optional elsewhere |
 

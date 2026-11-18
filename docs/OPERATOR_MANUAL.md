@@ -487,7 +487,7 @@ security:
 |-------|-------------|
 | `profile.name` | Unique profile identifier |
 | `profile.version` | Semantic version of the profile |
-| `transport.protocol` | Network protocol (tcp, https, dns, websocket) |
+| `transport.protocol` | Network protocol: `tcp`, `http` or `https` (server listeners), or `dns` / `doh` (agent-side only) |
 | `transport.host` | Listener bind address |
 | `transport.port` | Listener port |
 | `session.heartbeat_interval` | Agent check-in frequency in seconds |
@@ -525,7 +525,7 @@ class Transport:
 
 Server listeners bind for three protocols: `tcp` (newline-delimited JSON, the core transport), `http` and `https` (the same messages carried one per HTTP POST, `https` terminating TLS). Selecting any of them in the active profile starts the matching listener; a protocol with no server listener is reported as `unavailable`, never as `listening`.
 
-`websocket` and `dns` are agent-side transports only — the payload can dial out over them, but the server binds no listener for them and a profile that names one is refused rather than shown as a live transport.
+`dns` and `doh` are agent-side transports only — the payload can dial out over them, but the server binds no listener for them and a build that selects one is refused rather than shown as a live transport. There is no WebSocket transport: `websocket`/`wss` pass profile validation but are implemented on neither side.
 
 ---
 

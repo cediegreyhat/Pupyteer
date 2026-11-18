@@ -55,7 +55,7 @@ async def payload_build(tui: Any, args: List[str]) -> Dict[str, Any]:
                  --transport TRANSPORT --host HOST --port PORT
                  [--profile PROFILE] [--expiration DAYS] [--sign] [--version VERSION]
                  [--sleep SECONDS] [--jitter PERCENT] [--persistence] [--screenshot]
-                 [--sleep-mask]
+                 [--sleep-mask] [--relay]
     """
     # Parse arguments
     name = ""
@@ -74,6 +74,7 @@ async def payload_build(tui: Any, args: List[str]) -> Dict[str, Any]:
     persistence = False
     screenshot = False
     sleep_mask = False
+    relay = False
 
     i = 0
     while i < len(args):
@@ -133,6 +134,8 @@ async def payload_build(tui: Any, args: List[str]) -> Dict[str, Any]:
             screenshot = True; i += 1
         elif args[i] == "--sleep-mask":
             sleep_mask = True; i += 1
+        elif args[i] == "--relay":
+            relay = True; i += 1
         elif args[i] == "--sign":
             sign = True; i += 1
         elif args[i] == "--version" and i + 1 < len(args):
@@ -157,6 +160,7 @@ async def payload_build(tui: Any, args: List[str]) -> Dict[str, Any]:
         persistence=persistence,
         screenshot=screenshot,
         sleep_mask=sleep_mask,
+        relay=relay,
     )
 
     engine = tui._engine

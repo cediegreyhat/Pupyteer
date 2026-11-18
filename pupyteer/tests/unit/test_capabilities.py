@@ -331,8 +331,10 @@ class TestTheVocabularyCoversBothAgents:
         default = caps.script_capabilities()
         assert "screenshot" not in default
         assert "screenshot" in caps.script_capabilities(screenshot=True)
-        assert "migrate" in default
-        assert "migrate" not in caps.script_capabilities(migration=False)
+        assert "migrate" not in default, (
+            "migrate is a partial step (it writes an image, it executes nothing), "
+            "so a default payload must not claim it")
+        assert "migrate" in caps.script_capabilities(migration=True)
         assert set(default) <= set(caps.KNOWN_CAPABILITIES)
 
     @pytest.mark.asyncio

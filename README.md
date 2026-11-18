@@ -10,7 +10,7 @@
   <img src="https://img.shields.io/badge/License-BSD--3--Clause-2EA44F?style=for-the-badge" alt="BSD 3-Clause">
   <img src="https://img.shields.io/badge/Modules-101-6C5CE7?style=for-the-badge" alt="101 registered modules">
   <br>
-  <img src="https://img.shields.io/badge/Tests-1471%20passed-00B894?style=for-the-badge&labelColor=0B0F14" alt="1471 tests passing">
+  <img src="https://img.shields.io/badge/Tests-1474%20passed-00B894?style=for-the-badge&labelColor=0B0F14" alt="1474 tests passing">
   <img src="https://img.shields.io/badge/Pupy%20parity-101%2F122-FF7675?style=for-the-badge" alt="Pupy parity: 101 of 122 modules">
   <img src="https://img.shields.io/badge/Agents-Python%20%2B%20Windows%20PE-FCC6D7?style=for-the-badge" alt="Python and Windows PE agents">
 </p>
@@ -161,9 +161,11 @@ pupyteer list-modules [--category recon] [--json]
 pupyteer module-info exec
 pupyteer module-health [--json]
 pupyteer server-info [--reveal]
+pupyteer verify-payload ./payloads/artifacts/test-payload [--sig PATH]
 pupyteer build-payload <name> --host <cb> --port <cb> [--platform linux] \
     [--arch x64] [--transport tcp] [--profile HTTPS-Standard] \
-    [--sleep 30] [--jitter 25] [--persistence] [--screenshot] [--sign]
+    [--sleep 30] [--jitter 25] [--persistence] [--screenshot] \
+    [--sleep-mask] [--migration] [--relay] [--sign]
 ```
 
 `build-payload` applies the same cross-compilation rules as the console command
@@ -279,7 +281,7 @@ The module library reaches the same implant through the same command channel, so
 `use <module>`, `set <OPTION> <value>` and `sessions route <session_id> <module>`
 run it against a live session — `file_list`, `download`, `upload` and `discovery`
 dispatch `fs_list`/`fs_get`/`fs_put`/`exec` tasks, and `ping`, `privesc`,
-`screenshot` and `migrate` wrap the structured actions the agent already answers,
+`screenshot` and `privesc` wrap the structured actions the agent already answers,
 returning parsed results you can run as background jobs or across every session.
 A module that cannot reach an agent returns an error naming that fact rather than
 an empty success, a transfer that fails part-way reports how many bytes did
@@ -429,7 +431,7 @@ git-ignored.
 .venv/bin/python -m pytest pupyteer/tests/integration
 ```
 
-**1471 tests pass, 1 skipped** — and CI runs the same suite on both Linux and
+**1474 tests pass, 1 skipped** — and CI runs the same suite on both Linux and
 Windows, so the Python agent is exercised everywhere and the Windows-only paths
 (TLS pinning, the PE build) fail where they are actually used.
 

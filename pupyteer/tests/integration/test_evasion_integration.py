@@ -54,7 +54,7 @@ async def test_full_litterbox_flow():
     assert result.test_id
     assert result.artifact_hash_verified
     assert result.build_reproducible
-    assert result.detection_overall in ("undetected", "detected", "error")
+    assert result.detection_overall in ("undetected", "detected", "error", "not_tested")
     assert result.execution_result == "success"
     assert len(result.control_results) == 4
 

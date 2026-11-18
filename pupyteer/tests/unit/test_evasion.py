@@ -190,7 +190,7 @@ async def test_manager_local_test():
     assert result.artifact_hash_verified is True
     assert result.build_reproducible is True
     assert result.duration_seconds > 0
-    assert result.detection_overall in ("undetected", "detected", "error")
+    assert result.detection_overall in ("undetected", "detected", "error", "not_tested")
 
     await manager.shutdown()
 

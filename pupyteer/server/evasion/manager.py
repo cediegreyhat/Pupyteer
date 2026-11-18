@@ -30,6 +30,7 @@ from pupyteer.server.evasion.models import (
     EvasionTestConfig,
     EvasionTestResult,
     ControlResult,
+    ExecutionResult,
     TestEnvironment,
     compute_file_hash,
     verify_artifact_hash,
@@ -44,6 +45,13 @@ logger = logging.getLogger("pupyteer.evasion")
 # status honestly as unavailable from this source. This is a distinct value
 # from DetectionResult.* so callers cannot mistake it for a clean result.
 LITTERBOX_DETECTION_UNAVAILABLE = "unavailable"
+
+# The local path has no detection engine behind it at all: no AV scanner, no
+# YARA rule set, no AMSI provider. It is a pipeline smoke test, and reporting
+# `undetected` for it is the same lie the Litterbox path was fixed for — a
+# sample that was never scanned cannot be clean. Like the value above, this is
+# deliberately outside DetectionResult so no caller can mistake it for a verdict.
+LOCAL_DETECTION_NOT_RUN = "not_tested"
 
 
 class VirusTotalComposioClient:
@@ -494,23 +502,32 @@ class EvasionTestManager:
         config: EvasionTestConfig,
         result: EvasionTestResult,
     ) -> EvasionTestResult:
-        """
-        Run local detection checks (hash-only, static scan placeholders).
+        """Run the local pipeline, and record that it performed no detection.
 
-        In a full deployment this would invoke local YARA rules,
-        AMSI providers, etc. Here we record what *would* be checked.
+        There is no AV engine, YARA rule set or AMSI provider behind this path,
+        so every control is reported as :data:`LOCAL_DETECTION_NOT_RUN` rather
+        than ``undetected``. The run is still worth having — it confirms the
+        build, the profile and the pipeline execute end to end — but it says
+        nothing about whether the sample would be caught, and the result now
+        says that instead of implying a clean bill of health.
         """
         for control in config.controls:
             control_result = ControlResult(
                 control=control,
-                detection=DetectionResult.UNDETECTED.value,
-                notes="Local scan placeholder — no actual AV engine integrated",
+                detection=LOCAL_DETECTION_NOT_RUN,
+                notes=("No local detection engine is configured; this control "
+                       "was not scanned."),
             )
             result.control_results.append(control_result)
 
-        result.detection_overall = DetectionResult.UNDETECTED.value
-        result.execution_result = "success"
-        result.notes = "Local test completed (no AV engines — placeholder results)"
+        result.detection_overall = LOCAL_DETECTION_NOT_RUN
+        result.execution_result = ExecutionResult.SUCCESS.value
+        result.notes = (
+            "Local run: the pipeline executed, but no detection engine is "
+            "configured, so nothing was actually scanned and this is not a "
+            "clean result. Use --env litterbox or --env virustotal for a real "
+            "verdict."
+        )
 
         return result
 

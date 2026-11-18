@@ -91,7 +91,7 @@ security:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `protocol` | string | Yes | Network protocol: `tcp`, `https`, `dns`, `websocket`, `smb`. |
+| `protocol` | string | Yes | Network protocol: `tcp`, `http` or `https` (the server binds these three), or `dns` / `doh` (agent-side only — see below). |
 | `host` | string | Yes | Bind address for the listener (e.g., "0.0.0.0", "192.168.1.10"). |
 | `port` | integer | Yes | Listener port (1-65535). |
 
@@ -425,34 +425,15 @@ timeouts:
 
 **Use Case:** Restricted network with HTTP/HTTPS blocked.
 
-### WebSocket (Corporate Proxy)
+### DNS and DoH (agent-side only)
 
-For networks that only allow WebSocket connections:
+`dns` and `doh` are transports the *agent* can dial, not listeners the server can
+bind. A profile naming either one is refused at build time rather than shown as
+a live transport, because the payload would call out and find nobody.
 
-```yaml
-profile:
-  name: "WSS-Corporate"
-  version: "1.0"
-
-transport:
-  protocol: "websocket"
-  host: "0.0.0.0"
-  port: 8443
-
-session:
-  heartbeat_interval: 30
-  timeout: 300
-  jitter: 0.2
-
-encoding:
-  mode: "raw"
-
-timeouts:
-  connect: 30
-  response: 60
-```
-
-**Use Case:** Corporate environment with deep packet inspection that allows TLS WebSocket.
+There is no WebSocket transport. `websocket` / `wss` are accepted by the profile
+validator for compatibility with upstream profile files, but neither the server
+nor the agent implements them, and a build refuses them.
 
 ---
 

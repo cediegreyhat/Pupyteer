@@ -1,6 +1,8 @@
 """Tests for full payload lifecycle management per spec section 3."""
 import ast
 import asyncio
+import hashlib
+import json
 import os
 import sys
 import tempfile
@@ -228,25 +230,31 @@ class TestBuildSettingsReachTheStub:
 
     @pytest.mark.asyncio
     async def test_migration_toggle_reaches_the_artifact(self, config, audit):
-        """Migration is compiled in by default, but an operator can turn it off."""
+        """Migration is opt-in: a default payload must not claim it.
+
+        What the handlers actually do is write an image and attach; nothing is
+        executed. A payload that declares `migrate` and answers a tasking with
+        "ok" tells an operator the implant is somewhere it is not, so the
+        capability is compiled in only when it is asked for.
+        """
         pm = PayloadManager(config, audit)
         default = await pm.build(PayloadConfig(
             name="migratory", payload_type=PayloadType.SCRIPT, profile="TCP-Raw"))
         code = Path(default.artifact_path).read_text(encoding="utf-8")
-        assert "def migrate(" in code, "default payload lost its migration handler"
-        assert 'action == "migrate"' in code, (
-            "handler is present but no action reaches it"
-        )
-
-        off = await pm.build(PayloadConfig(
-            name="rooted", payload_type=PayloadType.SCRIPT, profile="TCP-Raw",
-            migration=False))
-        code = Path(off.artifact_path).read_text(encoding="utf-8")
         assert "def migrate(" not in code, (
-            "migration=False still compiled in the process-migration handler"
+            "a default payload still declares a capability it cannot deliver"
         )
         assert 'action == "migrate"' not in code, (
             "a migrate tasking would still be routed to a missing handler"
+        )
+
+        on = await pm.build(PayloadConfig(
+            name="rooted", payload_type=PayloadType.SCRIPT, profile="TCP-Raw",
+            migration=True))
+        code = Path(on.artifact_path).read_text(encoding="utf-8")
+        assert "def migrate(" in code, "migration=True did not compile the handler"
+        assert 'action == "migrate"' in code, (
+            "handler is present but no action reaches it"
         )
 
 
@@ -553,15 +561,65 @@ class TestSigning:
         assert ok is True
         assert result == ""
 
-    def test_signer_with_missing_key(self, config, audit, tmp_path):
+    def test_sign_then_verify_round_trips(self, config, audit, tmp_path):
+        """The signature must be real and checkable, not a marker."""
+        key_path = tmp_path / "signing.key"
         config.set("payloads.signing.enabled", True)
-        config.set("payloads.signing.key_path", "")
+        config.set("payloads.signing.key_path", str(key_path))
         signer = PayloadSigner(config, audit)
-        test_file = tmp_path / "test.bin"
-        test_file.write_bytes(b"test data")
-        ok, result = signer.sign(str(test_file), "pl-test")
-        assert ok is False
-        assert "key_path" in result
+
+        artifact = tmp_path / "payload.bin"
+        artifact.write_bytes(b"payload bytes")
+        ok, sig_path = signer.sign(str(artifact), "pl-roundtrip")
+        assert ok is True, sig_path
+        assert Path(sig_path).exists()
+
+        recorded = json.loads(Path(sig_path).read_text())
+        assert recorded["algorithm"] == "ed25519"
+        assert "signature" in recorded
+        assert recorded["artifact_hash"] == hashlib.sha256(b"payload bytes").hexdigest()
+
+        verified, message = signer.verify(str(artifact))
+        assert verified is True, message
+
+    def test_a_tampered_artifact_does_not_verify(self, config, audit, tmp_path):
+        config.set("payloads.signing.enabled", True)
+        config.set("payloads.signing.key_path", str(tmp_path / "signing.key"))
+        signer = PayloadSigner(config, audit)
+
+        artifact = tmp_path / "payload.bin"
+        artifact.write_bytes(b"original")
+        ok, sig_path = signer.sign(str(artifact), "pl-tamper")
+        assert ok is True
+
+        artifact.write_bytes(b"original, but changed")
+        verified, message = signer.verify(str(artifact), sig_path)
+        assert verified is False
+        assert "changed" in message
+
+    def test_a_marker_signature_is_named_as_one(self, config, audit, tmp_path):
+        """The old 'ed25519-stub' marker attests nothing and must say so."""
+        artifact = tmp_path / "payload.bin"
+        artifact.write_bytes(b"data")
+        sig = tmp_path / "payload.bin.sig"
+        sig.write_text(json.dumps({
+            "algorithm": "ed25519-stub",
+            "artifact_hash": hashlib.sha256(b"data").hexdigest(),
+        }))
+        config.set("payloads.signing.key_path", str(tmp_path / "signing.key"))
+        signer = PayloadSigner(config, audit)
+        verified, message = signer.verify(str(artifact), str(sig))
+        assert verified is False
+        assert "marker" in message
+
+    def test_a_missing_signature_is_not_a_pass(self, config, audit, tmp_path):
+        config.set("payloads.signing.key_path", str(tmp_path / "signing.key"))
+        signer = PayloadSigner(config, audit)
+        artifact = tmp_path / "payload.bin"
+        artifact.write_bytes(b"data")
+        verified, message = signer.verify(str(artifact))
+        assert verified is False
+        assert "not found" in message
 
 
 # ─── Verification Tests ──────────────────────────────────────────

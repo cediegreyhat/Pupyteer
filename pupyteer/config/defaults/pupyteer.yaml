@@ -92,6 +92,15 @@ paths:
   profiles: "./config/profiles"
   logs: "./logs"
 
+payloads:
+  # Ed25519 build attestation. `--sign` turns this on for one build; the key is
+  # generated on first use. The signature proves which build produced an
+  # artifact and that it was not modified before deployment. The agent does not
+  # verify it, so it is not protection against a hostile build host.
+  signing:
+    enabled: false
+    key_path: "./data/keys/payload_signing.key"
+
 evasion:
   test_mode: false  # MUST be explicitly enabled for lab use
   history_path: "./logs/evasion_history.json"

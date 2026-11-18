@@ -311,7 +311,6 @@ chattr +a ~/.config/pupyteer/audit.log
 | Transport | Encryption | Authentication |
 |-----------|------------|----------------|
 | HTTPS | TLS 1.2+ | Optional mTLS |
-| WebSocket (WSS) | TLS 1.2+ | Optional |
 | DNS | None (encoded) | Shared secret |
 | TCP Cleartext | None | Pre-shared key |
 

@@ -120,7 +120,7 @@ def script_capabilities(
     filesystem: bool = True,
     privesc: bool = True,
     screenshot: bool = False,
-    migration: bool = True,
+    migration: bool = False,
 ) -> List[str]:
     """What a generated Python agent declares, from the switches that built it.
 
@@ -180,6 +180,8 @@ TYPED_VERBS: Dict[str, str] = {
     "privesc_suggest": "privesc_suggest",
     "screenshot": "screenshot",
     "migrate": "migrate",
+    "pyexec": "pyexec",
+    "load_package": "load_package",
     "exit": "shutdown",
     "shutdown": "shutdown",
 }
