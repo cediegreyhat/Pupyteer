@@ -203,6 +203,45 @@ async def test_pe_payload_registers_and_runs_a_command_over_tls(tmp_path):
         await engine.stop()
 
 
+#: Longer than the 4096-byte buffer exec_command used to build its command line
+#: in, and short enough to stay under cmd.exe's own 8191-character limit.
+_LONG_COMMAND_PAYLOAD = "x" * 6000
+
+
+@pytest.mark.asyncio
+async def test_pe_payload_runs_a_command_longer_than_the_old_line_buffer(tmp_path):
+    """A truncated command line is a different command.
+
+    exec_command built ``"<cmd>" 2>&1`` into a 4096-byte buffer, so anything
+    longer was cut mid-command and the target ran whatever survived — then
+    reported that output as the answer to the command the operator actually
+    sent. It also wrapped the command in quotes, so a command containing a
+    quote parsed as something else.
+    """
+    port = _free_port()
+    config_path, secret, material = _start_server(tmp_path, port)
+    exe = await _build(tmp_path, port, secret, material.cert_pem, name="longcmd")
+
+    engine = PupyteerEngine(config_path)
+    await engine.start()
+    proc = subprocess.Popen([str(exe)], cwd=str(tmp_path),
+                            creationflags=creationflags())
+    try:
+        session_id = await _await_session(engine)
+        assert session_id, "PE payload never registered over TLS"
+
+        output = await _run(engine, session_id, f"echo {_LONG_COMMAND_PAYLOAD}")
+        assert output is not None, "PE payload never returned command output"
+        assert _LONG_COMMAND_PAYLOAD in output, (
+            f"the command was truncated: {len(output)} bytes back, wanted "
+            f"{len(_LONG_COMMAND_PAYLOAD)}")
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            proc.wait(timeout=10)
+        await engine.stop()
+
+
 #: A line and a count that together are several TLS records (Schannel caps a
 #: record at 16384 bytes of plaintext) and do not divide evenly into one. Several
 #: rather than two because the failure this guards is a copy that runs off the

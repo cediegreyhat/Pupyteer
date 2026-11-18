@@ -1168,7 +1168,7 @@ static const char *json_object_end(const char *start) {
  * the end of it. */
 static void json_escape(const char *src, size_t src_len, char *dst, size_t dst_sz) {
     size_t j = 0;
-    if (dst_sz < 7) { dst[0] = '\0'; return; }
+    if (dst_sz < 7) { if (dst_sz) dst[0] = '\0'; return; }
     for (size_t i = 0; i < src_len && j + 6 < dst_sz; i++) {
         unsigned char c = (unsigned char)src[i];
         switch (c) {
@@ -1199,7 +1199,10 @@ static void json_escape(const char *src, size_t src_len, char *dst, size_t dst_s
 /* ── command execution ── */
 
 static void exec_command(const char *cmd, char *out, size_t out_sz, size_t *out_len) {
-    char cmdline[4096];
+    /* Static rather than on the stack: the command can be as long as a whole
+     * inbound line, and main already holds two of those. The agent is
+     * single-threaded, so a shared buffer is safe here. */
+    static char cmdline[RECV_BUF_SIZE + 8];
     /* _popen opens cmd.exe /c <cmd> with stdout inherited by a pipe we read —
      * no temp file to create, redirect, or clean up. The old temp-file +
      * cmd.exe /c "cmd > file" approach failed when CreateProcess could not
@@ -1210,7 +1213,21 @@ static void exec_command(const char *cmd, char *out, size_t out_sz, size_t *out_
      * must NOT also start with cmd.exe /c — that nests two shells and the
      * inner one's redirection confuses the outer. Just the raw command; _popen
      * handles the shell and the pipe. */
-    snprintf(cmdline, sizeof(cmdline), "\"%s\" 2>&1", cmd);
+    size_t cmd_len = strlen(cmd);
+    if (cmd_len + sizeof(" 2>&1") > sizeof(cmdline)) {
+        /* Truncating here would run a *different* command than the one the
+         * operator sent, and report its output as the answer. Say so instead. */
+        snprintf(out, out_sz,
+                 "command too long (%lu bytes; this agent accepts at most %d)",
+                 (unsigned long)cmd_len, RECV_BUF_SIZE);
+        *out_len = strlen(out);
+        out[*out_len] = '\0';
+        return;
+    }
+    /* Passed verbatim, the way the Python agent hands the same string to a
+     * shell. It used to be wrapped in quotes, which made any command
+     * containing a quote parse as something else. */
+    snprintf(cmdline, sizeof(cmdline), "%s 2>&1", cmd);
 
     /* _popen returns a FILE* connected to the child's stdout — no temp file,
      * no CreateProcess path resolution, no redirect. Read until EOF; the
