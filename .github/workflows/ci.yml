@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [nextgen, main, master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  suite:
+    # Two platforms because the two agents are not interchangeable: the Python
+    # stub runs everywhere, and the Windows path (TLS pinning, the PE build)
+    # only fails where it is actually exercised.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.12"]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        run: pip install -r requirements.txt
+
+      # pytest.ini already runs this quiet with the cache provider off, so a
+      # green step here is the same suite a developer runs locally.
+      - name: Test suite
+        run: python -m pytest
+
+      # The README tells operators to run both of these; CI is where that
+      # promise is kept. --strict exits non-zero on a finding.
+      - name: Secure-defaults gate
+        run: python scripts/verify_secure_defaults.py --strict
+
+      - name: Dependency audit
+        run: python scripts/audit_deps.py

@@ -1,29 +1,108 @@
-# ╔══════════════════════════════════════════════════════════╗
-# ║                    PUPYTEER                               ║
-# ║          Red Team Operations Framework                   ║
-# ╚══════════════════════════════════════════════════════════╝
+<p align="center">
+  <img src="docs/assets/banner.svg" alt="Pupyteer — Red Team Operations Framework" width="100%">
+</p>
 
-> **Pupyteer** is a modular, operator-focused C2 and adversary-emulation framework built for authorized security assessments and red-team engagements.
+<p align="center">
+  <a href="https://github.com/cediegreyhat/Pupyteer/actions/workflows/ci.yml?query=branch%3Anextgen">
+    <img src="https://img.shields.io/github/actions/workflow/status/cediegreyhat/Pupyteer/CI.yml?branch=nextgen&style=for-the-badge&label=CI" alt="CI status">
+  </a>
+  <img src="https://img.shields.io/badge/Python-%3E%3D3.10-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python >= 3.10">
+  <img src="https://img.shields.io/badge/License-BSD--3--Clause-2EA44F?style=for-the-badge" alt="BSD 3-Clause">
+  <img src="https://img.shields.io/badge/Modules-101-6C5CE7?style=for-the-badge" alt="101 registered modules">
+  <br>
+  <img src="https://img.shields.io/badge/Tests-1526%20passed-00B894?style=for-the-badge&labelColor=0B0F14" alt="1526 tests passing">
+  <img src="https://img.shields.io/badge/Pupy%20parity-101%2F122-FF7675?style=for-the-badge" alt="Pupy parity: 101 of 122 modules">
+  <img src="https://img.shields.io/badge/Agents-Python%20%2B%20Windows%20PE-FCC6D7?style=for-the-badge" alt="Python and Windows PE agents">
+</p>
 
-Built as a modernization of the Pupy framework, Pupyteer prioritizes **modularity, reliability, controlled deployment, and detection resilience**. All components follow clear interface boundaries, enabling extensibility without coupling.
+> **Pupyteer** is a modular, operator-focused C2 and adversary-emulation
+> framework built for authorized security assessments and red-team engagements.
+> It is a from-scratch modernization of [Pupy](https://github.com/n1nj4sec/pupy):
+> the cross-platform agent ecosystem and the modular post-exploitation surface,
+> carried over a clean async server with explicit protocol boundaries between
+> every subsystem.
 
 ---
 
-## ⚡ Quick Start
+## At a glance
 
-### From Source (Recommended for Development)
+| | |
+|---|---|
+| **Server** | asyncio engine; session, task, profile, transport, module, payload and evasion subsystems behind `Protocol` interfaces |
+| **Agents** | Python stub (any host with an interpreter) and a MinGW-compiled Windows PE speaking the same wire protocol |
+| **Listeners** | TCP and HTTP/HTTPS, TLS with certificate pinning on by default |
+| **Modules** | 101 registered across recon, execution, file ops, post-exploitation and evasion |
+| **Operator surface** | Interactive TUI plus a scriptable CLI (`list-modules`, `build-payload`, `server-info`, `module-health`, …) |
+| **Default posture** | TLS on, enrollment required, console login required, default-deny verb table |
+
+---
+
+## Feature grid
+
+| Payloads | Transports | Server | Operator |
+|---|---|---|---|
+| Python script & Windows PE | TCP listener | Session lifecycle, tagging, interaction | TUI: banner, dashboard, themes |
+| Per-agent Ed25519 identity | HTTP / HTTPS listener | Task queue with real dispatch to the implant | Tab completion & history |
+| Build manifest + `payload_id` | New-agent identity challenge | Malleable C2 profiles (YAML/JSON) | RBAC: viewer / operator / admin |
+| Capability claims verified at registration | RC4 transport framing (opt-in) | Module registry + executor | `scripts/` verification gates for CI |
+| Artifact versioning & cleanup | — | Structured, redacted audit trail | — |
+
+---
+
+## Architecture
+
+```
+PUPYTEER
+  ├── Server (C2 Engine)
+  │   ├── Session Manager      — agent lifecycle, tagging, interaction
+  │   ├── Task Manager         — per-session queue, dispatched to the implant
+  │   ├── Profile Manager      — malleable C2 profiles (YAML)
+  │   ├── Transport Manager    — TCP + HTTP/HTTPS listeners
+  │   ├── Module Registry      — pluggable modules behind an ABC
+  │   ├── Payload Manager      — build, versioning, artifact lifecycle
+  │   ├── Evasion Engine       — obfuscation + Litterbox analysis
+  │   ├── Auth Layer           — console login, hashed credential file, tokens
+  │   ├── Audit Logger         — structured JSON with redaction
+  │   └── RBAC                 — viewer/operator/admin, default-deny verb table
+  │
+  ├── Agent (Stub)
+  │   ├── Core agent loop
+  │   ├── Transport clients
+  │   └── Server-dispatched modules
+  │
+  └── TUI
+      ├── Startup banner & status bar
+      ├── Session dashboard
+      ├── Payload & evasion commands
+      └── Command history & autocomplete
+```
+
+Data flows one way: operator → TUI → engine → task queue → module executor →
+session → transport → agent. Every step that reaches a session is audited with
+the operator's attribution, and every verb is checked against the signed-in role
+at dispatch.
+
+### The claim gate
+
+An implant declares what it can do at registration; the queue holds it to that
+declaration. A tasking outside the claim is refused **on the server** and never
+sent — because the alternative is a reply that comes back as whatever a shell
+said about a word it had never seen, which an operator reads as the target's
+answer. Since `payload_id` reached the wire, the listener also checks the claim
+against the build manifest and downgrades an over-claim rather than trusting it.
+
+---
+
+## ⚡ Quick start
 
 ```bash
-git clone https://github.com/yourorg/pupyteer
-cd pupyteer
-
+git clone https://github.com/cediegreyhat/Pupyteer
+cd Pupyteer
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 pip install -e .
 ```
-
-### Run the console
 
 ```bash
 pupyteer                 # interactive TUI (starts the server and console together)
@@ -41,9 +120,7 @@ secret. `login` / `logout` / `whoami` work from the prompt, and a token that
 expires mid-session asks you back in without stopping the engine or dropping the
 sessions that are live.
 
-### Generate a Payload
-
-Either from the console:
+### Generate a payload
 
 ```
 pupyteer > payloads build --name test-payload --platform linux --arch x64 \
@@ -55,7 +132,7 @@ pupyteer > payloads build --name test-payload --platform linux --arch x64 \
 on the target with nothing but a Python interpreter.
 
 `--type executable` runs PyInstaller or Nuitka as a real subprocess. Both freeze
-an binary for the machine that builds it, so:
+a binary for the machine that builds it, so:
 
 - the tool has to be installed on the team server (`pip install pyinstaller`), and
 - `--platform` has to match the team server's own OS — you cannot produce a Linux
@@ -100,8 +177,7 @@ touches a compiler.
 Every subcommand also accepts `-c/--config` and `-e/--environment`, matching the
 main entry point.
 
-To use HTTP callbacks instead, enable the listener in the server config and
-build with `--transport http`:
+### HTTP callbacks
 
 ```yaml
 server:
@@ -109,69 +185,14 @@ server:
   port: 8443        # TCP callbacks
   http_port: 8080   # HTTP callbacks; 0 disables them
   http_uri: "/index.html"
-  tls: true         # on by default; serve both listeners over TLS, payloads pin the certificate
+  tls: true         # on by default; both listeners serve TLS, payloads pin the certificate
   agent_auth: true  # require payloads to present this server's enrollment secret
   agent_auth_file: "./data/keys/enrollment.key"  # that secret's file, newest secret first
 ```
 
-`tls` is on unless a config turns it off: the listener generates a self-signed
-pair at `server.tls_cert` / `server.tls_key` on its first start and compiles that
-certificate into every payload built afterwards, so the agent trusts one
-certificate and nothing else. The value is read when the listener binds, so
-changing it takes a restart. Set `tls: false` only when you have a reason to put
-commands and results on the wire in plaintext, and think before flipping it on a
-server that has already fielded payloads — the key pair belongs to the payloads
-built against it, so replacing or moving it strands every one of them.
+Build with `--transport http` or `--transport https`.
 
-`agent_auth` (on by default) is the other half: TLS proves the listener to the
-agent, the enrollment secret proves the payload to the listener. It is not
-encryption — confidentiality on the wire comes from TLS alone — and it is not
-per-agent credentials: the server generates one secret and compiles it into
-every payload it builds, so it identifies this team server and not the host
-carrying it. A `register` without it is refused before a session is created, so
-finding the open port is no longer enough to get a handler. `agent_auth: false`
-is the opt-out, and it is an explicit one: with it off the listener trusts
-whoever reaches the port, which is fine on a loopback lab interface and not fine
-anywhere else. The banner and a startup warning say when it is off.
-
-On first start the server writes that secret to `server.agent_auth_file`
-(`./data/keys/enrollment.key`, mode `0600`), and nothing else holds it — not
-the config, not the audit log, never the terminal. The file is a list, newest
-first: the first line is what `payloads build` compiles, the lines under it are
-retired secrets still accepted so everything already deployed keeps its place, a
-`#` line labels the secret below it, and deleting a line is the decision that
-closes that door. The listener re-reads the file when a payload arrives rather
-than when it starts, so a deletion lands without a restart — and a restart would
-drop every session you are working at the moment you noticed. The console manages
-the list and names every line by its fingerprint:
-
-```
-pupyteer > enrollment show                    # accepted secrets and their role
-pupyteer > enrollment rotate                  # new secret current, old one retired
-pupyteer > enrollment revoke <fingerprint>    # close one retired door
-```
-
-That secret is spent the moment the session exists, so the third proof is on the
-wire rather than in a config file: `register` answers with a token for that
-session alone, and every `checkin` and `output` has to carry it. Nothing about it
-is configurable — there is no off switch, because a session nobody handed a proof
-to must not be the kind anyone can command — and it never appears in `sessions
-list`, in `sessions info` or in the audit log, only in `beacons_refused`.
-
-Two things here get missed often enough to be worth saying plainly. Revoking an
-enrollment secret does not stop a session that is already established — it only
-turns the next registration away — so cutting off a live handler is `sessions
-kill <id>`. And a listener whose enrollment file has gone missing admits nobody
-rather than minting a replacement while payloads knock: a fresh secret would look
-like a server that works while turning everything you deployed into a stranger.
-`enrollment show` says so when the file holds nothing; restore it, or delete it
-and restart to start a new boundary and rebuild the payloads.
-
-`--transport https` works with `tls: true`, or with `server.https_cert` /
-`server.https_key` for a certificate you obtained yourself, or against a reverse
-proxy holding a real one.
-
-Or programmatically:
+### Programmatically
 
 ```python
 import asyncio
@@ -199,7 +220,7 @@ async def main():
 asyncio.run(main())
 ```
 
-### Prove the Callback Loop Before a Payload Has To
+### Prove the callback loop before a payload has to
 
 ```bash
 python -m pupyteer.tools.callback_test                    # shipped defaults
@@ -222,7 +243,7 @@ different server, or from a secret since revoked, and the fix is a rebuild rathe
 than a retry. Any refusals the listener counted on the way are reported too, with
 the same names `transports list` uses.
 
-### Work a Session
+### Work a session
 
 Run the generated artifact on the target host; it registers over the listener
 and beacons. Then, from the console:
@@ -239,8 +260,8 @@ pupyteer > sessions screenshot <session_id> ./screen.png   # needs --screenshot
 Commands are queued per session and delivered on the agent's next check-in, so
 output appears after up to one beacon interval. Inside `sessions interact` the
 shell waits and prints the reply; if you leave early, `sessions results` catches
-up. Transfers are chunked, so a file larger than the operator's memory is not a
-problem.
+up. Transfers are chunked, sized by the `max_line` the implant declared, so a
+file larger than the operator's memory is not a problem.
 
 `sessions screenshot` captures the whole screen using whatever the host already
 provides — PowerShell's `System.Drawing` on Windows, `screencapture` on macOS,
@@ -255,13 +276,13 @@ run it against a live session — `file_list`, `download`, `upload` and `discove
 dispatch `fs_list`/`fs_get`/`fs_put`/`exec` tasks, and `ping`, `privesc`,
 `screenshot` and `migrate` wrap the structured actions the agent already answers,
 returning parsed results you can run as background jobs or across every session.
-A module that cannot reach an agent returns an error naming that fact
-rather than an empty success, a transfer that fails part-way reports how many
-bytes did arrive, and a session that will not accept a command at all is reported
-that way immediately instead of after the full wait — a gone implant is not a slow
-one, and the difference decides whether you wait or move on. An action the payload
-was not built to carry (say `screenshot` without `--screenshot`) is refused with
-that reason, never answered with a result the target did not produce.
+A module that cannot reach an agent returns an error naming that fact rather than
+an empty success, a transfer that fails part-way reports how many bytes did
+arrive, and a session that will not accept a command at all is reported that way
+immediately instead of after the full wait — a gone implant is not a slow one, and
+the difference decides whether you wait or move on. An action the payload was not
+built to carry (say `screenshot` without `--screenshot`) is refused with that
+reason, never answered with a result the target did not produce.
 
 ### Post-exploitation modules (`post_*`)
 
@@ -292,76 +313,81 @@ is meant to name a host cannot terminate the command and start a second one.
 
 ---
 
-## 🏗️ Architecture
+## 🔐 Enrollment and agent identity
+
+Two doors, deliberately separate.
+
+**`server.agent_auth`** (on by default) is a shared enrollment secret the server
+generates on first start and writes to `server.agent_auth_file`, newest first. A
+`register` that does not present one of the accepted lines is refused before any
+session exists. Because it is a list, `enrollment rotate` retires the previous
+secret *in place* — payloads already deployed keep working — and
+`enrollment revoke <fingerprint>` closes one retired door. Only fingerprints
+reach the console and the audit trail.
 
 ```
-PUPYTEER
-  ├── Server (C2 Engine)
-  │   ├── Session Manager      — agent lifecycle, tagging, interaction
-  │   ├── Task Queue           — async priority task scheduling
-  │   ├── Profile Manager      — malleable C2 profiles (YAML)
-  │   ├── Transport Manager    — TCP + HTTP/HTTPS listeners (see Transports)
-  │   ├── Module Registry      — pluggable modules with ABC interface
-  │   ├── Payload Manager      — build, versioning, artifact lifecycle
-  │   ├── Evasion Engine       — obfuscation + Litterbox analysis
-  │   ├── Auth Layer           — console login, hashed credential file, tokens
-  │   ├── Audit Logger         — structured JSON with redaction
-  │   └── RBAC                 — VIEWER/OPERATOR/ADMIN/SYSTEM, default-deny verb table
-  │
-  ├── Agent (Stub)
-  │   ├── Core agent loop
-  │   ├── Transport clients
-  │   ├── Server-dispatched modules (see server/modules)
-  │   └── Sleep masking
-  │
-  └── TUI
-      ├── Startup banner & status bar
-      ├── Session dashboard
-      ├── Payload & evasion commands
-      └── Command history & autocomplete
+pupyteer > enrollment show                    # accepted secrets and their role
+pupyteer > enrollment rotate                  # new secret current, old one retired
+pupyteer > enrollment revoke <fingerprint>    # close one retired door
 ```
+
+**Per-agent identity** (Ed25519) is minted when a payload is built by a server
+with a registry. The private half is compiled into that one payload; the public
+half is kept in `security.agent_keys_file`. Registration is a challenge/response
+— the listener issues a single-use nonce, the payload signs it — so recovering a
+dropped binary yields one agent's key rather than a secret every payload shares.
+
+```
+pupyteer > agents list
+pupyteer > agents revoke <agent_id>
+```
+
+> The compiled Windows PE does not carry the signed handshake yet. It enrols with
+> the shared secret, and its build log says so rather than implying the two agents
+> are equivalent. See [Security](#-security).
+
+Both secrets prove a payload may become *a* session. Neither speaks for a session
+that already exists: `register` also hands out a random beacon token that every
+later `checkin` and `output` must present, and it never appears in `sessions
+list`, `sessions info` or the audit log.
+
+Two things here get missed often enough to be worth saying plainly. Revoking an
+enrollment secret does not stop a session that is already established — it only
+turns the next registration away — so cutting off a live handler is `sessions
+kill <id>`. And a listener whose enrollment file has gone missing admits nobody
+rather than minting a replacement while payloads knock: a fresh secret would look
+like a server that works while turning everything you deployed into a stranger.
+`enrollment show` says so when the file holds nothing; restore it, or delete it
+and restart to start a new boundary and rebuild the payloads.
+
+`--transport https` works with `tls: true`, or with `server.https_cert` /
+`server.https_key` for a certificate you obtained yourself, or against a reverse
+proxy holding a real one.
 
 ---
 
-## 📋 Features
-
-| Category | Capabilities |
-|----------|-------------|
-| **Payloads** | Python script, PE executable, versioning, metadata tracking, signing stub |
-| **Transports** | Served listeners: **TCP** and **HTTP/HTTPS** (same session protocol, one JSON message per POST). Agent-side DNS/DoH/WebSocket stubs exist but have no listener, so `payloads build` rejects them rather than ship a payload that can never call back. |
-| **C2 Profiles** | YAML-based malleable C2 — heartbeat, encoding, timeouts, headers, URIs |
-| **Modules** | Core, Recon, Execution, File Ops, Red-Team, Evasion — standardized ABC, dispatched to the implant over the session command channel |
-| **Sessions** | list/info/interact/rename/kill/tag/search/route, chunked file upload & download, screen capture, audit trail |
-| **Tasks** | Priority queue (CRITICAL → BACKGROUND), async execution, tracking |
-| **Evasion** | XOR/AES/RC4 obfuscation, PE manipulation, anti-sandbox/debug/VM, Litterbox integration |
-| **Security** | console login with roles and a default-deny verb table, enrollment secret shared by every payload this server builds, with rotation and revocation from the console, audit trail with redaction, input validation, TLS on callbacks by default (see Security for what is not wired) |
-| **Audit** | JSON-structured logs, operator attribution bound to the sign-in, redaction, rotation, query API |
-| **TUI** | ASCII banner, themes, autocomplete, history, resize handling, dashboard, login and re-auth in place |
-
----
-
-## 📂 Project Structure
+## 📂 Project structure
 
 ```
 pupyteer/
 ├── server/
-│   ├── core/          # engine, config, auth, audit, logging, errors, queue, c2, rbac, validation
-│   ├── sessions/      # session lifecycle, tagging, interaction
-│   ├── tasks/         # task manager
-│   ├── transports/    # Transport ABC + concrete implementations + listener
+│   ├── core/          # engine, config, auth, audit, logging, errors, rbac, validation
+│   ├── sessions/      # session lifecycle, tagging, interaction, capabilities
+│   ├── tasks/         # task manager (queue + dispatch)
+│   ├── transports/    # transport manager + TCP / HTTP listeners
 │   ├── profiles/      # malleable C2 profile parser/validator/manager + CS converter
 │   ├── modules/       # registry, executor, builtin modules (recon, evasion)
 │   └── evasion/       # obfuscator, litterbox client, test runner, models
 │
 ├── agent/
-│   └── core/          # agent loop, auth, stub generator, sleep masking
+│   └── core/          # agent loop, transport clients, stub generator, C template
 │
-├── payloads/          # payload builder, signer, store, artifact lifecycle
+├── payloads/          # payload builder, PE builder, signer, store, artifact lifecycle
 │
 ├── tui/
 │   ├── app.py         # console application, command registry, completer
 │   ├── themes.py      # dark/light theme definitions
-│   ├── screens/       # extracted TUI screens (banner, session dashboard, base)
+│   ├── screens/       # banner, session dashboard
 │   ├── widgets/       # status bar, keyboard shortcuts, table renderer
 │   └── commands/      # sessions, jobs, payloads, evasion, pipeline, msf_core
 │
@@ -377,7 +403,7 @@ pupyteer/
 ├── tools/             # callback self-test (generated agent against a real listener)
 │
 └── docs/              # operator manual, developer docs, profile & module guides,
-                       # security notes, installation guide, API reference
+                       # security notes, installation guide, API reference, assets/
 ```
 
 Generated artifacts land in `./payloads/artifacts` and logs in `./logs` — both
@@ -389,28 +415,42 @@ git-ignored.
 
 ```bash
 # All tests
-.venv/bin/python -m pytest pupyteer/tests/ -v
+.venv/bin/python -m pytest
 
 # Unit only
-.venv/bin/python -m pytest pupyteer/tests/unit/ -v
+.venv/bin/python -m pytest pupyteer/tests/unit
 
 # Integration only
-.venv/bin/python -m pytest pupyteer/tests/integration/ -v
+.venv/bin/python -m pytest pupyteer/tests/integration
 ```
 
-**Current test count: 1450 tests passing** (`pytest pupyteer/tests`)
+**1526 tests pass, 1 skipped** — and CI runs the same suite on both Linux and
+Windows, so the Python agent is exercised everywhere and the Windows-only paths
+(TLS pinning, the PE build) fail where they are actually used.
 
 The suite runs against real engines and real listeners, and repoints every file a
 default-config server writes — the audit trail, the enrollment secret, the TLS
-pair, the credential file — into a temp directory. A session fixture fails the run
-if `logs/audit.json` in the checkout grows, because a test that writes to an
-operator's real audit trail is also a test that can log in with a credential left
-there for a human to find.
+pair, the credential file, the agent keys — into a temp directory. A session
+fixture fails the run if `logs/audit.json` in the checkout grows, because a test
+that writes to an operator's real audit trail is also a test that can log in with a
+credential left there for a human to find.
+
+Runs are quiet by default (`-q --no-header`, no cache directory) and no child
+process the suite spawns opens a console window: a run compiles payloads and
+launches agents, and on Windows that would otherwise flash a terminal over
+whatever the operator is doing.
 
 `tools/callback_test` is under test as well, including a case that breaks the
 listener on purpose: a self-test that drifts from the protocol reports PASS
 against a server that would refuse every payload built for it, which is worse than
 no self-test at all.
+
+The two `scripts/` gates are part of the suite's promise and run in CI:
+
+```bash
+python scripts/verify_secure_defaults.py --strict   # no hardcoded credentials
+python scripts/audit_deps.py                       # third-party dependency audit
+```
 
 ---
 
@@ -424,15 +464,17 @@ no self-test at all.
 | [Profile Documentation](docs/PROFILE_DOCUMENTATION.md) | C2 profile YAML/JSON format |
 | [Security Documentation](docs/SECURITY_DOCUMENTATION.md) | Security model and hardening |
 | [Module Development Guide](docs/MODULE_DEVELOPMENT_GUIDE.md) | Writing custom modules |
+| [Pupy Parity](docs/PUPY_PARITY.md) | The 122-module upstream worklist, classified |
+| [Modernization Roadmap](docs/MODERNIZATION_ROADMAP.md) | Where the framework is going, and what is deliberately out of scope |
 | [API Reference](docs/API_REFERENCE.md) | Complete public API — all classes, methods, functions |
 
 ---
 
 ## 🔒 Security
 
-**Read this section before using Pupyteer against anything.** A C2 framework that
-overstates its own protections is worse than one with fewer features, so this
-section describes what the running code does, not what its modules could do.
+**Read this section before using Pupyteer against anything.** A C2 framework
+that overstates its own protections is worse than one with fewer features, so
+this section describes what the running code does, not what its modules could do.
 
 ### What works today
 
@@ -469,6 +511,18 @@ section describes what the running code does, not what its modules could do.
   against a server that will never admit it. Both listeners apply the same check,
   and `transports list` reports them as separate rows — a rejection count belongs to
   the port that was probed, not to whichever listener you happened to start first.
+- **Per-agent identity** — see [Enrollment and agent identity](#-enrollment-and-agent-identity).
+  The Python agent signs its registration with an Ed25519 key minted at build
+  time, so a recovered binary yields one agent's key rather than a secret every
+  payload shares. The Windows PE does not have this yet.
+- **Capability claims verified against the build manifest** — a payload's
+  `register` carries a `payload_id` (when built by this server), and the listener
+  looks the claim up on it: overclaimed capabilities are downgraded to the verified
+  subset and the mismatch is audited as `session_capability_mismatch`. Legacy
+  payloads that predate the field declare nothing and keep the shell-only trust
+  they had before. A name outside `KNOWN_CAPABILITIES` is still ignored at
+  registration, so a payload cannot grant itself a permission by inventing a word
+  for it.
 - **Enrollment rotation and revocation** — because that file is a list rather than
   one string, recovering a payload no longer costs the whole boundary at once.
   `enrollment rotate` makes a new secret current and retires the previous one *in
@@ -523,12 +577,12 @@ section describes what the running code does, not what its modules could do.
   implant reads with a buffer of its own, so a chunk is sized to something that
   survives the trip instead of being dropped at the socket, which is how a download
   comes back short with a check mark next to it. The other half of the promise is
-  kept in the payloads: the Windows `.exe` now answers the verbs it announces —
+  kept in the payloads: the Windows `.exe` answers the verbs it announces —
   `ping`, `sysinfo`, `processes`, `fs_list`, `exit` — instead of handing them to
   cmd.exe, and the Python stub knows every word the server's verb table lets
   through, which a test checks by parsing the table rather than by trusting it.
 - **Verification gates** — `scripts/verify_secure_defaults.py --strict` and
-  `scripts/audit_deps.py` both exit non-zero on findings
+  `scripts/audit_deps.py` both exit non-zero on findings, and both run in CI
 - **Operator login and role gate** — the console will not start the engine until a
   credential is accepted, and every verb is checked against that sign-in at
   dispatch. Credentials live in their own file (`security.operators_file`, mode
@@ -540,25 +594,18 @@ section describes what the running code does, not what its modules could do.
   than becoming an open door, and a test fails if a registered verb is missing from
   the table or touches a target while public. Authority follows the **token**, not
   the name — the permission set is frozen at login, so rewriting `operator.name`
-  renames nothing that authorises (the console refuses that key and
-  `security.*` outright, and audits the attempt). A wrong name and a wrong
-  password cost the same time to an observer, and failed logins lock an account out
-  for `security.lockout_seconds`, which then decays rather than needing a restart.
+  renames nothing that authorises (the console refuses that key and `security.*`
+  outright, and audits the attempt). A wrong name and a wrong password cost the
+  same time to an observer, and failed logins lock an account out for
+  `security.lockout_seconds`, which then decays rather than needing a restart.
 
 ### What does not work yet
 
-- **Enrollment is one shared secret, not per-agent credentials.** Every payload
-  this server builds carries the same string, so it identifies the team server,
-  not the host: whoever recovers a dropped binary can enroll sessions as if they
-  were you, and so can whoever reads `data/keys/enrollment.key` — which holds every
-  secret still accepted, not just the current one. What they cannot do with it is
-  speak for a session that is already there — that needs the token that
-  registration handed to that one payload. Rotation is the answer for the
-  boundary, not for an individual agent: there is still no re-keying channel, so a
-  deployed payload keeps the secret it was built with and cannot be handed a new
-  one. Revoking that secret turns it away from its next registration onwards, while
-  the session it already has runs on its own token until it dies or you kill it.
-  `server.agent_auth: false` removes the check entirely.
+- **The PE agent has no signed handshake.** Per-agent identity is wired end to end
+  for the Python agent only. A `.exe` built by this server enrols with the shared
+  enrollment secret, and `agents revoke` cannot close its door. Everything else in
+  that section — the beacon token, the enrollment list, rotation and revocation —
+  applies to both.
 - **Login gates the console, not the network.** Whoever can reach a listener
   still only gets what TLS, enrollment (`server.agent_auth`) and the session's own
   beacon token allow, and `--headless` runs the server with no console to sign in
@@ -566,26 +613,22 @@ section describes what the running code does, not what its modules could do.
   the check happens before the console dispatches a verb, and nowhere else. The
   agent-side JWT/challenge-response module that used to sit unused in
   `agent/core/auth.py` has been deleted rather than left to look like a
-  capability. Signing in is
-  also not what protects the keyboard: anyone who can read the terminal while a
-  token is live, or who can write `data/keys/operators.json`, is operator. And an
-  `admin` can move `audit.log_file` in the config or delete the file — attribution
-  says who the console blames, it is not tamper-proofing against the person it
-  blames.
+  capability. Signing in is also not what protects the keyboard: anyone who can
+  read the terminal while a token is live, or who can write
+  `data/keys/operators.json`, is operator. And an `admin` can move `audit.log_file`
+  in the config or delete the file — attribution says who the console blames, it is
+  not tamper-proofing against the person it blames.
 - **There is no payload-level cipher (yet).** `StubConfig.obfuscation_key` keys the
   string-table XOR used to obfuscate the script; it is not an encryption layer for
   the channel. Confidentiality comes from TLS only. A `security.channel_cipher`
-  knob (default off) reserves the configuration slot; the AEAD implementation is
-  deferred.
-- **Capability claims are now verified against the build manifest.** A payload's
-  `register` carries a `payload_id` (when built by this server), and the listener
-  looks the claim up on it: overclaimed capabilities are downgraded to the verified
-  subset and the mismatch is audited. Legacy payloads that predate the field
-  declare nothing and keep the shell-only trust they had before. A name outside
-  `KNOWN_CAPABILITIES` is still ignored at registration, so a payload cannot grant
-  itself a permission by inventing a word for it.
-
-Treat network-level access control on the team server as part of the deployment.
+  knob (default off) reserves the configuration slot, and
+  `server/crypto/channel.py` holds a correct AES-256-GCM primitive that nothing
+  imports yet — there is no negotiation in `register`. The RC4 transport framing is
+  obfuscation, off by default, and only useful if the listener is configured with
+  the same key.
+- **Network access control is deployment, not config.** `security.allowed_operator_cidrs`
+  is enforced at registration on both listeners; everything else is for a reverse
+  proxy or mTLS in front of the team server.
 
 ---
 
@@ -598,8 +641,9 @@ This framework is intended **exclusively for authorized security testing and adv
 ## 📜 License
 
 BSD 3-Clause — See [LICENSE](LICENSE) for details. Pupyteer is derived from
-Pupy (Copyright © 2015 Nicolas VERDIER) and retains that notice. No third-party
-source is vendored; dependencies are pip-installed per `requirements.txt`.
+[Pupy](https://github.com/n1nj4sec/pupy) (Copyright © 2015 Nicolas VERDIER) and
+retains that notice. No third-party source is vendored; dependencies are
+pip-installed per `requirements.txt`.
 
 ---
 

@@ -14,51 +14,31 @@ Regenerate by re-running the inventory against `pupy/modules` + `pupy/commands`.
 |---|---|
 | Upstream Pupy modules | **122** |
 | Upstream Pupy console commands | **16** |
-| Pupyteer registered modules | **42** |
-| Already covered | 25 |
-| Not yet ported | 97 |
+| Pupyteer registered modules | **101** |
+| Already covered (PRESENT) | 79 |
+| Portable, not yet written (STDLIB) | 5 |
+| Needs a native payload (NATIVE) | 38 |
 
 Parity is the goal; this table is the honest distance to it.
 
 ## Classification
 
-Each upstream module falls into one of four buckets. The bucket decides the
+Each upstream module falls into one of three buckets. The bucket decides the
 work, the risk, and which agent it can ever run on.
 
-### PRESENT — 23
+### PRESENT — 79
 Pupyteer already provides the capability, possibly under a different name
 (Pupy `ls` → Pupyteer `file_list`, Pupy `get_info` → `sysinfo`,
-Pupy `clear_logs` → `log_clear`).
+Pupy `clear_logs` → `log_clear`). This bucket has grown as modules landed and
+as the manifest was corrected — see *Reclassified as already covered* below.
 
-`cat`, `clear_logs`, `download`, `get_info`, `ip`, `ls`, `migrate`, `mimikatz`, `persistence`, `ps`, `screenshot`, `search`, `shell_exec`, `upload`
+`ad`, `apps`, `become`, `call`, `cat`, `cd`, `check_vm`, `clear_logs`, `cloudinfo`, `contacts`, `cp`, `creddump`, `display`, `dns`, `download`, `drives`, `echo`, `edit`, `env`, `exit`, `exploit_suggester`, `forward`, `get_hwuuid`, `get_info`, `getdomain`, `getprivs`, `http`, `igd`, `interactive_shell`, `ip`, `isearch`, `last`, `load_package`, `logs`, `ls`, `migrate`, `mimikatz`, `mimishell`, `mkdir`, `msgbox`, `mv`, `netcreds`, `netstat`, `persistence`, `pexec`, `port_scan`, `portfwd`, `privesc_checker`, `process_kill`, `ps`, `psexec`, `psh`, `pwd`, `pyexec`, `pyshell`, `reg`, `rm`, `rwmic`, `screenshot`, `search`, `services`, `shares`, `shell_exec`, `smb`, `smbspider`, `socks5proxy`, `ssh`, `sshell`, `stat`, `sudo_alias`, `tasks`, `ttyrec`, `upload`, `users`, `w`, `wmic`, `write`, `x509`, `zip`
 
-### AGENT_ACTION — 5
-Needs a new action on the implant. This is the **highest-risk** bucket: an action
-must be added to `agent/core/stub.py` **and** `agent/core/pe_template.c` **and**
-the `CAPABILITIES` list, or the listener refuses the task as undeclared. Editing
-one side without the other is the documented dominant failure mode.
+### STDLIB — 5
+**No third-party tree needed at all.** These are pure stdlib and are portable
+now; they only need writing.
 
-These are all pure-logic actions — no third-party dependency — so once the agent
-side lands they are straightforwardly testable.
-
-`ad`, `become`, `call`, `exploit_suggester`, `mimishell`, `netstat`, `port_scan`, `privesc_checker`, `process_kill`, `pwd`, `sudo_alias`, `ttyrec`
-
-### STDLIB — 14
-**No third-party tree needed at all.** Audited by fetching each upstream module
-and reading its non-framework imports: this batch has *zero* third-party
-imports, so they were classified PY_DEP by category rather than by source. They
-are portable now and only need writing.
-
-`alive`, `date`, `display`, `drives`, `echo`, `getpid`, `getppid`, `getprivs`, `getuid`, `last`, `logs`, `msgbox`, `users`, `w`
-
-### PY_DEP — 41
-Needs Pupy's vendored Python dependency tree (`pupy/packages/*`: impacket,
-paramiko, scapy, crypto) shipped inside the generated payload. **Reachable only
-from the Python agent** — `pe_template.c` is a compiled C binary with no
-interpreter, so a PE deployment cannot host these at all. Vendoring the tree into
-a single generated script is the real work here.
-
-`alive`, `apps`, `cd`, `check_vm`, `cloudinfo`, `contacts`, `cp`, `creddump`, `date`, `display`, `dns`, `drives`, `echo`, `edit`, `env`, `exit`, `forward`, `get_hwuuid`, `getdomain`, `getpid`, `getppid`, `getprivs`, `getuid`, `http`, `igd`, `interactive_shell`, `isearch`, `last`, `load_package`, `logs`, `mkdir`, `msgbox`, `mv`, `netcreds`, `pexec`, `portfwd`, `psexec`, `psh`, `pyexec`, `pyshell`, `reg`, `rm`, `rwmic`, `services`, `shares`, `smb`, `smbspider`, `socks5proxy`, `ssh`, `sshell`, `stat`, `tasks`, `users`, `w`, `wmic`, `write`, `x509`, `zip`
+`alive`, `date`, `getpid`, `getppid`, `getuid`
 
 ### NATIVE — 38
 Needs a native payload (a binary, reflective DLL, or shellcode), not just Python.
@@ -101,12 +81,12 @@ already provides the capability. The manifest was over-counting the gap.
 
 ## Suggested tranche order
 
-1. **AGENT_ACTION, pure-logic subset** — `netstat`, `process_kill`, `pwd`,
-   `stat`, `port_scan`. Extends the agent in both files; no dependencies.
+1. **STDLIB** — `alive`, `date`, `getpid`, `getppid`, `getuid`. Pure stdlib, no
+   dependency and no agent change, so it is the cheapest measurable progress.
 2. **PY_DEP, operator-side only** — anything that can be done server-side over
-   existing capabilities before vendoring the dep tree.
+   existing capabilities before vendoring the dependency tree.
 3. **Vendor the Python dependency tree** — the single largest unblock; turns the
-   whole PY_DEP bucket from impossible to routine.
+   whole third-party bucket from impossible to routine.
 4. **NATIVE** — per-payload work, last.
 
 Items 1 and 2 are verifiable from a Linux build host. Items 3 and 4 are not, and

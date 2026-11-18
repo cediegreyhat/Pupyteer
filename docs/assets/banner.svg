@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 320" width="1200" height="320"
+     role="img" aria-label="Pupyteer — Red Team Operations Framework">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#080c12"/>
+      <stop offset="1" stop-color="#121a26"/>
+    </linearGradient>
+    <linearGradient id="word" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#7af5d0"/>
+      <stop offset="0.45" stop-color="#4ad6ff"/>
+      <stop offset="1" stop-color="#b08cff"/>
+    </linearGradient>
+    <linearGradient id="rule" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#7af5d0" stop-opacity="0"/>
+      <stop offset="0.2" stop-color="#7af5d0"/>
+      <stop offset="0.8" stop-color="#b08cff"/>
+      <stop offset="1" stop-color="#b08cff" stop-opacity="0"/>
+    </linearGradient>
+    <pattern id="grid" width="34" height="34" patternUnits="userSpaceOnUse">
+      <path d="M34 0H0v34" fill="none" stroke="#ffffff" stroke-opacity="0.045"/>
+    </pattern>
+    <radialGradient id="glow" cx="0.72" cy="0.28" r="0.55">
+      <stop offset="0" stop-color="#4ad6ff" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#4ad6ff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1200" height="320" fill="url(#bg)"/>
+  <rect width="1200" height="320" fill="url(#grid)"/>
+  <rect width="1200" height="320" fill="url(#glow)"/>
+
+  <!-- hex glyph -->
+  <g transform="translate(1008,74)">
+    <polygon points="56,0 112,32 112,96 56,128 0,96 0,32"
+             fill="none" stroke="url(#word)" stroke-width="3" opacity="0.9"/>
+    <polygon points="56,26 86,43 86,81 56,98 26,81 26,43"
+             fill="none" stroke="#7af5d0" stroke-width="2" opacity="0.55"/>
+    <circle cx="56" cy="64" r="7" fill="url(#word)"/>
+  </g>
+
+  <text x="58" y="132"
+        font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+        font-size="86" font-weight="700" letter-spacing="8" fill="url(#word)">PUPYTEER</text>
+
+  <rect x="60" y="156" width="1080" height="2" fill="url(#rule)"/>
+
+  <text x="60" y="206"
+        font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+        font-size="25" letter-spacing="5" fill="#9fb0c3">RED TEAM OPERATIONS FRAMEWORK</text>
+
+  <text x="60" y="248"
+        font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+        font-size="18" letter-spacing="1.5" fill="#6d7f92">modular &#183; async &#183; protocol-oriented &#183; derived from Pupy</text>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+     font-size="16" letter-spacing="1">
+    <rect x="60"  y="270" width="150" height="30" rx="15" fill="#7af5d0" fill-opacity="0.08" stroke="#7af5d0" stroke-opacity="0.35"/>
+    <text x="84"  y="290" fill="#7af5d0">101 modules</text>
+    <rect x="222" y="270" width="190" height="30" rx="15" fill="#4ad6ff" fill-opacity="0.08" stroke="#4ad6ff" stroke-opacity="0.35"/>
+    <text x="240" y="290" fill="#4ad6ff">Python + PE agents</text>
+    <rect x="424" y="270" width="210" height="30" rx="15" fill="#b08cff" fill-opacity="0.08" stroke="#b08cff" stroke-opacity="0.35"/>
+    <text x="442" y="290" fill="#b08cff">TCP / HTTP(S) listeners</text>
+  </g>
+</svg>

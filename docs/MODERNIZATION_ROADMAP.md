@@ -16,9 +16,9 @@
 - Shell-dispatched modules vs. agent-native: shell-dispatched for stdlib; agent-native for complex (smb/ssh/etc.) deferred to load_package.
 
 ## Delivery Risks
-- Full suite takes ~2.5 min; commit cadence must batch changes.
+- Full suite takes ~4 min; commit cadence must batch changes.
 - Wine/PE integration test flaky (enrollment secret env) — pre-existing, not blocking.
-- Large app.py (~1500 lines) — refactoring risk; must keep tests green.
+- Large app.py (~2000 lines) — refactoring risk; must keep tests green.
 
 ## Decision Note (accepted)
 - Continue modernization via small, testable, committed steps.
