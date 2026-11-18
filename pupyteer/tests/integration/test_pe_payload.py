@@ -23,6 +23,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from pupyteer._proc import creationflags
 from pupyteer.agent.core.stub import StubConfig
 from pupyteer.payloads.pe_builder import PEBuilder
 from pupyteer.server.core.engine import PupyteerEngine
@@ -182,7 +183,8 @@ async def test_pe_payload_registers_and_runs_a_command_over_tls(tmp_path):
 
     engine = PupyteerEngine(config_path)
     await engine.start()
-    proc = subprocess.Popen([str(exe)], cwd=str(tmp_path))
+    proc = subprocess.Popen([str(exe)], cwd=str(tmp_path),
+                            creationflags=creationflags())
     try:
         session_id = await _await_session(engine)
         assert session_id, "PE payload never registered over TLS"
@@ -227,7 +229,8 @@ async def test_pe_payload_returns_a_result_bigger_than_one_record(tmp_path):
 
     engine = PupyteerEngine(config_path)
     await engine.start()
-    proc = subprocess.Popen([str(exe)], cwd=str(tmp_path))
+    proc = subprocess.Popen([str(exe)], cwd=str(tmp_path),
+                            creationflags=creationflags())
     try:
         session_id = await _await_session(engine)
         assert session_id, "PE payload never registered over TLS"
@@ -277,7 +280,8 @@ async def test_pe_payload_runs_every_command_in_one_checkin(tmp_path):
 
     engine = PupyteerEngine(config_path)
     await engine.start()
-    proc = subprocess.Popen([str(exe)], cwd=str(tmp_path))
+    proc = subprocess.Popen([str(exe)], cwd=str(tmp_path),
+                            creationflags=creationflags())
     try:
         session_id = await _await_session(engine)
         assert session_id, "PE payload never registered over TLS"
@@ -320,7 +324,8 @@ async def test_pe_payload_returns_output_that_is_not_clean_text(tmp_path):
 
     engine = PupyteerEngine(config_path)
     await engine.start()
-    proc = subprocess.Popen([str(exe)], cwd=str(tmp_path))
+    proc = subprocess.Popen([str(exe)], cwd=str(tmp_path),
+                            creationflags=creationflags())
     try:
         session_id = await _await_session(engine)
         assert session_id, "PE payload never registered over TLS"
@@ -356,7 +361,8 @@ async def test_pe_payload_built_for_another_certificate_gives_up(tmp_path):
 
     engine = PupyteerEngine(config_path)
     await engine.start()
-    proc = subprocess.Popen([str(exe)], cwd=str(tmp_path))
+    proc = subprocess.Popen([str(exe)], cwd=str(tmp_path),
+                            creationflags=creationflags())
     try:
         code = await _await_exit(proc)
         assert code == 3, f"expected exit 3 (refused the listener), got {code}"
@@ -385,7 +391,8 @@ async def test_pe_payload_declares_the_tasks_it_answers(tmp_path):
 
     engine = PupyteerEngine(config_path)
     await engine.start()
-    proc = subprocess.Popen([str(exe)], cwd=str(tmp_path))
+    proc = subprocess.Popen([str(exe)], cwd=str(tmp_path),
+                            creationflags=creationflags())
     try:
         session_id = await _await_session(engine)
         assert session_id, "PE payload never registered over TLS"
@@ -436,7 +443,8 @@ async def test_pe_payload_stops_when_the_operator_kills_it(tmp_path):
 
     engine = PupyteerEngine(config_path)
     await engine.start()
-    proc = subprocess.Popen([str(exe)], cwd=str(tmp_path))
+    proc = subprocess.Popen([str(exe)], cwd=str(tmp_path),
+                            creationflags=creationflags())
     try:
         session_id = await _await_session(engine)
         assert session_id, "PE payload never registered over TLS"
@@ -476,7 +484,8 @@ async def test_pe_payload_round_trips_a_file_in_chunks(tmp_path):
 
     engine = PupyteerEngine(config_path)
     await engine.start()
-    proc = subprocess.Popen([str(exe)], cwd=str(tmp_path))
+    proc = subprocess.Popen([str(exe)], cwd=str(tmp_path),
+                            creationflags=creationflags())
     try:
         session_id = await _await_session(engine)
         assert session_id, "PE payload never registered over TLS"

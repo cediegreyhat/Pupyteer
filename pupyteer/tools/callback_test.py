@@ -36,6 +36,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from pupyteer._proc import popen
 from pupyteer.agent.core.stub import AgentStubGenerator, StubConfig
 from pupyteer.server.core.engine import PupyteerEngine
 from pupyteer.server.core.enrollment import listener_secret
@@ -318,7 +319,7 @@ class CallbackTestHarness:
         return path
 
     def _launch_agent(self, agent_path: Path) -> None:
-        self._agent_proc = subprocess.Popen(
+        self._agent_proc = popen(
             [sys.executable, str(agent_path)],
             cwd=str(self._workdir),
             stdout=subprocess.PIPE,

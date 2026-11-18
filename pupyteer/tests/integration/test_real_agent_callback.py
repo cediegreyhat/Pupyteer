@@ -26,6 +26,7 @@ sys.path.insert(
         os.path.abspath(__file__))))),
 )
 
+from pupyteer._proc import creationflags
 from pupyteer.agent.core.stub import AgentStubGenerator, StubConfig
 from pupyteer.server.core.config import ConfigManager
 from pupyteer.server.core.engine import PupyteerEngine
@@ -311,7 +312,8 @@ class TestEnrollment:
             # needs in order to answer the registration.
             proc = await asyncio.to_thread(
                 subprocess.run, [sys.executable, str(agent)], cwd=str(tmp_path),
-                capture_output=True, timeout=60)
+                capture_output=True, timeout=60,
+                creationflags=creationflags())
             joined = (proc.stderr + proc.stdout).decode("utf-8", "replace").lower()
             assert proc.returncode == 3, (
                 f"a rejected agent kept beaconing (rc={proc.returncode}): {joined[-2000:]}"
@@ -330,7 +332,8 @@ class TestEnrollment:
                                     sleep=1, jitter=0, auth_secret=_TEST_SECRET + "x")
             proc = await asyncio.to_thread(
                 subprocess.run, [sys.executable, str(agent)], cwd=str(tmp_path),
-                capture_output=True, timeout=60)
+                capture_output=True, timeout=60,
+                creationflags=creationflags())
             assert proc.returncode == 3
             assert not engine.sessions.list_ids()
         finally:
@@ -377,7 +380,8 @@ class TestEnrollment:
                                        sleep=1, jitter=0)
             refused = await asyncio.to_thread(
                 subprocess.run, [sys.executable, str(stranger)], cwd=str(tmp_path),
-                capture_output=True, timeout=60)
+                capture_output=True, timeout=60,
+                creationflags=creationflags())
             assert refused.returncode == 3, (
                 f"a revoked secret still enrols (rc={refused.returncode}): {_drain(refused)}")
             assert engine.sessions.list_ids() == [session_id], (
@@ -710,7 +714,8 @@ class TestTLS:
         with good egress filtering instead of a payload that was built wrong."""
         agent = _generate_agent(tmp_path, "nopin-run", port=1, sleep=1, jitter=0, tls=True)
         proc = subprocess.run([sys.executable, str(agent)], cwd=str(tmp_path),
-                              capture_output=True, timeout=30)
+                              capture_output=True, timeout=30,
+                              creationflags=creationflags())
         assert proc.returncode == 2
         joined = (proc.stderr + proc.stdout).decode("utf-8", "replace").lower()
         assert "no listener certificate" in joined
@@ -1023,6 +1028,7 @@ def _start_agent(agent_path: Path, cwd: Path) -> subprocess.Popen:
     return subprocess.Popen(
         [sys.executable, str(agent_path)],
         cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        creationflags=creationflags(),
     )
 
 

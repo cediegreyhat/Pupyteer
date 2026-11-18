@@ -21,6 +21,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from pupyteer._proc import creationflags
 from pupyteer.server.core.config import ConfigManager
 from pupyteer.server.core.logging import AuditLogger
 from pupyteer.server.evasion.litterbox_client import LitterboxClient, LitterboxError
@@ -74,6 +75,7 @@ class VirusTotalComposioClient:
             capture_output=True,
             text=True,
             timeout=60,
+            creationflags=creationflags(),
         )
 
         if proc.returncode != 0:
