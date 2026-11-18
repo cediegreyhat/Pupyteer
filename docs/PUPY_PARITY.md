@@ -15,30 +15,23 @@ Regenerate by re-running the inventory against `pupy/modules` + `pupy/commands`.
 | Upstream Pupy modules | **122** |
 | Upstream Pupy console commands | **16** |
 | Pupyteer registered modules | **101** |
-| Already covered (PRESENT) | 79 |
-| Portable, not yet written (STDLIB) | 5 |
+| Already covered (PRESENT) | 84 |
 | Needs a native payload (NATIVE) | 38 |
 
 Parity is the goal; this table is the honest distance to it.
 
 ## Classification
 
-Each upstream module falls into one of three buckets. The bucket decides the
+Each upstream module falls into one of two buckets. The bucket decides the
 work, the risk, and which agent it can ever run on.
 
-### PRESENT — 79
+### PRESENT — 84
 Pupyteer already provides the capability, possibly under a different name
 (Pupy `ls` → Pupyteer `file_list`, Pupy `get_info` → `sysinfo`,
 Pupy `clear_logs` → `log_clear`). This bucket has grown as modules landed and
 as the manifest was corrected — see *Reclassified as already covered* below.
 
-`ad`, `apps`, `become`, `call`, `cat`, `cd`, `check_vm`, `clear_logs`, `cloudinfo`, `contacts`, `cp`, `creddump`, `display`, `dns`, `download`, `drives`, `echo`, `edit`, `env`, `exit`, `exploit_suggester`, `forward`, `get_hwuuid`, `get_info`, `getdomain`, `getprivs`, `http`, `igd`, `interactive_shell`, `ip`, `isearch`, `last`, `load_package`, `logs`, `ls`, `migrate`, `mimikatz`, `mimishell`, `mkdir`, `msgbox`, `mv`, `netcreds`, `netstat`, `persistence`, `pexec`, `port_scan`, `portfwd`, `privesc_checker`, `process_kill`, `ps`, `psexec`, `psh`, `pwd`, `pyexec`, `pyshell`, `reg`, `rm`, `rwmic`, `screenshot`, `search`, `services`, `shares`, `shell_exec`, `smb`, `smbspider`, `socks5proxy`, `ssh`, `sshell`, `stat`, `sudo_alias`, `tasks`, `ttyrec`, `upload`, `users`, `w`, `wmic`, `write`, `x509`, `zip`
-
-### STDLIB — 5
-**No third-party tree needed at all.** These are pure stdlib and are portable
-now; they only need writing.
-
-`alive`, `date`, `getpid`, `getppid`, `getuid`
+`ad`, `alive`, `apps`, `become`, `call`, `cat`, `cd`, `check_vm`, `clear_logs`, `cloudinfo`, `contacts`, `cp`, `creddump`, `date`, `display`, `dns`, `download`, `drives`, `echo`, `edit`, `env`, `exit`, `exploit_suggester`, `forward`, `get_hwuuid`, `get_info`, `getpid`, `getppid`, `getdomain`, `getprivs`, `getuid`, `http`, `igd`, `interactive_shell`, `ip`, `isearch`, `last`, `load_package`, `logs`, `ls`, `migrate`, `mimikatz`, `mimishell`, `mkdir`, `msgbox`, `mv`, `netcreds`, `netstat`, `persistence`, `pexec`, `port_scan`, `portfwd`, `privesc_checker`, `process_kill`, `ps`, `psexec`, `psh`, `pwd`, `pyexec`, `pyshell`, `reg`, `rm`, `rwmic`, `screenshot`, `search`, `services`, `shares`, `shell_exec`, `smb`, `smbspider`, `socks5proxy`, `ssh`, `sshell`, `stat`, `sudo_alias`, `tasks`, `ttyrec`, `upload`, `users`, `w`, `wmic`, `write`, `x509`, `zip`
 
 ### NATIVE — 38
 Needs a native payload (a binary, reflective DLL, or shellcode), not just Python.
@@ -81,8 +74,8 @@ already provides the capability. The manifest was over-counting the gap.
 
 ## Suggested tranche order
 
-1. **STDLIB** — `alive`, `date`, `getpid`, `getppid`, `getuid`. Pure stdlib, no
-   dependency and no agent change, so it is the cheapest measurable progress.
+1. **NATIVE, pure-logic subset first** — the capabilities that are a shell
+   command away and can be verified from a Linux build host.
 2. **PY_DEP, operator-side only** — anything that can be done server-side over
    existing capabilities before vendoring the dependency tree.
 3. **Vendor the Python dependency tree** — the single largest unblock; turns the

@@ -121,8 +121,9 @@ class LogClearModule(PupyModule):
         session_mgr = getattr(self, '_session_manager', None)
         if not session_mgr:
             return {
-                "status": "ok",
+                "status": "error",
                 "mode": "offline",
+                "error": "no agent session is reachable from this module",
                 "platform": "windows" if "win" in os_name else "linux",
                 "command": cmd,
             }
@@ -177,8 +178,9 @@ class TimestampMatchModule(PupyModule):
 
         if not session_mgr:
             return {
-                "status": "ok",
+                "status": "error",
                 "mode": "offline",
+                "error": "no agent session is reachable from this module",
                 "target_file": target_file,
                 "reference_file": reference_file,
                 "command": cmd,
@@ -258,8 +260,9 @@ class ArtifactWipeModule(PupyModule):
 
         if not session_mgr:
             return {
-                "status": "ok",
+                "status": "error",
                 "mode": "offline",
+                "error": "no agent session is reachable from this module",
                 "file_path": file_path,
                 "passes": passes,
                 "command": cmd,
@@ -308,8 +311,9 @@ class PrefetchDeleteModule(PupyModule):
 
         if not session_mgr:
             return {
-                "status": "ok",
+                "status": "error",
                 "mode": "offline",
+                "error": "no agent session is reachable from this module",
                 "target": target,
                 "command": cmd,
             }
@@ -348,8 +352,9 @@ class RecycleClearModule(PupyModule):
 
         if not session_mgr:
             return {
-                "status": "ok",
+                "status": "error",
                 "mode": "offline",
+                "error": "no agent session is reachable from this module",
                 "command": cmd,
             }
 

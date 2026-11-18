@@ -1617,9 +1617,21 @@ class PupyteerTUI:
 
     async def cmd_version(self, args: List[str]) -> None:
         """Show Pupyteer version information."""
-        print("  Pupyteer 0.1.0 (overhaul of Pupy)")
+        from pupyteer import __version__
+
+        try:
+            from pupyteer.server.modules.registry import ModuleRegistry
+            count = len(ModuleRegistry(self._engine.config, self._engine.audit).list_all())
+        except Exception:
+            count = None
+        print(f"  Pupyteer {__version__} (overhaul of Pupy)")
         print("  Modernization track: TUI + evasion")
-        print("  Parity: 122/122 upstream modules integrated")
+        if count is not None:
+            # Said as a count, not as a fraction of upstream: the parity table in
+            # docs/PUPY_PARITY.md is the honest distance, and this used to print
+            # "122/122 upstream modules integrated" when most were not.
+            print(f"  Registered modules: {count}")
+        print("  Parity: see docs/PUPY_PARITY.md")
 
     async def cmd_evasion(self, args: List[str]) -> None:
         """Run evasion testing commands."""

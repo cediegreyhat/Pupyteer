@@ -174,8 +174,11 @@ security:
   require_auth: true
   token_ttl: 3600
   max_failed_logins: 5
-  operators:
-    admin: "changeme"
+  # Credentials are NOT set here. They live in the file named by
+  # security.operators_file (default ./data/keys/operators.json), which the
+  # server writes on first use and never reads from this file. Putting an
+  # `operators:` block here is silently ignored — you would be locked out.
+  operators_file: "./data/keys/operators.json"
 
 paths:
   payload_artifacts: "~/.config/pupyteer/payloads"
@@ -186,14 +189,16 @@ EOF
 
 ### Step 3: Secure the Default Credentials
 
-**IMPORTANT:** The default configuration includes placeholder credentials. Change these before any operational use:
+**IMPORTANT:** There is no password in the configuration file, and adding one
+does nothing — `security.operators` is read by nothing. Credentials live in the
+separate store named by `security.operators_file`:
 
 ```bash
-# Generate a secure password hash
-python3 -c "import hashlib; print(hashlib.sha256(b'your-secure-password').hexdigest())"
+# First run with an empty store generates one admin password and prints it once.
+pupyteer
 
-# Update the config with the hash
-# Edit ~/.config/pupyteer/config.yaml and replace the operator password
+# Replace it with an operator you control
+pupyteer > operator add alice --role operator
 ```
 
 ### Step 4: Create Required Directories

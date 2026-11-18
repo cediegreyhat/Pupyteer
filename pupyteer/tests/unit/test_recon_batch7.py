@@ -62,8 +62,9 @@ def test_http_offline_returns_curl(config, audit):
     mod = reg.create("http")
     mod._session_manager = None
     r = asyncio.run(mod.execute(FakeSession("linux"), {"url": "example.com"}))
-    assert r["status"] == "ok"
+    assert r["status"] == "error"
     assert r["mode"] == "offline"
+    assert "no agent session" in r["error"]
     assert "curl" in r["command"]
     assert "example.com" in r["command"]
 
@@ -86,8 +87,9 @@ def test_cd_offline_linux(config, audit):
     mod = reg.create("cd")
     mod._session_manager = None
     r = asyncio.run(mod.execute(FakeSession("linux"), {"path": "/tmp"}))
-    assert r["status"] == "ok"
+    assert r["status"] == "error"
     assert r["mode"] == "offline"
+    assert "no agent session" in r["error"]
     assert "cd" in r["command"]
     assert "/tmp" in r["command"]
 

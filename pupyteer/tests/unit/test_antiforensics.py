@@ -83,7 +83,7 @@ class TestAntiForensicsSafeguard:
         mod._session_manager = None
         result = await mod.execute(FakeSession(), {})
         # offline mode (no session manager) returns the command it would run
-        assert result["status"] == "ok"
+        assert result["status"] == "error"
         assert "command" in result
 
     @pytest.mark.asyncio
@@ -94,5 +94,5 @@ class TestAntiForensicsSafeguard:
         mod = reg.create("artifact_wipe")
         mod._session_manager = None
         result = await mod.execute(FakeSession(), {"file_path": "/tmp/x"})
-        assert result["status"] == "ok"
+        assert result["status"] == "error"
         assert "command" in result

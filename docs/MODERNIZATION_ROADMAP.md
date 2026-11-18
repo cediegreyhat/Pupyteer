@@ -26,10 +26,10 @@
 - Use verb-table classification for any new TUI command.
 
 ## Follow-up Handoffs
-- [ ] Extract TUI screens into pupyteer/tui/screens/
-- [ ] Add keyboard shortcuts / status bar
-- [ ] Add new evasion profiles and techniques
-- [ ] Improve session dashboard
-- [ ] Add command alias expansion in dispatch
-- [ ] Performance: async module loading
-- [ ] Security: input validation hardening
+- [x] Extract TUI screens into pupyteer/tui/screens/
+- [x] Add keyboard shortcuts / status bar
+- [x] Add new evasion profiles and techniques
+- [x] Improve session dashboard
+- [x] Add command alias expansion in dispatch
+- [x] Performance: async module loading
+- [x] Security: input validation hardening

@@ -38,7 +38,6 @@ server:
 
 logging:
   level: "INFO"
-  format: "json"
   file: null  # or path to log file
 
 # The audit trail is the record an engagement is judged on, so where it goes and

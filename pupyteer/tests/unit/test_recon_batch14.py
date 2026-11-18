@@ -62,8 +62,9 @@ def test_offline_returns_nc(config, audit):
     mod = reg.create("echo")
     mod._session_manager = None
     r = asyncio.run(mod.execute(FakeSession("linux"), {"host": "example.com"}))
-    assert r["status"] == "ok"
+    assert r["status"] == "error"
     assert r["mode"] == "offline"
+    assert "no agent session" in r["error"]
     assert "nc" in r["command"]
 
 

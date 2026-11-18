@@ -57,7 +57,9 @@ def test_smb_offline(config, audit):
     reg = ModuleRegistry(config, audit); reg.discover()
     mod = _mk(reg, "smb"); mod._session_manager = None
     r = asyncio.run(mod.execute(FakeSession("linux"), {}))
-    assert r["status"] == "ok" and r["mode"] == "offline"
+    assert r["status"] == "error"
+    assert r["mode"] == "offline"
+    assert "no agent session" in r["error"]
 
 
 def test_smb_dispatches(config, audit, monkeypatch):
@@ -80,7 +82,9 @@ def test_forward_offline(config, audit):
     reg = ModuleRegistry(config, audit); reg.discover()
     mod = _mk(reg, "forward"); mod._session_manager = None
     r = asyncio.run(mod.execute(FakeSession("linux"), {"local_port": 8080, "remote_port": 80}))
-    assert r["status"] == "ok" and r["mode"] == "offline"
+    assert r["status"] == "error"
+    assert r["mode"] == "offline"
+    assert "no agent session" in r["error"]
 
 
 def test_forward_dispatches(config, audit, monkeypatch):
@@ -96,7 +100,9 @@ def test_smbspider_offline(config, audit):
     reg = ModuleRegistry(config, audit); reg.discover()
     mod = _mk(reg, "smbspider"); mod._session_manager = None
     r = asyncio.run(mod.execute(FakeSession("linux"), {}))
-    assert r["status"] == "ok" and r["mode"] == "offline"
+    assert r["status"] == "error"
+    assert r["mode"] == "offline"
+    assert "no agent session" in r["error"]
 
 
 def test_smbspider_dispatches(config, audit, monkeypatch):
@@ -112,7 +118,9 @@ def test_sshell_offline(config, audit):
     reg = ModuleRegistry(config, audit); reg.discover()
     mod = _mk(reg, "sshell"); mod._session_manager = None
     r = asyncio.run(mod.execute(FakeSession("linux"), {}))
-    assert r["status"] == "ok" and r["mode"] == "offline"
+    assert r["status"] == "error"
+    assert r["mode"] == "offline"
+    assert "no agent session" in r["error"]
 
 
 def test_sshell_dispatches(config, audit, monkeypatch):
@@ -135,7 +143,9 @@ def test_psexec_offline(config, audit):
     reg = ModuleRegistry(config, audit); reg.discover()
     mod = _mk(reg, "psexec"); mod._session_manager = None
     r = asyncio.run(mod.execute(FakeSession("linux"), {"target": "10.0.0.5", "command": "whoami"}))
-    assert r["status"] == "ok" and r["mode"] == "offline"
+    assert r["status"] == "error"
+    assert r["mode"] == "offline"
+    assert "no agent session" in r["error"]
 
 
 def test_psexec_dispatches(config, audit, monkeypatch):
@@ -151,7 +161,9 @@ def test_ad_offline(config, audit):
     reg = ModuleRegistry(config, audit); reg.discover()
     mod = _mk(reg, "ad"); mod._session_manager = None
     r = asyncio.run(mod.execute(FakeSession("linux"), {"domain": "example.com"}))
-    assert r["status"] == "ok" and r["mode"] == "offline"
+    assert r["status"] == "error"
+    assert r["mode"] == "offline"
+    assert "no agent session" in r["error"]
 
 
 def test_ad_dispatches(config, audit, monkeypatch):
@@ -167,7 +179,9 @@ def test_become_offline(config, audit):
     reg = ModuleRegistry(config, audit); reg.discover()
     mod = _mk(reg, "become"); mod._session_manager = None
     r = asyncio.run(mod.execute(FakeSession("linux"), {}))
-    assert r["status"] == "ok" and r["mode"] == "offline"
+    assert r["status"] == "error"
+    assert r["mode"] == "offline"
+    assert "no agent session" in r["error"]
 
 
 def test_become_dispatches(config, audit, monkeypatch):
@@ -190,7 +204,9 @@ def test_call_offline(config, audit):
     reg = ModuleRegistry(config, audit); reg.discover()
     mod = _mk(reg, "call"); mod._session_manager = None
     r = asyncio.run(mod.execute(FakeSession("linux"), {"function": "whoami"}))
-    assert r["status"] == "ok" and r["mode"] == "offline"
+    assert r["status"] == "error"
+    assert r["mode"] == "offline"
+    assert "no agent session" in r["error"]
 
 
 def test_call_dispatches(config, audit, monkeypatch):
@@ -206,7 +222,9 @@ def test_mimishell_offline(config, audit):
     reg = ModuleRegistry(config, audit); reg.discover()
     mod = _mk(reg, "mimishell"); mod._session_manager = None
     r = asyncio.run(mod.execute(FakeSession("linux"), {}))
-    assert r["status"] == "ok" and r["mode"] == "offline"
+    assert r["status"] == "error"
+    assert r["mode"] == "offline"
+    assert "no agent session" in r["error"]
 
 
 def test_mimishell_dispatches(config, audit, monkeypatch):
@@ -222,7 +240,9 @@ def test_ttyrec_offline(config, audit):
     reg = ModuleRegistry(config, audit); reg.discover()
     mod = _mk(reg, "ttyrec"); mod._session_manager = None
     r = asyncio.run(mod.execute(FakeSession("linux"), {}))
-    assert r["status"] == "ok" and r["mode"] == "offline"
+    assert r["status"] == "error"
+    assert r["mode"] == "offline"
+    assert "no agent session" in r["error"]
 
 
 def test_ttyrec_dispatches(config, audit, monkeypatch):

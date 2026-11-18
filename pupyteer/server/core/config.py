@@ -63,7 +63,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     },
     "logging": {
         "level": "INFO",
-        "format": "json",
+        # No `format` key: nothing ever read it, and it promised a json/text
+        # switch that did not exist. `audit.log_file` is the structured record.
         "file": None,
     },
     "audit": {

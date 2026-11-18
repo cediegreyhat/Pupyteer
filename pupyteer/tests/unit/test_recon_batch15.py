@@ -62,8 +62,9 @@ def test_offline_returns_find(config, audit):
     mod = reg.create("isearch")
     mod._session_manager = None
     r = asyncio.run(mod.execute(FakeSession("linux"), {"pattern": "secret"}))
-    assert r["status"] == "ok"
+    assert r["status"] == "error"
     assert r["mode"] == "offline"
+    assert "no agent session" in r["error"]
     assert "find" in r["command"]
 
 

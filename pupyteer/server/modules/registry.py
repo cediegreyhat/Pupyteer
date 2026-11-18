@@ -418,9 +418,11 @@ class ModuleRegistry:
 
         ``session_manager`` is what lets a module queue a command on the agent and
         wait for its answer. Without it a module can only read the fields the
-        listener already collected at registration, and it will do that quietly and
-        return a green status — so callers that mean to work *on* the session pass
-        it. ``ModuleExecutor`` injects the same thing on its path.
+        listener already collected at registration — and it says so with
+        ``status: "error"`` rather than a green result, because a module that
+        cannot dispatch has not done the thing it is named after. Callers that
+        mean to work *on* the session must pass it; ``ModuleExecutor`` injects
+        the same thing on its path.
         """
         instance = self.create(name)
         if instance is None:

@@ -62,8 +62,9 @@ def test_offline_create(config, audit):
     mod = reg.create("zip")
     mod._session_manager = None
     r = asyncio.run(mod.execute(FakeSession("linux"), {"action": "create", "archive": "out.zip", "paths": ["a.txt"]}))
-    assert r["status"] == "ok"
+    assert r["status"] == "error"
     assert r["mode"] == "offline"
+    assert "no agent session" in r["error"]
     assert "zip" in r["command"] or "tar" in r["command"]
 
 
@@ -73,8 +74,9 @@ def test_offline_extract(config, audit):
     mod = reg.create("zip")
     mod._session_manager = None
     r = asyncio.run(mod.execute(FakeSession("linux"), {"action": "extract", "archive": "in.zip"}))
-    assert r["status"] == "ok"
+    assert r["status"] == "error"
     assert r["mode"] == "offline"
+    assert "no agent session" in r["error"]
 
 
 def test_dispatches(config, audit, monkeypatch):

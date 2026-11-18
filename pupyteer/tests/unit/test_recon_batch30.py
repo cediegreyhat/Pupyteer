@@ -53,8 +53,9 @@ def test_offline_returns_socat(config, audit):
     mod = reg.create("socks5proxy")
     mod._session_manager = None
     r = asyncio.run(mod.execute(FakeSession("linux"), {}))
-    assert r["status"] == "ok"
+    assert r["status"] == "error"
     assert r["mode"] == "offline"
+    assert "no agent session" in r["error"]
     assert "socat" in r["command"]
 
 
@@ -64,8 +65,9 @@ def test_offline_custom_port(config, audit):
     mod = reg.create("socks5proxy")
     mod._session_manager = None
     r = asyncio.run(mod.execute(FakeSession("linux"), {"port": 9050}))
-    assert r["status"] == "ok"
+    assert r["status"] == "error"
     assert r["mode"] == "offline"
+    assert "no agent session" in r["error"]
     assert r["port"] == 9050
 
 

@@ -4,9 +4,8 @@
   "pupy_command_count": 16,
   "pupyteer_module_count": 101,
   "classification_counts": {
-    "NATIVE": 38,
-    "PRESENT": 79,
-    "STDLIB": 5
+    "PRESENT": 84,
+    "NATIVE": 38
   },
   "pupyteer_modules": [
     "ad",
@@ -137,8 +136,8 @@
     },
     {
       "name": "alive",
-      "class": "STDLIB",
-      "note": "audited: no third-party imports, portable without the tree"
+      "class": "PRESENT",
+      "note": "Registered as a module (was classified STDLIB: stdlib-only)"
     },
     {
       "name": "apps",
@@ -207,8 +206,8 @@
     },
     {
       "name": "date",
-      "class": "STDLIB",
-      "note": "audited: no third-party imports, portable without the tree"
+      "class": "PRESENT",
+      "note": "Registered as a module (was classified STDLIB: stdlib-only)"
     },
     {
       "name": "display",
@@ -279,13 +278,13 @@
     },
     {
       "name": "getpid",
-      "class": "STDLIB",
-      "note": "audited: no third-party imports, portable without the tree"
+      "class": "PRESENT",
+      "note": "Registered as a module (was classified STDLIB: stdlib-only)"
     },
     {
       "name": "getppid",
-      "class": "STDLIB",
-      "note": "audited: no third-party imports, portable without the tree"
+      "class": "PRESENT",
+      "note": "Registered as a module (was classified STDLIB: stdlib-only)"
     },
     {
       "name": "getprivs",
@@ -298,8 +297,8 @@
     },
     {
       "name": "getuid",
-      "class": "STDLIB",
-      "note": "audited: no third-party imports, portable without the tree"
+      "class": "PRESENT",
+      "note": "Registered as a module (was classified STDLIB: stdlib-only)"
     },
     {
       "name": "gpstracker",

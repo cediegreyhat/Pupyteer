@@ -53,8 +53,9 @@ def test_offline_returns_openssl_command(config, audit):
     mod = reg.create("x509")
     mod._session_manager = None
     r = asyncio.run(mod.execute(FakeSession("linux"), {}))
-    assert r["status"] == "ok"
+    assert r["status"] == "error"
     assert r["mode"] == "offline"
+    assert "no agent session" in r["error"]
     assert "openssl" in r["command"]
 
 
@@ -76,5 +77,6 @@ def test_no_session_manager_is_offline(config, audit):
     mod = reg.create("x509")
     mod._session_manager = None
     r = asyncio.run(mod.execute(FakeSession("linux"), {}))
-    assert r["status"] == "ok"
+    assert r["status"] == "error"
     assert r["mode"] == "offline"
+    assert "no agent session" in r["error"]

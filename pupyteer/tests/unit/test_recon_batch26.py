@@ -62,8 +62,9 @@ def test_offline_windows(config, audit):
     mod = reg.create("psh")
     mod._session_manager = None
     r = asyncio.run(mod.execute(FakeSession("windows"), {"command": "Get-Process"}))
-    assert r["status"] == "ok"
+    assert r["status"] == "error"
     assert r["mode"] == "offline"
+    assert "no agent session" in r["error"]
     assert "powershell" in r["command"]
 
 

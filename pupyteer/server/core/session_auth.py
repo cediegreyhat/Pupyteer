@@ -74,13 +74,15 @@ class SessionAuthorization:
         "echo": Permission.MODULE_READ,
         "sleep": Permission.MODULE_READ,
         "version": Permission.MODULE_READ,
-        "whoami": Permission.MODULE_READ,
+        # Public on purpose, and listed once: an operator locked out uses `whoami`
+        # to find out they are locked out. This key used to appear twice — once
+        # here and once in the public block below, where the second entry won.
         "theme": None,
         "exit": None,
         "quit": None,
         "login": None,
         "logout": None,
-        "whoami": None,
+        "whoami": None,   # public: see the note by `version` above
 
         "status": Permission.SESSION_READ,
         "sessions": Permission.SESSION_READ,   # refined by subcommand

@@ -62,8 +62,9 @@ def test_offline_returns_command(config, audit):
     mod = reg.create("pexec")
     mod._session_manager = None
     r = asyncio.run(mod.execute(FakeSession("linux"), {"target": "10.0.0.5", "command": "whoami"}))
-    assert r["status"] == "ok"
+    assert r["status"] == "error"
     assert r["mode"] == "offline"
+    assert "no agent session" in r["error"]
     assert "10.0.0.5" in r["command"]
 
 

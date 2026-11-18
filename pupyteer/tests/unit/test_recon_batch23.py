@@ -62,8 +62,9 @@ def test_offline_linux(config, audit):
     mod = reg.create("rwmic")
     mod._session_manager = None
     r = asyncio.run(mod.execute(FakeSession("linux"), {"target": "10.0.0.5"}))
-    assert r["status"] == "ok"
+    assert r["status"] == "error"
     assert r["mode"] == "offline"
+    assert "no agent session" in r["error"]
 
 
 def test_dispatches(config, audit, monkeypatch):

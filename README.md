@@ -172,9 +172,10 @@ pupyteer build-payload <name> --host <cb> --port <cb> [--platform linux] \
 above, and **exits non-zero when the build fails** so a CI gate or a shell
 script can tell the difference between a payload and an error. `server-info`
 redacts secret-bearing keys by default; `--reveal` shows them on your own
-terminal. `module-health` deliberately reports files that failed to load — for
-example `antiforensics.py`, which is gated off on purpose because it destroys
-evidence on a host.
+terminal. `module-health` reports modules whose file failed to import — a clean run means
+every module loaded, not that every module is safe to run. The anti-forensics
+modules are registered and healthy, and are held back at execute time by
+`anti_forensics.enabled`, because they destroy evidence on a host.
 
 `build-payload --dry-run` validates the config and prints it but compiles
 nothing and writes nothing — no artifact, no audit entry — so a CI pre-check

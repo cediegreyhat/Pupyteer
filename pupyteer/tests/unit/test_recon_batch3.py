@@ -70,8 +70,9 @@ def test_offline_mode_returns_the_command(name, osname, needle, config, audit):
     mod = reg.create(name)
     mod._session_manager = None
     result = asyncio.run(mod.execute(FakeSession(osname), {}))
-    assert result["status"] == "ok"
+    assert result["status"] == "error"
     assert result["mode"] == "offline"
+    assert "no agent session" in result["error"]
     assert needle in result["command"]
 
 
@@ -98,4 +99,4 @@ def test_missing_session_manager_is_an_error(config, audit):
         mod = reg.create(name)
         mod._session_manager = None
         r = asyncio.run(mod.execute(FakeSession("linux"), {}))
-        assert r["status"] == "ok"
+        assert r["status"] == "error"

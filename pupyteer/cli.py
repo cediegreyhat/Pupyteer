@@ -141,8 +141,12 @@ def _cmd_module_info(args: argparse.Namespace) -> int:
 
 
 def _cmd_module_health(args: argparse.Namespace) -> int:
-    """Report registry load state — the antiforensics gate is meant to show
-    up here as FAILED, so a clean run is not the same as 'nothing to report'."""
+    """Report registry load state.
+
+    A clean run means every module file imported. It is not a claim that a
+    module is safe to run: the anti-forensics modules are registered and
+    healthy, and are gated at execute time by `anti_forensics.enabled`.
+    """
     config = ConfigManager(args.config, environment=args.environment)
     registry = _make_registry(config)
     registry.discover()

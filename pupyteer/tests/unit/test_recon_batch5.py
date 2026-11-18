@@ -63,8 +63,9 @@ def test_offline_mode_returns_the_command(name, osname, needle, config, audit):
     mod._session_manager = None
     args = {"name": "example.com"} if name == "dns" else {}
     result = asyncio.run(mod.execute(FakeSession(osname), args))
-    assert result["status"] == "ok"
+    assert result["status"] == "error"
     assert result["mode"] == "offline"
+    assert "no agent session" in result["error"]
     assert needle in result["command"]
 
 

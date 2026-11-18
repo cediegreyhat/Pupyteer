@@ -53,8 +53,9 @@ def test_apps_offline(config, audit):
     mod = reg.create("apps")
     mod._session_manager = None
     r = asyncio.run(mod.execute(FakeSession("linux"), {}))
-    assert r["status"] == "ok"
+    assert r["status"] == "error"
     assert r["mode"] == "offline"
+    assert "no agent session" in r["error"]
 
 
 def test_apps_dispatches(config, audit, monkeypatch):
@@ -74,8 +75,9 @@ def test_contacts_offline(config, audit):
     mod = reg.create("contacts")
     mod._session_manager = None
     r = asyncio.run(mod.execute(FakeSession("linux"), {}))
-    assert r["status"] == "ok"
+    assert r["status"] == "error"
     assert r["mode"] == "offline"
+    assert "no agent session" in r["error"]
 
 
 def test_contacts_dispatches(config, audit, monkeypatch):

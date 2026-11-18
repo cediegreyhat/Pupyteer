@@ -565,7 +565,6 @@ server:
 
 logging:
   level: "INFO"          # DEBUG, INFO, WARNING, ERROR, CRITICAL
-  format: "json"         # Output format
   file: null             # Path to log file (null = stdout only)
 
 operator:
@@ -583,10 +582,12 @@ tasks:
 
 security:
   require_auth: true     # Require operator authentication
-  token_ttl: 3600        # Session token lifetime in seconds
+  token_ttl: 3600        # Session token lifetime
   max_failed_logins: 5   # Lockout threshold
-  operators:             # Development credential store
-    admin: "changeme"    # CHANGE IN PRODUCTION
+  # There is no `operators` key here, and there is not supposed to be one:
+  # credentials live in `security.operators_file` (a hashed JSON store the
+  # server writes). An `operators:` block in this file is read by nothing.
+  operators_file: "./data/keys/operators.json"
 
 paths:
   payload_artifacts: "./payloads/artifacts"

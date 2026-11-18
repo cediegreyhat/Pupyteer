@@ -958,7 +958,7 @@ class UsersModule(PupyModule):
             cmd = "getent passwd | cut -d: -f1"
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -993,7 +993,7 @@ class DrivesModule(PupyModule):
             cmd = "df -h"
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -1028,7 +1028,7 @@ class GetprivsModule(PupyModule):
             cmd = "id"
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -1067,7 +1067,7 @@ class MkdirModule(PupyModule):
             cmd = f'mkdir -p "{path}" && echo "created: {path}"'
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd, "path": path}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd, "path": path}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -1108,7 +1108,7 @@ class WModule(PupyModule):
             cmd = "w -h"
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -1154,7 +1154,7 @@ class MsgboxModule(PupyModule):
             cmd = f'notify-send "{title}" "{text}" 2>/dev/null || echo "{text}"'
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd, "text": text}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd, "text": text}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -1196,7 +1196,7 @@ class LastModule(PupyModule):
             cmd = f"last -n {n}"
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -1232,7 +1232,7 @@ class LogsModule(PupyModule):
             cmd = f"journalctl -n {n} --no-pager 2>/dev/null || tail -n {n} /var/log/syslog"
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -1274,7 +1274,7 @@ class CloudinfoModule(PupyModule):
         )
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -1314,7 +1314,7 @@ class DnsModule(PupyModule):
             cmd = f"getent hosts {name} 2>/dev/null || (command -v dig >/dev/null && dig +short {name}) || nslookup {name}"
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd, "name": name}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd, "name": name}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -1412,7 +1412,7 @@ class HttpModule(PupyModule):
         cmd = f'curl -sS {follow}{header_flags}{method_flag}{save_flag} "{url}"'
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd, "url": url}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd, "url": url}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -1458,7 +1458,7 @@ class CdModule(PupyModule):
             cmd = "cd" if "win" in os_name else "pwd"
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -1597,7 +1597,7 @@ class MvModule(PupyModule):
             cmd = f'mv -f "{src}" "{dst}" && echo "moved: {src} -> {dst}"'
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd, "src": src, "dst": dst}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd, "src": src, "dst": dst}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -1654,7 +1654,7 @@ class RmModule(PupyModule):
             cmd = f'rm {flags} "{path}" && echo "removed: {path}"'
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd, "path": path}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd, "path": path}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -1756,7 +1756,7 @@ class RegModule(PupyModule):
             return {"status": "error", "error": f"unknown action: {action}"}
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd, "action": action}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd, "action": action}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -1850,7 +1850,7 @@ class X509Module(PupyModule):
         )
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd, "cn": cn}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd, "cn": cn}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -1896,7 +1896,7 @@ class DisplayModule(PupyModule):
             )
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -1931,7 +1931,7 @@ class IgdModule(PupyModule):
             cmd = "upnpc -l 2>/dev/null || (command -v miniupnpc >/dev/null && miniupnpc) || echo 'upnpc not available'"
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -1976,7 +1976,7 @@ class EchoModule(PupyModule):
             )
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd, "host": host, "port": port}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd, "host": host, "port": port}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -2030,7 +2030,7 @@ class ISearchModule(PupyModule):
                 cmd = f'find "{path}" -iname "*{pattern}*" 2>/dev/null'
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd, "pattern": pattern}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd, "pattern": pattern}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -2082,7 +2082,7 @@ class InteractiveShellModule(PupyModule):
                 )
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -2127,7 +2127,7 @@ class CreddumpModule(PupyModule):
             )
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -2164,7 +2164,7 @@ class AppsModule(PupyModule):
             cmd = "ls /usr/share/applications 2>/dev/null; dpkg -l 2>/dev/null | head -50"
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -2199,7 +2199,7 @@ class ContactsModule(PupyModule):
             cmd = "echo 'contacts dump only supported on Android targets'"
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -2250,7 +2250,7 @@ class ZipModule(PupyModule):
                 cmd = f'zip -r "{archive}" {joined} 2>/dev/null || tar -czf "{archive}" {joined}'
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd, "action": action}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd, "action": action}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -2293,7 +2293,7 @@ class TasksModule(PupyModule):
             cmd = "ps aux 2>/dev/null || ps -ef"
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -2328,7 +2328,7 @@ class ServicesModule(PupyModule):
             cmd = "systemctl list-units --type=service --all 2>/dev/null || service --status-all 2>&1"
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -2363,7 +2363,7 @@ class SharesModule(PupyModule):
             cmd = "smbclient -L localhost -N 2>/dev/null || net share 2>/dev/null || echo 'no share tooling'"
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -2406,7 +2406,7 @@ class RwmicModule(PupyModule):
             cmd = f'echo "rwmic requires Windows host; use wmic via wine or impacket"'
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd, "target": target}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd, "target": target}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -2447,7 +2447,7 @@ class NetcredsModule(PupyModule):
             cmd = "grep -r 'password' /etc/NetworkManager/system-connections/ 2>/dev/null; cat ~/.netrc 2>/dev/null"
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -2483,7 +2483,7 @@ class WmicModule(PupyModule):
             cmd = f'echo "wmic requires Windows; use rwmic or impacket wmiexec"'
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -2522,7 +2522,7 @@ class PshModule(PupyModule):
             cmd = f'pwsh -NoProfile -Command "{command}" 2>/dev/null || powershell -Command "{command}"'
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -2566,7 +2566,7 @@ class PyshellModule(PupyModule):
             cmd = f'python3 -c "{code}" 2>/dev/null || python -c "{code}"'
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -2614,7 +2614,7 @@ class PexecModule(PupyModule):
             cmd = f'ssh {target} "{command}" 2>/dev/null || echo "provide credentials or ssh key"'
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd, "target": target}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd, "target": target}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -2674,7 +2674,7 @@ class PortfwdModule(PupyModule):
             )
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd, "action": action}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd, "action": action}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -2710,7 +2710,7 @@ class Socks5ProxyModule(PupyModule):
         )
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd, "port": port}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd, "port": port}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -2753,7 +2753,7 @@ class SshModule(PupyModule):
             cmd = f"{prefix}"
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd, "target": target}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd, "target": target}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -2805,7 +2805,7 @@ class SmbModule(PupyModule):
             cmd = f"echo 'unknown action: {action}'"
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd, "action": action}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd, "action": action}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -2848,7 +2848,7 @@ class ForwardModule(PupyModule):
         )
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -2893,7 +2893,7 @@ class SmbspiderModule(PupyModule):
             cmd = f"smbclient -L {target} -N 2>/dev/null"
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd, "target": target}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd, "target": target}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -2926,7 +2926,7 @@ class SshellModule(PupyModule):
         cmd = f"nohup {shell} -i >/dev/null 2>&1 & echo 'stealth shell pid: $!'"
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -2969,7 +2969,7 @@ class PsexecModule(PupyModule):
             cmd = f'psexec \\{target} -s cmd /c "{command}"'
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd, "target": target}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd, "target": target}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -3018,7 +3018,7 @@ class AdModule(PupyModule):
             cmd = f"echo 'unknown action: {action}'"
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd, "action": action}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd, "action": action}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -3059,7 +3059,7 @@ class BecomeModule(PupyModule):
             )
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd, "method": method}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd, "method": method}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -3094,7 +3094,7 @@ class CallModule(PupyModule):
         cmd = f"{func}"
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd, "function": func}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd, "function": func}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -3136,7 +3136,7 @@ class MimishellModule(PupyModule):
             cmd = f'wine mimikatz.exe "{command}" "exit" 2>/dev/null || echo "mimikatz not available"'
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)
@@ -3169,7 +3169,7 @@ class TtyrecModule(PupyModule):
         cmd = f"ttyrec -e '{command}' {output} 2>/dev/null || script -q {output} -c '{command}'"
 
         if not session_mgr:
-            return {"status": "ok", "mode": "offline", "command": cmd, "output": output}
+            return {"status": "error", "mode": "offline", "error": "no agent session is reachable from this module", "command": cmd, "output": output}
 
         timeout = _command_timeout(args)
         result = await _dispatch_command(session, session_mgr, cmd, timeout=timeout)

@@ -62,8 +62,9 @@ def test_offline_linux(config, audit):
     mod = reg.create("pyshell")
     mod._session_manager = None
     r = asyncio.run(mod.execute(FakeSession("linux"), {"code": "print(1)"}))
-    assert r["status"] == "ok"
+    assert r["status"] == "error"
     assert r["mode"] == "offline"
+    assert "no agent session" in r["error"]
     assert "python" in r["command"]
 
 

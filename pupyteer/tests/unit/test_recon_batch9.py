@@ -66,8 +66,9 @@ def test_mv_offline(config, audit):
     mod = reg.create("mv")
     mod._session_manager = None
     r = asyncio.run(mod.execute(FakeSession("linux"), {"src": "/a", "dst": "/b"}))
-    assert r["status"] == "ok"
+    assert r["status"] == "error"
     assert r["mode"] == "offline"
+    assert "no agent session" in r["error"]
     assert "mv" in r["command"]
 
 
@@ -97,8 +98,9 @@ def test_rm_offline(config, audit):
     mod = reg.create("rm")
     mod._session_manager = None
     r = asyncio.run(mod.execute(FakeSession("linux"), {"path": "/tmp/x"}))
-    assert r["status"] == "ok"
+    assert r["status"] == "error"
     assert r["mode"] == "offline"
+    assert "no agent session" in r["error"]
 
 
 def test_write_requires_path(config, audit):
@@ -135,8 +137,9 @@ def test_reg_offline_query(config, audit):
     mod = reg.create("reg")
     mod._session_manager = None
     r = asyncio.run(mod.execute(FakeSession("windows"), {"action": "query", "key": "HKLM\\Software"}))
-    assert r["status"] == "ok"
+    assert r["status"] == "error"
     assert r["mode"] == "offline"
+    assert "no agent session" in r["error"]
     assert "reg query" in r["command"]
 
 

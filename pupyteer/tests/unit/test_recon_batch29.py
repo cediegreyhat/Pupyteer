@@ -62,8 +62,9 @@ def test_offline_add(config, audit):
     mod = reg.create("portfwd")
     mod._session_manager = None
     r = asyncio.run(mod.execute(FakeSession("linux"), {"action": "add", "local_port": 8080, "remote_port": 80}))
-    assert r["status"] == "ok"
+    assert r["status"] == "error"
     assert r["mode"] == "offline"
+    assert "no agent session" in r["error"]
     assert "socat" in r["command"]
 
 
@@ -73,8 +74,9 @@ def test_offline_list(config, audit):
     mod = reg.create("portfwd")
     mod._session_manager = None
     r = asyncio.run(mod.execute(FakeSession("linux"), {"action": "list"}))
-    assert r["status"] == "ok"
+    assert r["status"] == "error"
     assert r["mode"] == "offline"
+    assert "no agent session" in r["error"]
 
 
 def test_dispatches(config, audit, monkeypatch):

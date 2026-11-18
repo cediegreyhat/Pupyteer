@@ -53,8 +53,9 @@ def test_offline_linux(config, audit):
     mod = reg.create("interactive_shell")
     mod._session_manager = None
     r = asyncio.run(mod.execute(FakeSession("linux"), {}))
-    assert r["status"] == "ok"
+    assert r["status"] == "error"
     assert r["mode"] == "offline"
+    assert "no agent session" in r["error"]
     assert "bash" in r["command"] or "tmux" in r["command"] or "screen" in r["command"]
 
 
@@ -64,8 +65,9 @@ def test_offline_windows(config, audit):
     mod = reg.create("interactive_shell")
     mod._session_manager = None
     r = asyncio.run(mod.execute(FakeSession("windows"), {}))
-    assert r["status"] == "ok"
+    assert r["status"] == "error"
     assert r["mode"] == "offline"
+    assert "no agent session" in r["error"]
     assert "cmd.exe" in r["command"]
 
 

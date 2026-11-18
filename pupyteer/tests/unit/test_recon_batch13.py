@@ -53,8 +53,9 @@ def test_offline_returns_upnpc(config, audit):
     mod = reg.create("igd")
     mod._session_manager = None
     r = asyncio.run(mod.execute(FakeSession("linux"), {}))
-    assert r["status"] == "ok"
+    assert r["status"] == "error"
     assert r["mode"] == "offline"
+    assert "no agent session" in r["error"]
     assert "upnpc" in r["command"]
 
 
