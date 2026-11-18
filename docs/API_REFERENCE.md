@@ -97,11 +97,10 @@ pupyteer/
 │   │       ├── antiforensics.py
 │   │       └── evasion.py
 │   ├── transports/
-│   │   ├── manager.py       # Transport management
-│   │   ├── listener.py      # TCP listener
-│   │   ├── http_listener.py # HTTP listener
-│   │   ├── tcp_transport.py # TCP transport
-│   │   └── http_transports.py # HTTP/HTTPS transports
+│   │   ├── __init__.py      # Re-exports the manager's transport surface
+│   │   ├── manager.py       # TransportManager, bind retry, listener lifecycle
+│   │   ├── listener.py      # Listener protocol (sessions, registrations)
+│   │   └── http_listener.py # HTTP/HTTPS listener
 │   ├── profiles/
 │   │   ├── manager.py       # Profile CRUD
 │   │   ├── parser.py        # Profile parsing
