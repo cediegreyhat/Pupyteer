@@ -74,6 +74,15 @@ PupyteerEngine
 
 Subsystem managers never reference each other directly — they communicate through the engine, which holds one instance of each as a plain attribute (`engine.sessions`, `engine.tasks`, `engine.profiles`, `engine.transports`, `engine.payloads`, `engine.evasion`). This keeps coupling low and makes each subsystem independently testable: a test builds a `PupyteerEngine` and swaps the one attribute it is exercising.
 
+> **There is a second engine, and it is not this one.**
+> `pupyteer/server/core/c2.py` defines a `C2Engine` with its own `EnginePhase`
+> enum and its own `TaskQueue`. Nothing outside `tests/unit/test_c2_engine.py`
+> imports it — the server, the TUI and every entry point use `PupyteerEngine`.
+> It is kept as a complete, tested lifecycle implementation, but do not build on
+> it and do not wire it in without reading its module docstring first.
+> `core/queue.py` is shared: `TaskPriority` is used by the live engine, while
+> `TaskQueue` is used only by `c2.py`.
+
 ### Data Flow
 
 ```

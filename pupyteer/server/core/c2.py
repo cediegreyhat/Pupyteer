@@ -1,5 +1,16 @@
 """C2 Engine — Central coordinator for the Pupyteer server.
 
+NOT WIRED IN. The server, the TUI and every entry point use
+:mod:`pupyteer.server.core.engine` (``PupyteerEngine``). Nothing outside this
+module's own tests imports ``C2Engine``, and this module's ``EnginePhase`` is a
+second enum beside the live one in ``engine.py``.
+
+It is kept rather than deleted because it is a complete, tested lifecycle
+implementation and someone may want it; if you are reading this to decide
+whether to build on it, don't — build on ``PupyteerEngine``. Deleting this file
+(and its tests) is a one-line change, and the only thing it would leave behind
+is ``TaskPriority`` in ``core/queue.py``, which the live engine imports.
+
 This module implements the core C2 engine per spec section 4 architecture.
 It wires together all subsystems (Session Manager, Task Manager, Profile Manager,
 Transport Manager, Auth Layer, Config) into a unified lifecycle with:
