@@ -630,6 +630,101 @@ def test_obfuscation_engine_full_pipeline(tmp_path, monkeypatch):
     # AES-CBC scheme: ciphertext differs from input, length is block-multiple
     assert data[:2] != b"MZ"
     assert len(data) % 16 == 0
+    # And the run says so. A scrambled file is a sample for a scanner; calling
+    # it a payload is how an operator deploys something that cannot run.
+    assert engine.last_output["encrypted"] is True
+    assert engine.last_output["loadable"] is False
+
+
+def test_pe_hardening_sees_the_real_image_not_the_ciphertext(tmp_path, monkeypatch):
+    """Ordering: PE work runs on the image, before any encoding.
+
+    It used to run after, so on every profile that asked for both — five of the
+    eight built-ins — it renamed sections on ciphertext and the artifact was
+    unchanged. Watching what the helper reads proves the order.
+    """
+    import pupyteer.server.evasion.obfuscator as obf_module
+
+    class _Cfg:
+        def get(self, key, default=None):
+            if key == "paths.obfuscated_artifacts":
+                return str(tmp_path / "out")
+            return default
+
+    seen = {}
+    real = obf_module.pe_randomize_sections
+
+    def spy(src, dst):
+        seen["bytes"] = Path(src).read_bytes()
+        return real(src, dst)
+
+    monkeypatch.setattr(obf_module, "pe_randomize_sections", spy)
+    engine = ObfuscationEngine(_Cfg(), None)
+    payload = tmp_path / "ordered.exe"
+    payload.write_bytes(_build_pe())
+
+    engine._obfuscate_sync(str(payload), ObfuscationConfig(
+        scheme=EncodingScheme.XOR, randomize_pe_sections=True,
+        modify_pe_timestamp=True, strip_pe_debug=True))
+    assert seen["bytes"][:2] == b"MZ", \
+        "PE hardening ran on ciphertext, so it changed nothing"
+
+
+def test_the_pe_profile_leaves_a_loadable_hardened_image(tmp_path):
+    """`pe_manipulation` exists to change the image, so it must not scramble it."""
+    from pupyteer.server.evasion.profiles import PROFILE_PE_MANIPULATION
+
+    class _Cfg:
+        def get(self, key, default=None):
+            if key == "paths.obfuscated_artifacts":
+                return str(tmp_path / "out")
+            return default
+
+    engine = ObfuscationEngine(_Cfg(), None)
+    payload = tmp_path / "profile.exe"
+    original = _build_pe()
+    payload.write_bytes(original)
+
+    out = engine._obfuscate_sync(str(payload), PROFILE_PE_MANIPULATION.obfuscation)
+    data = Path(out).read_bytes()
+    assert data[:2] == b"MZ", "a PE profile produced something that is not a PE"
+    assert data != original, "the requested PE hardening did not happen"
+    assert engine.last_output["loadable"] is True
+
+
+def test_a_scrambling_scheme_on_a_script_is_reported_not_loadable(tmp_path):
+    """The same honesty for a non-PE input: ciphertext is not a script."""
+    class _Cfg:
+        def get(self, key, default=None):
+            if key == "paths.obfuscated_artifacts":
+                return str(tmp_path / "out")
+            return default
+
+    engine = ObfuscationEngine(_Cfg(), None)
+    script = tmp_path / "agent.py"
+    script.write_text("print('hi')\n", encoding="utf-8")
+
+    engine._obfuscate_sync(str(script), ObfuscationConfig(scheme=EncodingScheme.CHAIN))
+    assert engine.last_output["input_was_pe"] is False
+    assert engine.last_output["loadable"] is False
+
+
+def test_a_script_left_alone_is_loadable(tmp_path):
+    class _Cfg:
+        def get(self, key, default=None):
+            if key == "paths.obfuscated_artifacts":
+                return str(tmp_path / "out")
+            return default
+
+    engine = ObfuscationEngine(_Cfg(), None)
+    script = tmp_path / "agent.py"
+    script.write_text("print('hi')\n", encoding="utf-8")
+
+    out = engine._obfuscate_sync(
+        str(script), ObfuscationConfig(scheme=EncodingScheme.BASE64_CUSTOM))
+    assert Path(out).read_text(encoding="utf-8") == "print('hi')\n"
+    assert engine.last_output["loadable"] is True
+
 
 
 def test_engine_missing_input_raises(tmp_path):

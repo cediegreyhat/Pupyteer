@@ -223,6 +223,7 @@ class EvasionTestRunner:
             obfuscated_path = await self._obfuscate_payload(artifact_path, profile.obfuscation)
             actual_artifact = obfuscated_path
             all_tags.append(f"obfuscated:{profile.obfuscation.scheme.value}")
+            self._warn_if_scrambled(obfuscated_path)
 
         # Step 2: Compute hash for reproducibility
         artifact_hash = compute_file_hash(actual_artifact)
@@ -330,6 +331,21 @@ class EvasionTestRunner:
         if self._obfuscator is None:
             raise RuntimeError("Obfuscation engine not initialized")
         return await self._obfuscator.obfuscate(input_path, config)
+
+    def _warn_if_scrambled(self, obfuscated_path: str) -> None:
+        """Say loudly when the artifact is a scanner sample, not a payload.
+
+        A whole-file encoding scheme replaces the file with ciphertext. That is
+        a perfectly good thing to hand a detection engine and a thing no target
+        can run, so the run record has to carry the difference.
+        """
+        outcome = getattr(self._obfuscator, "last_output", None) or {}
+        if outcome.get("loadable") is False:
+            logger.warning(
+                "%s is not loadable: scheme '%s' replaced the file with "
+                "ciphertext. The detection result below describes a sample, "
+                "not a deployable payload.",
+                obfuscated_path, outcome.get("scheme"))
 
     # ------------------------------------------------------------------ #
     #  Direct Litterbox submission                                        #

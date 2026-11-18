@@ -541,16 +541,27 @@ class PipelineManager:
 
             obfuscated_path = await self._obfuscator.obfuscate(artifact_path, obfuscation_config)
             obfuscated_hash = compute_file_hash(obfuscated_path)
+            outcome = getattr(self._obfuscator, "last_output", None) or {}
+            loadable = outcome.get("loadable")
+
+            message = f"Obfuscated with {obfuscation_config.scheme.value} → {obfuscated_path}"
+            if loadable is False:
+                # Say it in the stage result, not only in the log: the operator
+                # reading a pipeline report is deciding whether the artifact is
+                # deployable.
+                message += (" (NOT loadable — the encoding scheme replaced the "
+                            "file with ciphertext; this is a scanner sample)")
 
             return StageResult(
                 stage=PipelineStage.OBFUSCATE.value,
                 success=True,
                 duration_seconds=time.time() - start,
-                message=f"Obfuscated with {obfuscation_config.scheme.value} → {obfuscated_path}",
+                message=message,
                 data={
                     "obfuscated_path": obfuscated_path,
                     "obfuscated_hash": obfuscated_hash,
                     "scheme": obfuscation_config.scheme.value,
+                    "loadable": loadable,
                 },
             )
         except Exception as e:

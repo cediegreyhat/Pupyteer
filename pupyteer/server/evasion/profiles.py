@@ -103,7 +103,10 @@ PROFILE_PE_MANIPULATION = TestConfigurationProfile(
     name="pe_manipulation",
     description="PE header manipulation: section rename, timestamp randomization, debug strip",
     obfuscation=ObfuscationConfig(
-        scheme=EncodingScheme.XOR,
+        # No whole-file encoding: encrypting after the PE work would operate on
+        # ciphertext and leave the image unchanged, which is what this profile
+        # exists to change.
+        scheme=EncodingScheme.BASE64_CUSTOM,
         xor_key_size=16,
         encrypt_strings=False,
         obfuscate_imports=False,
