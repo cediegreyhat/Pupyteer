@@ -102,3 +102,65 @@ class TestPinning:
         secret = "deadbeef" * 4
         source = builder._render(template, _cfg(auth_secret=secret))
         assert f'#define AGENT_AUTH "{secret}"' in source
+
+
+class _ConfigWithKey:
+    """A config that answers one key, the way ConfigManager does."""
+
+    def __init__(self, **values):
+        self.values = values
+
+    def get(self, key, default=None):
+        return self.values.get(key, default)
+
+
+class TestRC4Key:
+    """The wire the payload speaks has to be a wire the listener speaks.
+
+    The builder reads `payloads.pe_rc4_key` and the listener reads
+    `transports.rc4_key`. When the builder invented a random key at build time
+    and wrote it nowhere, a default PE build produced an artifact that could
+    never register — the listener stayed on plaintext and the payload's first
+    message was ciphertext nobody could decrypt.
+    """
+
+    def test_no_key_anywhere_means_the_plaintext_wire(self, builder, template):
+        assert builder._resolve_rc4_key(_cfg()) == ""
+        source = builder._render(template, _cfg())
+        assert '#define AGENT_RC4KEY ""' in source
+
+    def test_a_configured_key_reaches_the_rendered_source(self, builder, template):
+        key = "00112233445566778899aabbccddeeff"
+        source = builder._render(template, _cfg(rc4_key=key))
+        assert f'#define AGENT_RC4KEY "{key}"' in source
+
+    def test_the_build_record_names_the_key_it_compiled_in(self, builder):
+        key = "00112233445566778899aabbccddeeff"
+        builder._config = _ConfigWithKey(**{"payloads.pe_rc4_key": key})
+        assert builder._resolve_rc4_key(_cfg()) == key
+
+    def test_the_listener_key_drives_the_payload_when_no_payload_key_is_set(
+            self, builder):
+        """One config key has to be enough to agree on both ends."""
+        key = "00112233445566778899aabbccddeeff"
+        builder._config = _ConfigWithKey(**{"transports.rc4_key": key})
+        assert builder._resolve_rc4_key(_cfg()) == key
+
+    def test_the_payload_key_wins_over_the_listener_key(self, builder):
+        builder._config = _ConfigWithKey(**{
+            "payloads.pe_rc4_key": "aabbccddeeff00112233445566778899",
+            "transports.rc4_key": "00112233445566778899aabbccddeeff",
+        })
+        assert builder._resolve_rc4_key(_cfg()) == "aabbccddeeff00112233445566778899"
+
+    def test_a_key_that_is_not_hex_refuses_the_build(self, builder, template):
+        """The C agent silently degrades to plaintext on an unparseable key.
+
+        Accepting one here would compile a payload the build log calls framed
+        and the wire calls plaintext — the operator's only symptom is a payload
+        that never registers.
+        """
+        for bad in ("not-hex", "abc", "zz" * 16, "00 11"):
+            with pytest.raises(ValueError, match="not a hex string"):
+                builder._render(template, _cfg(rc4_key=bad))
+

