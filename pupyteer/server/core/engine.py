@@ -150,7 +150,8 @@ class PupyteerEngine:
             session_manager=self._sessions,
             audit_logger=self._audit,
         )
-        self._tasks = TaskManager(self._config, self._sessions, self._audit)
+        self._tasks = TaskManager(self._config, self._sessions, self._audit,
+                                  executor=self._module_executor)
         self._evasion = EvasionTestManager(self._config, self._audit)
         self._payloads = PayloadManager(self._config, self._audit, agent_keys=self._agent_keys,
                                         identity_store=self.save_agent_keys)

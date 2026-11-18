@@ -535,14 +535,26 @@ class TestTaskManager:
         await tasks.shutdown()
 
     @pytest.mark.asyncio
-    async def test_task_execution_completes(self, tasks):
+    async def test_a_sessionless_task_fails_rather_than_completing(self, tasks):
+        """A task names a module to run *on a session*.
+
+        It used to complete after a 0.1s sleep with "Task <name> completed", so
+        a tasking aimed at nothing read as a success. There is no executor
+        wired in this fixture, which is the other thing it now says out loud.
+        """
         await tasks.initialize()
         tid = await tasks.create("exec-test", module="test")
-        # Wait for task to be picked up and executed
-        await asyncio.sleep(0.5)
-        task = await tasks.get(tid)
+        deadline = time.time() + 5.0
+        task = None
+        while time.time() < deadline:
+            task = await tasks.get(tid)
+            if task.state in (TaskState.COMPLETED, TaskState.FAILED,
+                              TaskState.CANCELLED):
+                break
+            await asyncio.sleep(0.05)
         assert task is not None
-        assert task.state.value in ("completed", "running", "queued")
+        assert task.state is TaskState.FAILED, task
+        assert task.result and task.result.get("error"), task.result
         await tasks.shutdown()
 
     @pytest.mark.asyncio

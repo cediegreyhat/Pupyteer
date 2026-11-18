@@ -152,6 +152,7 @@ class SessionAuthorization:
             "info": Permission.TASK_READ,
             "create": Permission.TASK_CREATE,
             "cancel": Permission.TASK_CANCEL,
+            "prune": Permission.TASK_CANCEL,
             "*": Permission.TASK_CANCEL,
         },
         "payloads": {

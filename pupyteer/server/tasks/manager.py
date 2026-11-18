@@ -72,10 +72,15 @@ class TaskManager:
     - Cancel running tasks
     """
 
-    def __init__(self, config: ConfigManager, sessions: Any, audit: AuditLogger):
+    def __init__(self, config: ConfigManager, sessions: Any, audit: AuditLogger,
+                 executor: Any = None):
         self._config = config
         self._sessions = sessions
         self._audit = audit
+        #: The module executor `exploit` uses. A background task and an
+        #: interactive one should run the same code; without this the queue had
+        #: no way to dispatch anything and simulated the result instead.
+        self._executor = executor
         self._tasks: Dict[str, TaskInfo] = {}
         queue_size = int(config.get("tasks.queue_size", 0))
         self._queue: asyncio.Queue = asyncio.Queue(maxsize=queue_size if queue_size > 0 else 0)
@@ -169,6 +174,21 @@ class TaskManager:
     def count(self) -> int:
         return len(self._tasks)
 
+    def cleanup_finished(self, max_age_seconds: float = 3600.0) -> int:
+        """Drop records of tasks that finished more than *max_age* ago.
+
+        Without this the table only ever grows: every task an operator ever
+        queued stays in memory for the life of the server, and `tasks list`
+        fills with history nobody asked to keep.
+        """
+        cutoff = time.time() - max_age_seconds
+        finished = (TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED)
+        stale = [tid for tid, t in self._tasks.items()
+                 if t.state in finished and (t.completed_at or 0) < cutoff]
+        for tid in stale:
+            del self._tasks[tid]
+        return len(stale)
+
     # ------------------------------------------------------------------ #
     #  Workers                                                            #
     # ------------------------------------------------------------------ #
@@ -179,6 +199,9 @@ class TaskManager:
         while True:
             try:
                 task_id = await self._queue.get()
+            except asyncio.CancelledError:
+                break
+            try:
                 task = self._tasks.get(task_id)
                 if not task or task.state == TaskState.CANCELLED:
                     self._queue.task_done()
@@ -189,40 +212,86 @@ class TaskManager:
 
                 exec_task = asyncio.create_task(self._execute(task))
                 self._running[task_id] = exec_task
-                await exec_task
-                self._running.pop(task_id, None)
-
+                try:
+                    await exec_task
+                except asyncio.CancelledError:
+                    # Cancelling a *task* used to look exactly like shutting the
+                    # worker down: the CancelledError propagated out of the
+                    # await and hit the handler below, which broke the loop. One
+                    # `tasks cancel` therefore killed a worker for good, and the
+                    # pool drained to nothing over a session.
+                    if not exec_task.cancelled():
+                        raise
+                    task.state = TaskState.CANCELLED
+                    task.completed_at = time.time()
+                    self._audit.log_event(
+                        "task_cancelled",
+                        {"task_id": task.task_id, "name": task.name},
+                        session=task.session_id,
+                        result="success",
+                    )
+                finally:
+                    self._running.pop(task_id, None)
                 self._queue.task_done()
             except asyncio.CancelledError:
                 break
             except Exception as exc:
                 logger.error("Worker %s error: %s", name, exc)
+                self._queue.task_done()
 
     async def _execute(self, task: TaskInfo) -> None:
-        """Execute a single task (placeholder — dispatches to module system)."""
+        """Run one queued task through the module executor.
+
+        The queue is not a simulator: a task names a module and a session, and
+        this is the same `execute_module` path an interactive `exploit` takes.
+        A task with no session has nothing to run on, and says so — completing
+        it with "ok" and a fabricated message is how an operator learns a
+        tasking did nothing.
+        """
         try:
-            # Simulated execution — in production, dispatches to actual module
-            await asyncio.sleep(0.1)
+            if not task.session_id:
+                raise RuntimeError("task has no session; nothing to run it on")
+            if not task.module:
+                raise RuntimeError("task names no module")
+            if self._executor is None:
+                raise RuntimeError(
+                    "no module executor wired; the task queue cannot dispatch")
+
+            task.progress = 0.1
+            result = await self._executor.execute_module(
+                task.module, task.session_id, dict(task.args or {}))
+            task.result = result
             task.progress = 1.0
-            task.state = TaskState.COMPLETED
             task.completed_at = time.time()
-            task.result = {"status": "ok", "message": f"Task {task.name} completed"}
-            self._audit.log_event(
-                "task_completed",
-                {"task_id": task.task_id, "name": task.name, "module": task.module},
-                session=task.session_id,
-                result="success",
-            )
+
+            if result.get("status") == "error":
+                task.state = TaskState.FAILED
+                self._audit.log_event(
+                    "task_failed",
+                    {"task_id": task.task_id, "name": task.name,
+                     "module": task.module, "error": result.get("error", "")},
+                    session=task.session_id,
+                    result="error",
+                )
+            else:
+                task.state = TaskState.COMPLETED
+                self._audit.log_event(
+                    "task_completed",
+                    {"task_id": task.task_id, "name": task.name,
+                     "module": task.module},
+                    session=task.session_id,
+                    result="success",
+                )
         except asyncio.CancelledError:
-            task.state = TaskState.CANCELLED
-            task.completed_at = time.time()
+            raise
         except Exception as exc:
             task.state = TaskState.FAILED
-            task.error = str(exc)
+            task.result = {"status": "error", "error": str(exc)}
             task.completed_at = time.time()
             self._audit.log_event(
                 "task_failed",
-                {"task_id": task.task_id, "name": task.name, "error": str(exc)},
+                {"task_id": task.task_id, "name": task.name,
+                 "module": task.module, "error": str(exc)},
                 session=task.session_id,
                 result="error",
             )

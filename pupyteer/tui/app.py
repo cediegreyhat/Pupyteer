@@ -283,7 +283,7 @@ class PupyteerTUI:
         "sessions": ["list", "info", "interact", "results", "download", "upload",
                      "kill", "rename", "tag", "search"],
         "jobs": ["list", "kill", "info"],
-        "tasks": ["list", "info", "cancel"],
+        "tasks": ["list", "info", "create", "cancel", "prune"],
         "profiles": ["list", "show", "validate", "load", "unload", "new"],
         "payloads": ["status", "list", "build", "info", "verify", "remove", "cleanup", "versions"],
         "config": ["get", "set"],
@@ -995,6 +995,24 @@ class PupyteerTUI:
                 self.render_success(f"Task {args[1]} cancelled.")
             else:
                 self.render_error(f"Task not found: {args[1]}")
+
+        elif args[0] == "create" and len(args) >= 3:
+            module, session_id = args[1], args[2]
+            name = " ".join(args[3:]) or module
+            task_id = await self._engine.tasks.create(
+                name=name, module=module, session_id=session_id, args={})
+            self.render_success(
+                f"Task {task_id} queued: {module} on {session_id}. It runs "
+                "through the same dispatcher as `exploit`, on that session.")
+
+        elif args[0] == "prune":
+            dropped = self._engine.tasks.cleanup_finished()
+            self.render_success(f"Dropped {dropped} finished task record(s).")
+
+        else:
+            self.render_warning(
+                "Usage: tasks [list|info <id>|create <module> <session> "
+                "[name]|cancel <id>|prune]")
 
     async def cmd_profiles(self, args: List[str]) -> None:
         action = args[0] if args else "list"
