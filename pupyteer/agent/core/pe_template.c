@@ -338,6 +338,11 @@ static void anti_analysis_gate(void) { /* compiled out */ }
 
 #define TLS_RECORD_CAP 32768
 #define PLAIN_CAP (2 * RECV_BUF_SIZE)
+/* Ceiling on the pending-record buffer. A peer that keeps sending partial TLS
+ * records makes DecryptMessage return SEC_E_INCOMPLETE_MESSAGE forever, and
+ * doubling without a ceiling turns that one connection into memory exhaustion.
+ * 64 MB is far past any legitimate record chain and small enough to survive. */
+#define CIPHER_CAP (64 * 1024 * 1024)
 
 typedef struct {
     CredHandle cred;
@@ -394,7 +399,11 @@ static int raw_send_all(SOCKET s, const char *data, size_t len) {
 static int cipher_reserve(size_t extra) {
     if (g_tls.cipher_len + extra <= g_tls.cipher_cap) return 0;
     size_t cap = g_tls.cipher_cap ? g_tls.cipher_cap : TLS_RECORD_CAP;
-    while (g_tls.cipher_len + extra > cap) cap *= 2;
+    while (g_tls.cipher_len + extra > cap) {
+        if (cap >= CIPHER_CAP) return -1;
+        cap *= 2;
+        if (cap > CIPHER_CAP) cap = CIPHER_CAP;
+    }
     BYTE *grown = (BYTE *)realloc(g_tls.cipher, cap);
     if (!grown) return -1;
     g_tls.cipher = grown;

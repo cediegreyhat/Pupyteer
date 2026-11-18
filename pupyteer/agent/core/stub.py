@@ -1247,6 +1247,14 @@ def identity():
 #  Transport layer
 # --------------------------------------------------------------------- #
 
+#: Largest line this agent will read. The listener's own ceiling is
+#: MAX_MESSAGE_BYTES (32 MiB), so anything past this is not a message this
+#: server sends — it is a peer growing our memory without bound, and the read
+#: stops instead. A hostile or fake C2 can otherwise hold the connection open
+#: and stream bytes until the implant dies.
+MAX_INBOUND_LINE = 32 * 1024 * 1024 + 4096
+
+
 class TransportError(Exception):
     pass
 
@@ -1320,6 +1328,10 @@ class TCPTransport(BaseTransport):
             if not chunk:
                 raise TransportError("connection closed")
             buf += chunk
+            if len(buf) > MAX_INBOUND_LINE:
+                raise TransportError(
+                    f"line over {MAX_INBOUND_LINE} bytes; not a message this "
+                    "server sends")
         return buf
 
     def send(self, data: bytes) -> bytes:
@@ -2419,6 +2431,12 @@ class RelayNode:
                             return
                         hdr += chunk
                     n = _st.unpack(">I", hdr)[0]
+                    if n > MAX_INBOUND_LINE:
+                        # A length prefix is a peer's claim about how much it is
+                        # about to send; believing it allocates that much.
+                        _log(f"relay peer {addr} asked for {n} bytes; refusing",
+                             "warning")
+                        return
                     buf = b""
                     while len(buf) < n:
                         chunk = conn.recv(min(4096, n - len(buf)))
@@ -2800,9 +2818,11 @@ class ListenerClient:
         self._fp.flush()
 
     def _recv(self):
-        line = self._fp.readline()
+        line = self._fp.readline(MAX_INBOUND_LINE + 1)
         if not line:
             raise TransportError("connection closed")
+        if len(line) > MAX_INBOUND_LINE:
+            raise TransportError("line from listener too long")
         return _j.loads(line.decode(errors="replace"))
 
     def register(self) -> bool:
