@@ -1,62 +1,71 @@
 # Pupyteer Polishing & Upgrading Plan
 
-Derived from README.md gaps + docs/MODERNIZATION_ROADMAP.md follow-ups.
-Ordered by risk/dependency. Each item must keep the full suite green.
+Status of the plan derived from the README gaps and `MODERNIZATION_ROADMAP.md`.
+Ordered by risk/dependency. Each item keeps the full suite green.
 
-## Phase 1 — Security (highest impact, ordered)
+Items marked **done** are verified against the code, not against this document.
 
-1. **Per-agent identity for enrollment** (Gap 1)
-   - Add Ed25519 keypair generation at payload build; store public key in PayloadStore manifest.
-   - Listener verifies agent signature in `register`; shared secret becomes legacy fallback gated by `agent_auth`.
-   - Revoke by agent_id. Backward-compat path for pre-cutover payloads.
-   - Files: payloads/manager.py, agent/core/stub.py, server/transports/listener.py, server/core/enrollment.py, server/core/engine.py
-   - Tests: registration challenge tests, legacy fallback tests.
+## Phase 1 — Security
 
-2. **Verified capability claims** (Gap 4)
-   - Add `payload_id` to SessionInfo; listener looks up build manifest in PayloadStore.
-   - Verify `capabilities`/`max_line` are subset of shipped manifest; audit mismatch.
-   - Old payloads (no payload_id) default to shell-only trust.
-   - Files: payloads/manager.py metadata, server/sessions/*, server/transports/listener.py, server/core/session_auth.py
-   - Tests: capability-subset tests, mismatch audit tests.
+### 1. Per-agent identity for enrollment — **done**
 
-3. **Optional payload-level AEAD cipher** (Gap 3)
-   - Add `transport.channel_cipher` opt-in; negotiate in `register`; retain TLS-only fallback.
-   - Files: server/transports/*, agent/core/stub.py, profiles, config defaults
-   - Tests: cipher round-trip tests.
+Ed25519 keypair minted at payload build; the private half is compiled into that
+one payload, the public half is kept in `security.agent_keys_file`. The listener
+issues a single-use challenge and `register` answers with a signature, so a
+recovered binary yields one agent's key rather than the shared secret. Revocation
+is per agent (`agents list` / `agents revoke <agent_id>`), and the shared
+enrollment secret remains as the legacy path.
 
-4. **Network access control documentation** (Gap 2)
-   - Document reverse-proxy/mTLS; add optional `server.allowed_operator_cidrs` + startup warning.
-   - Files: config/defaults, server/transports/manager.py, docs
-   - Scope: documentation-first, avoid overstating protection.
+Still open: the compiled Windows PE does not carry the signed handshake — it
+enrols with the shared secret and says so in its build log.
 
-## Phase 2 — TUI Modernization
+### 2. Verified capability claims — **done**
 
-5. **Extract remaining screens/widgets from app.py**
-   - BannerScreen (~818), TableRenderer (~884), enrollment render helpers (747/784).
-   - Keep PupyteerTUI delegating.
-6. **Keyboard shortcuts**
-   - Add `tui/widgets/keyboard.py` `KeyboardShortcuts` with readline bindings:
-     Tab (existing), Ctrl+L clear+status, Ctrl+D exit, Ctrl+K dashboard, Ctrl+T theme cycle.
-   - No-readline guard.
-7. **StatusBar enhancements**
-   - Refresh tick, compact status + shortcut hints, render_full, resize-safe reprint.
-8. **Tests**: mock-readline bind assertions, status bar compact/full, resize handler, screen render parity.
+`register` carries a `payload_id`; the listener looks the claim up in the build
+manifest and downgrades an over-claim to the verified subset, auditing the
+mismatch as `session_capability_mismatch`. Payloads that predate the field
+declare nothing and keep the shell-only trust they had before. A name outside
+`KNOWN_CAPABILITIES` is still ignored, so a payload cannot grant itself a
+permission by inventing a word for it.
+
+### 3. Optional payload-level AEAD cipher — **open**
+
+`security.channel_cipher` (default off) reserves the config slot and
+`server/crypto/channel.py` holds a correct AES-256-GCM primitive, but nothing
+imports it and there is no negotiation in `register`. Confidentiality comes from
+TLS alone. This is the last item of Phase 1 and the largest remaining security
+gap: it touches both agents, the listener, the profiles and the config template.
+
+### 4. Network access control documentation — **done**
+
+`security.allowed_operator_cidrs` is enforced at registration on both listeners,
+and the README/Security documentation states that everything else is a
+deployment concern (reverse proxy or mTLS in front of the team server).
+
+## Phase 2 — TUI Modernization — **done**
+
+Screens (`tui/screens/banner.py`, `session_dashboard.py`) and widgets
+(`tui/widgets/keyboard.py`, `status_bar.py`, `table.py`) are extracted from
+`app.py`, which keeps the command registry and the completer. `KeyboardShortcuts`
+binds Tab, Ctrl+L, Ctrl+D, Ctrl+K and Ctrl+T behind a no-readline guard.
 
 ## Phase 3 — Performance & Reliability
 
-9. **Registry metadata cache** (list_all/get_info), invalidate on register/unload/reload.
-10. **Parallel async discovery** (per-file asyncio.to_thread + semaphore, sorted registration).
-11. **Fix create_and_init** (truly async, cache initialized instances).
-12. **Transport bind resilience** (retry/backoff, explicit bind errors, idempotent start, graceful partial shutdown).
-13. **Task queue hardening** (bounded queue/backpressure, worker restart, cancellation cleanup, retention TTL, metrics).
-14. **Engine startup timeouts/rollback** (asyncio.wait_for per subsystem, reverse rollback on failure).
+| Item | Status |
+|---|---|
+| Registry metadata cache, invalidated on register/unload/reload | **done** |
+| Parallel async discovery (per-file `to_thread`, sorted registration) | **done** |
+| `create_and_init` | **removed** — `execute()` does the work; nothing called it |
+| Transport bind resilience (retry/backoff, explicit bind errors, idempotent start, graceful partial shutdown) | **done** |
+| Task queue hardening (real dispatch, cancellation cleanup, retention pruning, metrics) | **done** |
+| Engine startup timeouts/rollback (`wait_for` per subsystem, reverse rollback on failure) | **done** |
 
 ## Execution order
 
 Phase 1.1 → 1.2 → 1.3 → 1.4 → Phase 2 → Phase 3.
-Each step: implement, add tests, run full suite, commit+push.
+Each step: implement, add tests, run full suite, commit and push.
 
 ## Immediate next step
 
-Phase 1.1 (per-agent identity for enrollment) — largest security gap and foundation for 1.2/1.3.
-"""
+Phase 1.3, the optional payload-level AEAD cipher. It is the only remaining
+Phase 1 item and the last thing the Security section lists as not wired.
