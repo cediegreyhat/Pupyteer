@@ -48,7 +48,7 @@ from pupyteer.server.core.errors import (
     SubsystemError,
 )
 from pupyteer.server.core.logging import AuditLogger
-from pupyteer.server.core.queue import TaskPriority, TaskQueue
+from pupyteer.server.core.queue import TaskPriority
 from pupyteer.server.core.validation import validate_engine_config
 from pupyteer.server.evasion.manager import EvasionTestManager
 from pupyteer.payloads.manager import PayloadManager
@@ -117,10 +117,6 @@ class PupyteerEngine:
         self._start_time: Optional[float] = None
         self._shutdown_event = asyncio.Event()
         self._error: Optional[C2EngineError] = None
-
-        # Priority task queue
-        queue_size = self._config.get("tasks.queue_size", 0)
-        self._queue = TaskQueue(max_size=queue_size)
 
         # Authentication / authorization layer
         self._auth = AuthLayer(self._config, self._audit)
@@ -277,11 +273,6 @@ class PupyteerEngine:
     def module_registry(self) -> ModuleRegistry:
         """Module registry — discovers and loads modules."""
         return self._module_registry
-
-    @property
-    def queue(self) -> TaskQueue:
-        """Priority task queue for async task dispatch."""
-        return self._queue
 
     @property
     def error(self) -> Optional[C2EngineError]:
@@ -495,7 +486,9 @@ class PupyteerEngine:
             "modules": self._module_registry.count(),
             "profiles": self._profiles.list(),
             "transports": self._transports.list(),
-            "queue_stats": self._queue.stats().to_dict(),
+            "queue_stats": {
+                "queued": self._tasks.count(),
+            },
             "error": self._error.to_dict() if self._error else None,
         }
 
@@ -557,16 +550,16 @@ class PupyteerEngine:
                 "Cannot submit task: engine not running",
                 code=ErrorCode.ENGINE_NOT_RUNNING,
             )
-        task_id = await self._queue.enqueue(
-            name=name,
-            module=module,
-            session_id=session_id,
-            args=args,
-            priority=priority,
-        )
+        # Queued through the real task manager, which dispatches it on the
+        # session. The engine used to hold a second priority queue that nothing
+        # ever consumed, so a submitted task sat there for the life of the
+        # process and `tasks list` showed nothing.
+        task_id = await self._tasks.create(
+            name=name, module=module, session_id=session_id, args=args)
         self.audit.log_event(
             "task_submitted",
-            {"task_id": task_id, "name": name, "priority": priority.name},
+            {"task_id": task_id, "name": name, "module": module,
+             "priority": priority.name},
             session=session_id,
         )
         return task_id

@@ -414,10 +414,14 @@ class TestPupyteerEngine:
         await engine.stop()
 
     @pytest.mark.asyncio
-    async def test_queue_property(self):
+    async def test_submit_task_queues_a_real_task(self):
+        """The engine's queue used to have no consumer, so the task went nowhere."""
         engine = PupyteerEngine()
-        assert engine.queue is not None
-        assert isinstance(engine.queue, TaskQueue)
+        await engine.start()
+        tid = await engine.submit_task("compat-test", module="test")
+        assert tid is not None
+        assert await engine.tasks.get(tid) is not None
+        await engine.stop()
 
 
 # ─── Config Validation Tests ─────────────────────────────────────────

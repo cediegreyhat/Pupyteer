@@ -464,17 +464,3 @@ class TransportManager:
         if not self._listener_active:
             return None
         return self._enrollment
-
-
-class _PlaceholderSessionManager:
-    """Lightweight stand-in used before the real SessionManager is wired in.
-
-    Raises if any real operations are attempted — this prevents silent failures
-    if the engine startup order is wrong.
-    """
-
-    def __getattr__(self, name: str):
-        raise RuntimeError(
-            "AgentListener session manager not yet wired. "
-            "Call TransportManager.set_listener_session_manager() after engine startup."
-        )

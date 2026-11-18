@@ -407,16 +407,6 @@ class ModuleRegistry:
             return None
         return cls(self._config, self._audit)
 
-    async def create_and_init(self, name: str) -> Optional[PupyModule]:
-        """Instantiate, await initialize(), and return the module."""
-        instance = self.create(name)
-        if instance is None:
-            return None
-        result = instance.initialize()
-        if hasattr(result, "__await__"):
-            await result
-        return instance
-
     async def execute(
         self,
         name: str,
