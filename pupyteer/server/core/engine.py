@@ -34,6 +34,7 @@ import logging
 import signal
 import time
 from enum import Enum
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from pupyteer.server.core.auth import AuthLayer
@@ -151,13 +152,37 @@ class PupyteerEngine:
         )
         self._tasks = TaskManager(self._config, self._sessions, self._audit)
         self._evasion = EvasionTestManager(self._config, self._audit)
-        self._payloads = PayloadManager(self._config, self._audit, agent_keys=self._agent_keys)
+        self._payloads = PayloadManager(self._config, self._audit, agent_keys=self._agent_keys,
+                                        identity_store=self.save_agent_keys)
         # Unified payload-to-evasion pipeline
         self._pipeline = PipelineManager(self)
 
         # Legacy state for backward compatibility
         self.state = EngineState()
         self._logger = logging.getLogger("pupyteer.engine")
+
+    def save_agent_keys(self) -> None:
+        """Persist the registry so a restart trusts what was already built.
+
+        Without this the registry lives only in memory, and the next start
+        refuses every payload that was built with an identity: the payload still
+        presents its agent_id, the registry no longer holds the public key, and
+        a registration that cannot be verified is rejected rather than silently
+        downgraded.
+        """
+        import json
+        path = self._config.get("security.agent_keys_file")
+        if not path:
+            return
+        try:
+            target = Path(path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with open(target, "w", encoding="utf-8") as fh:
+                json.dump(self._agent_keys.to_dict(), fh, indent=2, sort_keys=True)
+            self._logger.debug("Saved %d agent key(s) to %s",
+                               len(self._agent_keys.agents()), path)
+        except Exception as exc:
+            self._logger.warning("Failed to save agent keys to %s: %s", path, exc)
 
     def _load_agent_keys(self, path: str) -> None:
         """Load trusted agent public keys from a JSON file, if present.

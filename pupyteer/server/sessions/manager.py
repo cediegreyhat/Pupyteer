@@ -68,6 +68,11 @@ class SessionInfo:
     #: Payload id the agent claimed at registration (if any). Used to look up
     #: the build manifest and verify capability claims.
     payload_id: str = ""
+    #: The agent's own Ed25519 identity, when the payload carried one. This is
+    #: what makes a session attributable to one build rather than to "a payload
+    #: this server made": the enrollment secret names the team server, the
+    #: agent id names the binary on this host.
+    agent_id: str = ""
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     @property

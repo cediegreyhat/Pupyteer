@@ -828,6 +828,23 @@ class AgentListener:
         if (self._agent_keys is not None
                 and self._require_agent_auth
                 and agent_id):
+            if not self._agent_keys.is_known(agent_id):
+                # No public key on file, so no signature could ever verify.
+                # Issuing a challenge first would tell a stranger that the id
+                # they guessed is worth a second message and would let them
+                # mint outstanding nonces for arbitrary ids; refuse now.
+                self._stats["registrations_rejected"] += 1
+                logger.warning(
+                    "Rejected registration from %s: unknown agent_id %s",
+                    remote, agent_id[:40])
+                self._audit.log_event(
+                    "registration_rejected",
+                    {"remote_address": remote,
+                     "claimed_hostname": str(msg.get("hostname", ""))[:120],
+                     "reason": "unknown_agent"},
+                    result="error",
+                )
+                return {"type": "error", "message": "auth_failed"}
             signature = msg.get("signature")
             nonce = msg.get("nonce")
             if not signature or not nonce:
@@ -872,6 +889,12 @@ class AgentListener:
             max_line=(declared_max_line(msg.get("max_line"))
                       if msg.get("max_line") else 0),
             payload_id=str(msg.get("payload_id") or ""),
+            # Only ever set from a registration whose signature verified, or
+            # from a legacy payload that never had an identity — the listener
+            # refuses an agent_id it cannot check a signature against.
+            agent_id=(agent_id if (self._agent_keys is not None
+                                   and self._require_agent_auth and agent_id)
+                      else ""),
             # Handed out once, in the reply below, and never shown to an operator.
             # Everything after this line has to bring it back or it is a stranger
             # wearing a session id.

@@ -55,9 +55,15 @@ class _NullWriter:
 class HTTPListener(AgentListener):
     """AgentListener protocol carried over HTTP POST requests."""
 
-    def __init__(self, config: Dict[str, Any], session_manager: Any, audit_logger: Any):
+    def __init__(self, config: Dict[str, Any], session_manager: Any, audit_logger: Any,
+                 agent_keys: Any = None, payload_store: Any = None):
         self._config = config
-        super().__init__(config, session_manager, audit_logger)
+        # An HTTP registration is the same registration: it gets the same
+        # identity check and the same manifest lookup as a TCP one. Dropping
+        # them here silently made the HTTP listener the weak door into the
+        # server — it admitted payloads the TCP listener would have refused.
+        super().__init__(config, session_manager, audit_logger,
+                         agent_keys=agent_keys, payload_store=payload_store)
         self._uri: str = config.get("uri", "/index.html")
 
     async def start(self) -> None:

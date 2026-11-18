@@ -74,6 +74,10 @@ security:
   # Hashed credentials, written on first use and never here. With no such file a
   # server run generates one operator password and prints it once.
   operators_file: "./data/keys/operators.json"
+  # Trusted per-agent Ed25519 public keys, written when a payload is built.
+  # Without it a restart forgets every identity the builder minted, and the
+  # payloads built with one are refused at their next registration.
+  agent_keys_file: "./data/keys/agent_keys.json"
   # Optional allow-list of operator source CIDRs for the console listener.
   # Empty (default) means no network-level restriction; combine with a
   # reverse proxy / mTLS for real access control (see README Security).

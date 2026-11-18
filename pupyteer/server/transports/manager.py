@@ -160,6 +160,11 @@ class TransportManager:
         if self._listener is not None or self._http_listener is not None:
             return  # already started
 
+        # Kept for the HTTP listener, which is created later in this method and
+        # must apply the same identity check and manifest lookup as the TCP one.
+        self._agent_keys = agent_keys
+        self._payload_store = payload_store
+
         host, port, protocol = self._resolve_transport_settings()
         self._host, self._port, self._protocol = host, port, protocol
         self._unsupported_reason = None
@@ -276,9 +281,12 @@ class TransportManager:
                 "enrollment": enrollment,
                 "certfile": self._config.get("server.https_cert", "") or None,
                 "keyfile": self._config.get("server.https_key", "") or None,
+                "allowed_cidrs": self._config.get("security.allowed_operator_cidrs", []),
             },
             session_manager=session_manager,
             audit_logger=self._audit,
+            agent_keys=self._agent_keys,
+            payload_store=self._payload_store,
         )
         await self._http_listener.start()
         self._listeners.append(self._http_listener)

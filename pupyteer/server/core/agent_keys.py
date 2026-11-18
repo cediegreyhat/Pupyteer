@@ -111,6 +111,22 @@ class AgentKeyRegistry:
     def pubkey(self, agent_id: str) -> Optional[str]:
         return self._keys.get(agent_id)
 
+    def revoke(self, agent_id: str) -> bool:
+        """Stop trusting an agent's key. True if one was on file.
+
+        This is the per-agent equivalent of retiring an enrollment secret: it
+        closes the door for the *next* registration, and does nothing to a
+        session that is already established. The payload cannot fall back to a
+        different key — the private half it carries stops matching anything on
+        file, so its registration is refused rather than downgraded.
+        """
+        self._nonces.pop(agent_id, None)
+        return self._keys.pop(agent_id, None) is not None
+
+    def agents(self) -> Dict[str, str]:
+        """The trusted agent ids and their public keys, for `agents list`."""
+        return dict(self._keys)
+
     # ------------------------------------------------------------------ #
     #  Challenge / response                                               #
     # ------------------------------------------------------------------ #

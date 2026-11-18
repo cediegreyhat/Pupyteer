@@ -16,7 +16,8 @@ CHECKOUT_ROOT = Path(__file__).resolve().parents[2]
 #: The files in the checkout that hold things an operator needs and a test run has
 #: no business touching: the audit trail, the credentials, the keys. They are
 #: git-ignored, which is why nothing but this check notices when a test writes one.
-PROTECTED_CHECKOUT_FILES = ("logs/audit.json", "data/keys/operators.json")
+PROTECTED_CHECKOUT_FILES = ("logs/audit.json", "data/keys/operators.json",
+                            "data/keys/agent_keys.json")
 
 
 def _generated_file_sizes() -> dict:
@@ -48,6 +49,7 @@ GENERATED_DEFAULTS = {
     ("server", "tls_cert"): "listener.crt",
     ("server", "tls_key"): "listener.key",
     ("security", "operators_file"): "operators.json",
+    ("security", "agent_keys_file"): "agent_keys.json",
     ("audit", "log_file"): "audit.json",
     ("paths", "payload_artifacts"): "artifacts",
     ("evasion", "history_path"): "evasion_history.json",
@@ -128,3 +130,55 @@ def config_factory(tmp_path):
             return ConfigManager(str(cfg_file))
         return ConfigManager()
     return _create
+
+
+def _silence_child_consoles() -> None:
+    """Stop any child process this run spawns from opening a console window.
+
+    The suite compiles payloads with MinGW, freezes agents with PyInstaller, and
+    launches generated agents as real subprocesses. On Windows a console child
+    gets a window of its own unless it is told otherwise, so an otherwise quiet
+    test run flashes a cmd box over whatever the operator is doing — a game, a
+    presentation, a screen share. `pupyteer._proc` applies the flag at the call
+    sites; doing it here as well means a spawn added later, or one inside a
+    library, cannot reintroduce the flicker.
+
+    `Popen` is replaced by a subclass rather than a wrapper so `isinstance`
+    checks and subclassing by callers keep working. stdio is untouched: the flag
+    says only whether the child gets a console, not what it can read or write.
+    """
+    if sys.platform != "win32":
+        return
+    import subprocess
+
+    flag = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if not flag:
+        return
+
+    class _NoWindowPopen(subprocess.Popen):
+        _pupyteer_no_window = True
+
+        def __init__(self, *args, **kwargs):
+            kwargs.setdefault("creationflags", flag)
+            super().__init__(*args, **kwargs)
+
+    subprocess.Popen = _NoWindowPopen
+
+    def _wrap(name):
+        original = getattr(subprocess, name, None)
+        if original is None or getattr(original, "_pupyteer_no_window", False):
+            return
+
+        def wrapper(*args, **kwargs):
+            kwargs.setdefault("creationflags", flag)
+            return original(*args, **kwargs)
+
+        wrapper._pupyteer_no_window = True  # type: ignore[attr-defined]
+        setattr(subprocess, name, wrapper)
+
+    for _name in ("run", "call", "check_call", "check_output"):
+        _wrap(_name)
+
+
+_silence_child_consoles()
+

@@ -395,6 +395,10 @@ async def sessions_info(tui: Any, args: List[str]) -> Dict[str, Any]:
         d["capabilities"] = ["(none declared — shell commands only)"]
     if not d.get("max_line"):
         d["max_line"] = f"(undeclared — assumed {DEFAULT_MAX_LINE} bytes)"
+    if not d.get("agent_id"):
+        d["agent_id"] = "(none — enrolled with the shared enrollment secret)"
+    if not d.get("payload_id"):
+        d["payload_id"] = "(none — built before the field existed)"
     theme = tui._theme
     print(f"\n  Session Details:")
     for key, val in d.items():

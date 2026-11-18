@@ -272,6 +272,9 @@ class PupyteerTUI:
         r.register("enrollment", self.cmd_enrollment,
                    "Which payloads may enrol: show, rotate, revoke",
                    "enrollment [show|rotate|revoke <fingerprint>]")
+        r.register("agents", self.cmd_agents,
+                   "Which per-agent identities are trusted: list, revoke",
+                   "agents [list|revoke <agent_id>]")
         r.register("exit", self.cmd_exit, "Exit Pupyteer")
         r.register("quit", self.cmd_exit, "Exit Pupyteer")
 
@@ -289,6 +292,7 @@ class PupyteerTUI:
         "pipeline": ["run", "build", "test", "auto", "status", "history", "profiles", "info"],
         "operator": ["list", "add", "role", "remove"],
         "enrollment": ["show", "rotate", "revoke"],
+        "agents": ["list", "revoke"],
     }
 
     def _complete_names(self, command: str) -> List[str]:
@@ -708,6 +712,62 @@ class PupyteerTUI:
             self._enrollment_revoke(ledger, args[1:])
             return
         self.render_error(f"Unknown enrollment command: {verb}\n  Usage: {usage}")
+
+    async def cmd_agents(self, args: List[str]) -> None:
+        """`agents list|revoke` — which per-agent identities are trusted.
+
+        The enrollment secret names the team server; an agent id names one
+        binary on one host. Revoking one closes that binary's door without
+        touching the boundary every other payload walks through.
+        """
+        registry = getattr(self._engine, "agent_keys", None)
+        if registry is None:
+            self.render_error("This server has no agent key registry.")
+            return
+        verb = args[0] if args else "list"
+        if verb == "list":
+            self._agents_list(registry)
+            return
+        if verb == "revoke":
+            self._agents_revoke(registry, args[1:])
+            return
+        self.render_error(
+            f"Unknown agents command: {verb}\n"
+            "  Usage: agents [list|revoke <agent_id>]")
+
+    def _agents_list(self, registry) -> None:
+        agents = registry.agents()
+        if not agents:
+            self.render_warning(
+                "No agent identities are on file. A payload is given one when "
+                "`payloads build` runs against a server with a registry; until "
+                "then every payload enrols with the shared enrollment secret.")
+            return
+        self.render_table(
+            ["AGENT ID", "PUBLIC KEY"],
+            [[aid, pub[:16] + "…"] for aid, pub in sorted(agents.items())])
+        self.render_warning(
+            f"{len(agents)} identity(ies) trusted. Revoking one refuses its next "
+            "registration; a session already established keeps running on its "
+            "own beacon token until it dies or you `sessions kill` it.")
+
+    def _agents_revoke(self, registry, rest: List[str]) -> None:
+        if not rest:
+            self.render_warning("Usage: agents revoke <agent_id>")
+            return
+        wanted = rest[0].strip()
+        if not registry.revoke(wanted):
+            self.render_error(
+                f"No agent with id {wanted!r}. `agents list` lists what is trusted.")
+            return
+        self._engine.save_agent_keys()
+        self._engine.audit.log_event(
+            "agent_revoked", {"agent_id": wanted}, result="success")
+        self.render_success(
+            f"{wanted} is no longer trusted. The payload built with it will be "
+            "refused at its next registration rather than downgraded to the "
+            "enrollment secret, and a session it already holds keeps running "
+            "until it dies or you kill it.")
 
     def _enrollment_show(self, ledger) -> None:
         rows = ledger.status()

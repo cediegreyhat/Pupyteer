@@ -19,6 +19,7 @@ import asyncio
 import json
 import logging
 import sys
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from pupyteer.server.core.config import ConfigManager
@@ -35,6 +36,52 @@ def _make_registry(config: ConfigManager):
 
     audit = AuditLogger(config)
     return ModuleRegistry(config, audit)
+
+
+def _agent_key_registry(config: ConfigManager):
+    """The registry `build-payload` mints agent identities through.
+
+    `build-payload` is the one subcommand that builds, so it is the one that
+    needs the same registry the engine verifies against. Without it every
+    payload it built enrolled with the shared secret and the per-agent key
+    machinery was dead code on the only path an operator uses from a shell.
+
+    The registry is persisted where the engine looks for it, so a payload
+    built here is trusted by a server started from the same config.
+    """
+    from pupyteer.server.core.agent_keys import AgentKeyRegistry
+
+    registry = AgentKeyRegistry()
+    path = config.get("security.agent_keys_file")
+    if not path:
+        return registry
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            registry.load_from_dict(json.load(fh))
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        # A corrupt registry is not a reason to refuse a build; it is a reason
+        # to say so, because the payloads built now will not be trusted by a
+        # server that reads the file we could not.
+        print(f"warning: could not load agent keys from {path}: {exc}",
+              file=sys.stderr)
+    return registry
+
+
+def _persist_agent_key_registry(config: ConfigManager, registry) -> None:
+    """Write the registry back so the listener trusts what was just built."""
+    path = config.get("security.agent_keys_file")
+    if not path:
+        return
+    try:
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with open(target, "w", encoding="utf-8") as fh:
+            json.dump(registry.to_dict(), fh, indent=2, sort_keys=True)
+    except Exception as exc:
+        print(f"warning: could not save agent keys to {path}: {exc}",
+              file=sys.stderr)
 
 
 def _emit(rows: List[Dict[str, Any]], as_json: bool, text_fn) -> None:
@@ -161,7 +208,7 @@ def _cmd_build_payload(args: argparse.Namespace) -> int:
         rc4_key=args.rc4_key,
     )
 
-    builder = PayloadBuilder(config, audit)
+    builder = PayloadBuilder(config, audit, agent_keys=_agent_key_registry(config))
     problems = builder.validate_config(pcfg)
     if problems:
         print("Payload configuration is not buildable:", file=sys.stderr)
@@ -180,6 +227,9 @@ def _cmd_build_payload(args: argparse.Namespace) -> int:
         builder.build(pcfg, payload_id=builder.generate_payload_id(),
                       version=args.version, sign=args.sign)
     )
+    # A minted agent identity is only useful if the listener ever sees its
+    # public half, and this process has no engine to persist it.
+    _persist_agent_key_registry(config, builder._agent_keys)
     print(json.dumps(metadata.to_dict(), indent=2, sort_keys=True, default=str))
     # build() records a failure in metadata (and the audit trail) instead of
     # raising, so the process would exit 0 on a payload that does not exist.

@@ -117,6 +117,10 @@ class SessionAuthorization:
         # `config set` is: it decides which payloads may become sessions, so
         # reading it is a viewer's job and turning it over is not.
         "enrollment": Permission.CONFIG_READ,   # refined by subcommand
+        # Which per-agent identities the listener trusts. Same shape as
+        # enrollment: reading the list is harmless, revoking one decides who
+        # may become a session.
+        "agents": Permission.CONFIG_READ,        # refined by subcommand
     }
     
     # Subcommand refinement. `"*"` is what an unrecognised subcommand needs, and
@@ -205,6 +209,11 @@ class SessionAuthorization:
         "enrollment": {
             "show": Permission.CONFIG_READ,
             "rotate": Permission.CONFIG_WRITE,
+            "revoke": Permission.CONFIG_WRITE,
+            "*": Permission.CONFIG_WRITE,
+        },
+        "agents": {
+            "list": Permission.CONFIG_READ,
             "revoke": Permission.CONFIG_WRITE,
             "*": Permission.CONFIG_WRITE,
         },

@@ -19,6 +19,11 @@ logger = logging.getLogger("pupyteer.config")
 #: copied, pasted into tickets and backed up, and a password in it becomes the
 #: property of everyone who reads any of those.
 DEFAULT_OPERATORS_FILE = "./data/keys/operators.json"
+#: Trusted agent public keys. Persisted because an identity that lives only in
+#: memory turns the next restart into a server that refuses every payload built
+#: with one — the payload still presents its agent_id and the registry no longer
+#: has the matching public key.
+DEFAULT_AGENT_KEYS_FILE = "./data/keys/agent_keys.json"
 
 #: The audit trail. A default the code keeps to itself is not a default an
 #: operator can find, and this one decides where an engagement's record lands.
@@ -87,6 +92,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         # be forever, so five typos locked a team out of their own server.
         "lockout_seconds": 300,
         "operators_file": DEFAULT_OPERATORS_FILE,
+        # Where the per-agent Ed25519 public keys are kept. Without this a
+        # restart forgets every identity the builder minted, and payloads built
+        # with one are refused at their next registration rather than falling
+        # back quietly.
+        "agent_keys_file": DEFAULT_AGENT_KEYS_FILE,
     },
     "paths": {
         "payload_artifacts": "./payloads/artifacts",
