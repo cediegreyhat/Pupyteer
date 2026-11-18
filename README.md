@@ -28,7 +28,7 @@
 
 | | |
 |---|---|
-| **Server** | asyncio engine; session, task, profile, transport, module, payload and evasion subsystems behind `Protocol` interfaces |
+| **Server** | asyncio engine; session, task, profile, transport, module, payload and evasion subsystems behind narrow, documented seams |
 | **Agents** | Python stub (any host with an interpreter) and a MinGW-compiled Windows PE speaking the same wire protocol |
 | **Listeners** | TCP and HTTP/HTTPS, TLS with certificate pinning on by default |
 | **Modules** | 101 registered across recon, execution, file ops, post-exploitation and evasion |

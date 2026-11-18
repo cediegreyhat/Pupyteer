@@ -21,7 +21,7 @@
    - [ProfileManager](#profilemanager)
    - [TransportManager](#transportmanager)
 6. [Module System](#module-system)
-7. [Protocol Interfaces](#protocol-interfaces)
+7. [Subsystem Seams](#subsystem-seams)
 8. [Async Architecture](#async-architecture)
 9. [Error Handling](#error-handling)
 10. [Adding New Features](#adding-new-features)
@@ -37,7 +37,7 @@ Pupyteer is a from-scratch modernization of the Pupy C2 framework. It preserves 
 ### Design Goals
 
 - **Modularity** — Every subsystem is replaceable without rewriting others.
-- **Testability** — Clear Protocol interfaces enable mock-based unit testing.
+- **Testability** — Every subsystem sits behind a narrow, documented seam, so tests substitute a fake rather than a whole manager.
 - **Auditability** — Every action emits structured, non-repudiable logs.
 - **Operator Focus** — Common operations require minimal commands.
 - **Extensibility** — New transports, profiles, and modules are first-class additions.
@@ -72,7 +72,7 @@ PupyteerEngine
 └── TaskManager            (async task queue)
 ```
 
-Subsystem managers never reference each other directly — they communicate through the engine or via Protocol interfaces. This keeps coupling low and makes each subsystem independently testable.
+Subsystem managers never reference each other directly — they communicate through the engine, which holds one instance of each as a plain attribute (`engine.sessions`, `engine.tasks`, `engine.profiles`, `engine.transports`, `engine.payloads`, `engine.evasion`). This keeps coupling low and makes each subsystem independently testable: a test builds a `PupyteerEngine` and swaps the one attribute it is exercising.
 
 ### Data Flow
 
@@ -107,7 +107,6 @@ pupyteer/
 │       └── https_standard.yaml  # Built-in C2 profile
 ├── server/
 │   ├── __init__.py
-│   ├── interfaces.py        # Protocol definitions (IConfig, ISessions, etc.)
 │   ├── core/
 │   │   ├── __init__.py
 │   │   ├── config.py        # ConfigManager
@@ -526,24 +525,26 @@ reviewed invariant, not an import bug.
 
 ---
 
-## Protocol Interfaces
+## Subsystem Seams
 
-**Location:** `pupyteer/server/interfaces.py`
+There is no `interfaces.py`. This file used to declare a set of `typing.Protocol`
+contracts that nothing imported, while the real contracts were — and are — the
+public methods of each manager class and the attribute the engine exposes them
+through. The table below is those real seams, so it describes what a substitute
+has to provide rather than what a module claims:
 
-All subsystem contracts are defined as `typing.Protocol` classes. Any object implementing these methods can be substituted for the built-in manager:
-
-| Protocol | Methods | Description |
+| Seam | Methods | Description |
 |----------|---------|-------------|
-| `IConfig` | `get`, `set`, `validate`, `all` | Configuration access |
-| `IAudit` | `log_event` | Structured audit logging |
-| `IAuth` | `authenticate`, `authorize`, `get_operator`, `revoke` | Operator auth |
-| `ISessions` | `initialize`, `shutdown`, `register`, `get`, `list_all`, `remove`, `kill`, `search`, `tag`, `update_checkin`, `count`, `count_active`, `summary` | Session lifecycle |
-| `ITasks` | `initialize`, `shutdown`, `create`, `get`, `cancel`, `list_all`, `list_by_state`, `list_by_session`, `count` | Task queue |
-| `ITransports` | `initialize`, `shutdown`, `create`, `register`, `unregister`, `get`, `list`, `available_types` | Transport management |
-| `IProfiles` | `initialize`, `shutdown`, `load`, `validate`, `active_name`, `list`, `get_active` | Profile management |
-| `IEngine` | `start`, `stop`, `wait_for_shutdown`, `get_status` | Top-level orchestrator |
+| `ConfigManager` | `get`, `set`, `validate`, `all` | Configuration access |
+| `AuditLogger` | `log_event` | Structured audit logging |
+| `AuthLayer` | `authenticate`, `authorize`, `get_operator`, `revoke` | Operator auth |
+| `SessionManager` | `initialize`, `shutdown`, `register`, `get`, `list_all`, `remove`, `kill`, `search`, `tag`, `update_checkin`, `count`, `count_active`, `summary` | Session lifecycle |
+| `TaskManager` | `initialize`, `shutdown`, `create`, `get`, `cancel`, `list_all`, `list_by_state`, `list_by_session`, `count` | Task queue |
+| `TransportManager` | `initialize`, `shutdown`, `create`, `register`, `unregister`, `get`, `list`, `available_types` | Transport management |
+| `ProfileManager` | `initialize`, `shutdown`, `load`, `validate`, `active_name`, `list`, `get_active` | Profile management |
+| `PupyteerEngine` | `start`, `stop`, `wait_for_shutdown`, `get_status` | Top-level orchestrator |
 
-Using Protocols enables:
+Swapping a subsystem at one of these seams enables:
 - **Mocking** in tests without real infrastructure
 - **Swapping** implementations (e.g., Redis-backed sessions)
 - **Type checking** via `runtime_checkable` and static analysis
@@ -605,7 +606,7 @@ Pupyteer uses a layered error-handling strategy:
 ### Adding a New Subsystem Manager
 
 1. Create the manager class in `pupyteer/server/<name>/manager.py`
-2. Add a Protocol interface in `pupyteer/server/interfaces.py`
+2. Match the public method surface of the manager you are replacing (see [Subsystem Seams](#subsystem-seams))
 3. Wire it into `PupyteerEngine.__init__()` in `engine.py`
 4. Add lifecycle calls in `engine.py` `start()` and `stop()`
 5. Add TUI commands in `tui/app.py` `_register_commands()`

@@ -366,7 +366,7 @@ sudo iptables -A INPUT -p tcp --dport 8443 -m connlimit --connlimit-above 10 -j 
 
 To integrate with LDAP, OAuth, or SAML:
 
-1. Implement the `IAuth` protocol from `pupyteer/server/interfaces.py`
+1. Match the public surface of `AuthLayer` (`authenticate`, `authorize`, `get_operator`, `revoke`)
 2. Replace the default `AuthLayer` in your deployment
 3. Update configuration to point to your IdP
 
