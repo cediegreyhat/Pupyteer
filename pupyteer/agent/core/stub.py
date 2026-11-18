@@ -149,6 +149,10 @@ class StubConfig:
     # Metadata
     operator: str = "unknown"
     tags: List[str] = field(default_factory=list)
+    # Which build this is. Carried in the register so the listener can look the
+    # build manifest up and hold the capability claim to what actually shipped;
+    # empty for a payload built before the field existed.
+    payload_id: str = ""
     extra: Dict[str, Any] = field(default_factory=dict)
 
     def validate(self) -> List[str]:
@@ -303,6 +307,10 @@ class AgentStubGenerator:
             "agent_id": agent_id,
             "agent_priv_pem": priv_pem,
             "has_identity": bool(agent_id and priv_pem),
+            # Which build this is; empty for a payload built before the field
+            # existed. Rendered into the register so the listener can verify
+            # capability claims against the build manifest.
+            "payload_id": cfg.payload_id or (cfg.extra or {}).get("payload_id", "") or "",
         }
 
 
@@ -1139,6 +1147,14 @@ _AGENT_ID = ""
 def _sign(message: str) -> str:
     return ""
 {% endif %}
+
+# Which build this binary is. The listener looks the id up in the payload
+# store and holds the capabilities claimed below to what that build actually
+# shipped, so an over-claim is downgraded here rather than trusted — and a
+# session can be traced back to one build instead of to "some payload this
+# server made". Empty for a payload built before the field existed, which is
+# trusted exactly as it was then.
+_PAYLOAD_ID = "{{ payload_id }}"
 
 AGENT_ID = _make_id()
 HOSTNAME = _pf.node()
@@ -2497,6 +2513,9 @@ def _register(transport) -> tuple:
         # is the number a chunked transfer is sized against. It is generous on
         # purpose, because the transfer module caps at far less anyway.
         "max_line": 4 * 1024 * 1024,
+        # Which build this is, so the listener can verify the claim above
+        # against the manifest instead of taking it on faith.
+        "payload_id": _PAYLOAD_ID,
     })
     if resp.get("type") == "error" and resp.get("message") == "auth_failed":
         # The listener is there and answered; it just does not know this agent.
@@ -2716,6 +2735,7 @@ class ListenerClient:
             # declares in _register).
             "capabilities": list(CAPABILITIES),
             "max_line": 4 * 1024 * 1024,
+            "payload_id": _PAYLOAD_ID,
         }
         if not _AGENT_ID:
             # Legacy unsigned listener: enroll with the shared secret. The

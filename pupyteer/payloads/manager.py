@@ -545,6 +545,7 @@ class PayloadBuilder:
                         anti_analysis=payload_config.anti_analysis,
                         obfuscation=payload_config.obfuscation,
                         rc4_key=payload_config.rc4_key,
+                        payload_id=payload_id,
                     )
                     pe_result = await pe_build.build(stub_cfg, artifact_path.with_suffix('.exe'))
                     if pe_result.status == "built":
@@ -608,6 +609,7 @@ class PayloadBuilder:
                     anti_analysis=payload_config.anti_analysis,
                     obfuscation=payload_config.obfuscation,
                     rc4_key=payload_config.rc4_key,
+                    payload_id=payload_id,
                     extra={"agent_identity": identity} if identity else {},
                 )
                 agent_code = stub_gen.generate(stub_cfg)

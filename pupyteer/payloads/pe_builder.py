@@ -42,7 +42,7 @@ logger = logging.getLogger("pupyteer.payloads.pe_builder")
 TEMPLATE_PLACEHOLDERS = (
     "{{HOST}}", "{{PORT}}", "{{SLEEP}}", "{{JITTER}}",
     "{{AUTH}}", "{{TLS}}", "{{TLS_FINGERPRINT}}",
-    "{{RC4KEY}}", "{{ANTI_ANALYSIS}}",
+    "{{RC4KEY}}", "{{ANTI_ANALYSIS}}", "{{PAYLOAD_ID}}",
 )
 
 # RC4 transport key when nothing configures one. Empty is the plaintext wire,
@@ -344,6 +344,11 @@ class PEBuilder:
             "{{TLS_FINGERPRINT}}": self._pin_for(cfg),
             "{{RC4KEY}}": self._c_string("RC4 transport key",
                                          rc4_key or DEFAULT_PE_RC4_KEY),
+            # Which build this is, so the listener can verify the capability
+            # claim against the manifest. Empty is legitimate: a payload built
+            # before the field existed keeps the trust it had.
+            "{{PAYLOAD_ID}}": self._c_string(
+                "payload id", getattr(cfg, "payload_id", "") or ""),
             "{{ANTI_ANALYSIS}}": "1" if cfg.anti_analysis else "0",
         }
         src = template

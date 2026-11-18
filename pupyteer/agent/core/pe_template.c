@@ -111,6 +111,13 @@
 #ifndef AGENT_TLS_FINGERPRINT
 #define AGENT_TLS_FINGERPRINT "{{TLS_FINGERPRINT}}"
 #endif
+/* Which build this binary is. The listener looks the id up in the payload
+ * store and holds the capability list below to what that build actually
+ * shipped, so an over-claim is downgraded rather than trusted. Empty for a
+ * payload built before the field existed, which keeps the trust it had. */
+#ifndef AGENT_PAYLOAD_ID
+#define AGENT_PAYLOAD_ID "{{PAYLOAD_ID}}"
+#endif
 
 #define RECV_BUF_SIZE 65536
 #define SEND_BUF_SIZE 65536
@@ -1239,9 +1246,9 @@ static int handle_register(SOCKET s) {
              "\"agent_version\":\"%s\","
              "\"capabilities\":[\"exec\",\"ping\",\"sysinfo\",\"processes\","
              "\"network\",\"netstat\",\"process_kill\",\"pwd\",\"get_hwuuid\",\"env\",\"date\",\"alive\",\"getpid\",\"getuid\",\"getppid\",\"getdomain\",\"check_vm\",\"fs_list\",\"fs_get\",\"fs_put\",\"shutdown\"],"
-             "\"max_line\":%d}",
+             "\"max_line\":%d,\"payload_id\":\"%s\"}",
              escaped_auth, escaped_host, escaped_user, g_agent_version,
-             RECV_BUF_SIZE);
+             RECV_BUF_SIZE, AGENT_PAYLOAD_ID);
     return agent_send(s, msg);
 }
 
