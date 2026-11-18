@@ -9,8 +9,9 @@ Provides:
 - :func:`sleep_masked`: jittered sleep with optional masking of a buffer.
 - :func:`scrub_buffer`: memory scrubbing helper (random overwrite, then zero)
   used by both the Python and the C agent stubs.
-- :func:`patch_stub_template_for_sleep_mask`: template integration hook so
-  generated agents use sleep masking.
+- :data:`STANDALONE_MASK_SOURCE`: the stdlib-only mask block the stub template
+  renders into a generated agent, so a payload is not made to import this
+  package (a generated ``.py`` must run with nothing but an interpreter).
 - :func:`generate_mask_key`, :func:`mask_string`, :func:`unmask_string`.
 
 HONEST LIMITATION — read this before trusting this module
@@ -525,31 +526,56 @@ def sleep_masked(
     }
 
 
-def patch_stub_template_for_sleep_mask(template_source: str) -> str:
-    """Modify an agent stub template source to include sleep masking.
+# ── standalone block for generated agents ───────────────────────────────
+#
+# A generated payload is a single file that must run with nothing but a Python
+# interpreter, so it cannot `import pupyteer.agent.core.sleep_mask`. This block
+# is the stdlib-only subset rendered straight into the stub template. It is
+# deliberately RC4 rather than ChaCha20: ChaCha20 needs the `cryptography`
+# package, which a standalone agent does not have.
+#
+# Constraints on this text: it is inserted into the template's global scope, so
+# every name must be unique there, and it may only use modules the template
+# already imports — `os` is aliased `_o` and `time` is `_t`.
+#
+# Honest scope: this masks one caller-supplied buffer (the agent's most recent
+# command output) for the duration of the sleep. It is not image self-masking —
+# see the module docstring.
 
-    Injects the SleepMask import and integrates it into the beacon loop
-    so generated agents automatically use sleep masking.
+STANDALONE_MASK_SOURCE = '''# --- sleep mask: rendered into the agent by the stub template ---
+_MASK_KEY = _o.urandom(32)
+_MASK_BUF = bytearray()
 
-    Args:
-        template_source: The Jinja2 template source string.
 
-    Returns:
-        Modified template source with sleep mask integration.
+def _mask_bytes(data, key):
+    """RC4 a bytearray in place. Symmetric, so one function masks and unmasks."""
+    if not data:
+        return data
+    s = list(range(256))
+    j = 0
+    for i in range(256):
+        j = (j + s[i] + key[i % len(key)]) % 256
+        s[i], s[j] = s[j], s[i]
+    i = j = 0
+    for k in range(len(data)):
+        i = (i + 1) % 256
+        j = (j + s[i]) % 256
+        s[i], s[j] = s[j], s[i]
+        data[k] ^= s[(s[i] + s[j]) % 256]
+    return data
+
+
+def _remember_output(text):
+    """Keep the last command output in the maskable buffer.
+
+    Bounded: a `find /` reply is clipped by the agent before it gets here, and
+    the cap keeps a pathological result from being copied in whole.
     """
-    # Add import if not already present
-    import_line = "from pupyteer.agent.core.sleep_mask import sleep_masked"
-    if import_line not in template_source:
-        # Insert after other imports at top
-        lines = template_source.split("\n")
-        import_idx = 0
-        for i, line in enumerate(lines):
-            if line.startswith("import ") or line.startswith("from "):
-                import_idx = i + 1
-        lines.insert(import_idx, import_line)
-        template_source = "\n".join(lines)
-
-    return template_source
+    if not text:
+        return
+    _MASK_BUF[:] = text.encode("utf-8", "replace")[:65536]
+# --- end sleep mask ---
+'''
 
 
 # ── Convenience functions for generated agents ────────────────────────

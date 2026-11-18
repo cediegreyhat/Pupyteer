@@ -10,7 +10,7 @@
   <img src="https://img.shields.io/badge/License-BSD--3--Clause-2EA44F?style=for-the-badge" alt="BSD 3-Clause">
   <img src="https://img.shields.io/badge/Modules-101-6C5CE7?style=for-the-badge" alt="101 registered modules">
   <br>
-  <img src="https://img.shields.io/badge/Tests-1526%20passed-00B894?style=for-the-badge&labelColor=0B0F14" alt="1526 tests passing">
+  <img src="https://img.shields.io/badge/Tests-1471%20passed-00B894?style=for-the-badge&labelColor=0B0F14" alt="1471 tests passing">
   <img src="https://img.shields.io/badge/Pupy%20parity-101%2F122-FF7675?style=for-the-badge" alt="Pupy parity: 101 of 122 modules">
   <img src="https://img.shields.io/badge/Agents-Python%20%2B%20Windows%20PE-FCC6D7?style=for-the-badge" alt="Python and Windows PE agents">
 </p>
@@ -45,7 +45,7 @@
 | Per-agent Ed25519 identity | HTTP / HTTPS listener | Task queue with real dispatch to the implant | Tab completion & history |
 | Build manifest + `payload_id` | New-agent identity challenge | Malleable C2 profiles (YAML/JSON) | RBAC: viewer / operator / admin |
 | Capability claims verified at registration | RC4 transport framing (opt-in) | Module registry + executor | `scripts/` verification gates for CI |
-| Artifact versioning & cleanup | — | Structured, redacted audit trail | — |
+| Sleep masking + artifact versioning | — | Structured, redacted audit trail | — |
 
 ---
 
@@ -145,6 +145,11 @@ executable's name and none of its contents.
 `--persistence` is **off by default**: the agent only installs a registry /
 crontab entry when you ask for it explicitly. `--screenshot` is likewise opt-in;
 a payload built without it answers a capture request with `unknown action`.
+`--sleep-mask` is opt-in too: it keeps the last command output in a buffer that
+is masked for the duration of each sleep, so a memory scan of a sleeping agent
+does not find the previous tasking in plaintext. It masks a caller-supplied
+buffer only — on CPython the interpreter's own pages are not ours to encrypt,
+and the C agent does the real `.text` sleep mask instead.
 
 ### Scriptable subcommands (no TUI)
 
@@ -424,7 +429,7 @@ git-ignored.
 .venv/bin/python -m pytest pupyteer/tests/integration
 ```
 
-**1526 tests pass, 1 skipped** — and CI runs the same suite on both Linux and
+**1471 tests pass, 1 skipped** — and CI runs the same suite on both Linux and
 Windows, so the Python agent is exercised everywhere and the Windows-only paths
 (TLS pinning, the PE build) fail where they are actually used.
 

